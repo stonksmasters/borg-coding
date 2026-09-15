@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/repository" },
+    { "path": "./packages/verification" },
+    { "path": "./packages/models" },
+    { "path": "./packages/persistence" },
+    { "path": "./packages/runtime-opencode" },
+    { "path": "./apps/server" }
+  ]
+}
