@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type PermissionMode = "ask" | "edit" | "agent";
 type Message = { id: string; role: "user" | "assistant"; text: string };
@@ -8,6 +8,12 @@ type AgentEvent = { type: string; taskId: string; message?: string; text?: strin
 
 const API = "http://127.0.0.1:8787";
 
+function upsertApproval(items: Approval[], approval: Approval): Approval[] {
+  const index = items.findIndex((item) => item.approvalId === approval.approvalId);
+  if (index === -1) return [...items, approval];
+  return items.map((item, itemIndex) => itemIndex === index ? approval : item);
+}
+
 export default function App() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
   const [health, setHealth] = useState<Health>({});
@@ -15,30 +21,56 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeTask, setActiveTask] = useState<string | null>(null);
+  const activeTaskRef = useRef<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [activity, setActivity] = useState<string[]>([]);
 
   useEffect(() => {
     fetch(`${API}/api/health`).then((r) => r.json()).then(setHealth).catch(() => setHealth({}));
-  }, []);
 
-  useEffect(() => {
-    if (!activeTask) return;
     const socket = new WebSocket("ws://127.0.0.1:8787/events");
     socket.onmessage = (message) => {
       const event = JSON.parse(message.data) as AgentEvent;
-      if (event.taskId !== activeTask) return;
+      if (event.taskId !== activeTaskRef.current) return;
       if (event.type === "agent.status" && event.message) setActivity((items) => [...items, event.message!]);
       if (event.type === "tool.started" && event.tool) setActivity((items) => [...items, `Running ${event.tool}`]);
       if (event.type === "tool.completed" && event.tool) setActivity((items) => [...items, `${event.tool} completed`]);
       if (event.type === "approval.required" && event.approvalId && event.tool && event.input) {
-        setApprovals((items) => [...items, { approvalId: event.approvalId!, taskId: event.taskId, tool: event.tool!, input: event.input!, reason: event.reason }]);
+        const approval: Approval = { approvalId: event.approvalId, taskId: event.taskId, tool: event.tool, input: event.input, reason: event.reason };
+        setApprovals((items) => upsertApproval(items, approval));
       }
-      if (event.type === "approval.resolved" && event.approvalId) setApprovals((items) => items.filter((item) => item.approvalId !== event.approvalId));
+      if (event.type === "approval.resolved" && event.approvalId) {
+        setApprovals((items) => items.filter((item) => item.approvalId !== event.approvalId));
+      }
     };
     return () => socket.close();
-  }, [activeTask]);
+  }, []);
+
+  useEffect(() => {
+    if (!busy || !activeTask) return;
+
+    let cancelled = false;
+    const recoverApprovals = async () => {
+      try {
+        const response = await fetch(`${API}/api/approvals`);
+        if (!response.ok || cancelled) return;
+        const body = await response.json() as { approvals?: Approval[] };
+        const matching = (body.approvals ?? []).filter((approval) => approval.taskId === activeTask);
+        if (cancelled) return;
+        setApprovals((items) => matching.reduce(upsertApproval, items.filter((item) => item.taskId !== activeTask)));
+      } catch {
+        // The WebSocket remains the primary event path; polling only recovers missed approval events.
+      }
+    };
+
+    void recoverApprovals();
+    const interval = window.setInterval(() => void recoverApprovals(), 750);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeTask, busy]);
 
   const status = useMemo(() => {
     if (!health.model) return "Server offline";
@@ -46,11 +78,12 @@ export default function App() {
   }, [health]);
 
   async function resolveApproval(approvalId: string, approved: boolean) {
-    await fetch(`${API}/api/approvals/${encodeURIComponent(approvalId)}`, {
+    const response = await fetch(`${API}/api/approvals/${encodeURIComponent(approvalId)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ approved })
     });
+    if (!response.ok) throw new Error(`Approval request failed with ${response.status}`);
     setApprovals((items) => items.filter((item) => item.approvalId !== approvalId));
   }
 
@@ -59,6 +92,7 @@ export default function App() {
     const value = prompt.trim();
     if (!value || busy) return;
     const taskId = crypto.randomUUID();
+    activeTaskRef.current = taskId;
     setPrompt("");
     setBusy(true);
     setActiveTask(taskId);
@@ -76,6 +110,7 @@ export default function App() {
       const text = body.text ?? body.error ?? "BORG returned no output.";
       setMessages((items) => [...items, { id: crypto.randomUUID(), role: "assistant", text }]);
     } finally {
+      activeTaskRef.current = null;
       setBusy(false);
       setActiveTask(null);
       setApprovals([]);
@@ -107,7 +142,7 @@ export default function App() {
           ) : (
             <div className="messages">
               {messages.map((message) => <article key={message.id} className={`message ${message.role}`}><span>{message.role === "user" ? "YOU" : "BORG"}</span><pre>{message.text}</pre></article>)}
-              {approvals.map((approval) => <article key={approval.approvalId} className="approvalCard"><span>APPROVAL REQUIRED</span><strong>{approval.tool}</strong>{approval.reason && <p>{approval.reason}</p>}<pre>{JSON.stringify(approval.input, null, 2)}</pre><div><button onClick={() => resolveApproval(approval.approvalId, false)}>Deny</button><button className="approve" onClick={() => resolveApproval(approval.approvalId, true)}>Allow</button></div></article>)}
+              {approvals.map((approval) => <article key={approval.approvalId} className="approvalCard"><span>APPROVAL REQUIRED</span><strong>{approval.tool}</strong>{approval.reason && <p>{approval.reason}</p>}<pre>{JSON.stringify(approval.input, null, 2)}</pre><div><button onClick={() => void resolveApproval(approval.approvalId, false)}>Deny</button><button className="approve" onClick={() => void resolveApproval(approval.approvalId, true)}>Allow</button></div></article>)}
               {busy && approvals.length === 0 && <div className="thinking">BORG is working…</div>}
             </div>
           )}
