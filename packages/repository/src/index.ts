@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -59,7 +59,8 @@ export class RepositoryTools {
   async ensureLocalCodeExcluded(): Promise<void> {
     const gitDirectory = inside(this.root, ".git");
     try {
-      await access(gitDirectory);
+      const gitInfo = await stat(gitDirectory);
+      if (!gitInfo.isDirectory()) return;
     } catch {
       return;
     }
@@ -108,19 +109,19 @@ export class RepositoryTools {
       // Fall through to ripgrep for non-Git workspaces.
     }
 
-    const result = await exec("rg", ["--files", "--hidden", "-g", "!.git", "-g", "!node_modules", "-g", "!.localcode"], this.root);
+    const result = await exec("rg", ["--files", "--hidden", "-g", "!.git", "-g", "!node_modules", "-g", "!.localcode/**"], this.root);
     if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `rg --files exited ${result.code}`);
     return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
 
   async searchFiles(query: string): Promise<string[]> {
-    const result = await exec("rg", ["--files-with-matches", "--hidden", "--glob", "!.git", "--glob", "!node_modules", "--glob", "!.localcode", "--max-filesize", "1M", query, "."], this.root);
+    const result = await exec("rg", ["--files-with-matches", "--hidden", "--glob", "!.git", "--glob", "!node_modules", "--glob", "!.localcode/**", "--max-filesize", "1M", "--", query, "."], this.root);
     if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `ripgrep exited ${result.code}`);
     return result.stdout.split(/\r?\n/).map((line) => line.replace(/^\.\//, "").trim()).filter(Boolean);
   }
 
   async searchText(query: string): Promise<string> {
-    const result = await exec("rg", ["--line-number", "--hidden", "--glob", "!.git", "--glob", "!node_modules", "--glob", "!.localcode", "--max-filesize", "1M", query, "."], this.root);
+    const result = await exec("rg", ["--line-number", "--hidden", "--glob", "!.git", "--glob", "!node_modules", "--glob", "!.localcode/**", "--max-filesize", "1M", "--", query, "."], this.root);
     if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `ripgrep exited ${result.code}`);
     return result.stdout;
   }
