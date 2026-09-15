@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AgentTurnSchema, type AgentEvent, type ApprovalRequest, type ModelAdapter, type PermissionMode } from "@borg/core";
+import { AgentTurnSchema, type AgentEvent, type AgentTurn, type ApprovalRequest, type ModelAdapter, type PermissionMode } from "@borg/core";
 import { permissionDecision } from "@borg/permissions";
 import { WorkspaceTools } from "@borg/tools";
 
@@ -70,7 +70,7 @@ export class BorgAgent {
 
     for (let turnIndex = 0; turnIndex < maxTurns; turnIndex += 1) {
       const raw = await this.model.generate({ system: SYSTEM_PROMPT, prompt: `${transcript}\n\nReturn the next JSON action.` });
-      let turn;
+      let turn: AgentTurn;
       try {
         turn = AgentTurnSchema.parse(extractJson(raw));
       } catch (error) {
@@ -87,7 +87,7 @@ export class BorgAgent {
       if (decision === "approval") {
         const approvalId = randomUUID();
         const request: ApprovalRequest = { approvalId, taskId: options.taskId, tool: turn.tool, input: turn.input, reason: turn.reason };
-        options.onEvent({ type: "approval.required", taskId: options.taskId, at: now(), ...request });
+        options.onEvent({ type: "approval.required", at: now(), ...request });
         const approved = await options.requestApproval(request);
         options.onEvent({ type: "approval.resolved", taskId: options.taskId, at: now(), approvalId, approved });
         if (!approved) {
