@@ -1,12 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdirSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
+import { WorkspaceContext } from "@borg/context";
 import { ChatRequestSchema, type AgentEvent, type ApprovalRequest } from "@borg/core";
 import { OllamaModel } from "@borg/models";
 import { BorgAgent } from "@borg/orchestrator";
 import { TaskStore } from "@borg/persistence";
+import { RepositoryTools } from "@borg/repository";
 import { OpenCodeRuntime } from "@borg/runtime-opencode";
 
 const host = process.env.BORG_HOST ?? "127.0.0.1";
@@ -57,19 +60,59 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
+async function workspaceRoot(value: unknown): Promise<string> {
+  const root = resolve(typeof value === "string" && value.trim() ? value.trim() : process.cwd());
+  const info = await stat(root);
+  if (!info.isDirectory()) throw new Error(`Workspace root is not a directory: ${root}`);
+  return root;
+}
+
 const server = createServer(async (request, response) => {
   try {
     if (request.method === "OPTIONS") return json(response, 204, null);
+    const url = new URL(request.url ?? "/", `http://${host}:${port}`);
 
-    if (request.method === "GET" && request.url === "/api/health") {
+    if (request.method === "GET" && url.pathname === "/api/health") {
       const [modelAvailable, runtimeAvailable] = await Promise.all([model.available(), runtime.available()]);
       return json(response, 200, { ok: true, model: { id: model.id, name: model.model, available: modelAvailable }, runtime: { id: runtime.id, available: runtimeAvailable } });
     }
 
-    if (request.method === "GET" && request.url === "/api/tasks") return json(response, 200, { tasks: store.listTasks() });
-    if (request.method === "GET" && request.url === "/api/approvals") return json(response, 200, { approvals: approvals.list() });
+    if (request.method === "GET" && url.pathname === "/api/tasks") return json(response, 200, { tasks: store.listTasks() });
+    if (request.method === "GET" && url.pathname === "/api/approvals") return json(response, 200, { approvals: approvals.list() });
 
-    const approvalMatch = request.url?.match(/^\/api\/approvals\/([^/]+)$/);
+    if (request.method === "POST" && url.pathname === "/api/workspace/index") {
+      const body = await readJson(request) as { workspaceRoot?: unknown };
+      const root = await workspaceRoot(body.workspaceRoot);
+      const context = new WorkspaceContext(root);
+      const summary = await context.buildIndex(true);
+      return json(response, 200, { root, summary });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/workspace/files") {
+      const root = await workspaceRoot(url.searchParams.get("root"));
+      const context = new WorkspaceContext(root);
+      const files = await context.listFiles();
+      return json(response, 200, { root, files: files.slice(0, 2000) });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/workspace/diff") {
+      const root = await workspaceRoot(url.searchParams.get("root"));
+      const repository = new RepositoryTools(root);
+      const [status, diff] = await Promise.all([repository.gitStatus(), repository.gitDiff()]);
+      return json(response, 200, { root, status, diff });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace/undo") {
+      const body = await readJson(request) as { workspaceRoot?: unknown; taskId?: unknown };
+      if (typeof body.taskId !== "string" || !body.taskId.trim()) return json(response, 400, { error: "taskId is required" });
+      const root = await workspaceRoot(body.workspaceRoot);
+      const repository = new RepositoryTools(root);
+      const restored = await repository.restoreLastCheckpoint(body.taskId);
+      const [status, diff] = await Promise.all([repository.gitStatus(), repository.gitDiff()]);
+      return json(response, 200, { restored, status, diff });
+    }
+
+    const approvalMatch = url.pathname.match(/^\/api\/approvals\/([^/]+)$/);
     if (request.method === "POST" && approvalMatch) {
       const body = await readJson(request) as { approved?: unknown };
       if (typeof body.approved !== "boolean") return json(response, 400, { error: "approved must be boolean" });
@@ -77,13 +120,13 @@ const server = createServer(async (request, response) => {
       return json(response, found ? 200 : 404, found ? { ok: true } : { error: "Approval not found" });
     }
 
-    if (request.method === "POST" && request.url === "/api/chat") {
+    if (request.method === "POST" && url.pathname === "/api/chat") {
       const parsed = ChatRequestSchema.safeParse(await readJson(request));
       if (!parsed.success) return json(response, 400, { error: parsed.error.flatten() });
 
       const taskId = parsed.data.taskId ?? randomUUID();
-      const workspaceRoot = resolve(parsed.data.workspaceRoot ?? process.cwd());
-      store.createTask({ id: taskId, prompt: parsed.data.prompt, workspaceRoot, permissionMode: parsed.data.permissionMode });
+      const root = await workspaceRoot(parsed.data.workspaceRoot);
+      store.createTask({ id: taskId, prompt: parsed.data.prompt, workspaceRoot: root, permissionMode: parsed.data.permissionMode });
       store.setStatus(taskId, "running");
       emit({ type: "task.started", taskId, at: new Date().toISOString(), prompt: parsed.data.prompt });
 
@@ -91,7 +134,7 @@ const server = createServer(async (request, response) => {
         const text = await agent.run({
           taskId,
           prompt: parsed.data.prompt,
-          workspaceRoot,
+          workspaceRoot: root,
           permissionMode: parsed.data.permissionMode,
           onEvent: emit,
           requestApproval: (approval) => approvals.request(approval)

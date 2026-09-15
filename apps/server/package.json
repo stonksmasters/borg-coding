@@ -11,10 +11,12 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@borg/context": "workspace:*",
     "@borg/core": "workspace:*",
     "@borg/models": "workspace:*",
     "@borg/orchestrator": "workspace:*",
     "@borg/persistence": "workspace:*",
+    "@borg/repository": "workspace:*",
     "@borg/runtime-opencode": "workspace:*",
     "ws": "^8.18.3"
   },

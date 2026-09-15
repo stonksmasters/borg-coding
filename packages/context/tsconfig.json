@@ -2,10 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "outDir": "dist", "rootDir": "src", "declaration": true, "composite": true },
   "references": [
-    { "path": "../context" },
     { "path": "../core" },
-    { "path": "../permissions" },
-    { "path": "../tools" }
+    { "path": "../repository" }
   ],
   "include": ["src/**/*.ts"]
 }

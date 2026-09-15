@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { AgentTurnSchema, type AgentEvent, type AgentTurn, type ApprovalRequest, type ModelAdapter, type PermissionMode } from "@borg/core";
+import { WorkspaceContext } from "@borg/context";
+import { AgentTurnSchema, type AgentEvent, type AgentTurn, type ApprovalRequest, type ModelAdapter, type PermissionMode, type ToolName } from "@borg/core";
 import { permissionDecision } from "@borg/permissions";
 import { WorkspaceTools } from "@borg/tools";
 
 const SYSTEM_PROMPT = `You are BORG, a local-first autonomous software engineering agent.
 You work against one selected repository. Inspect before editing, make minimal coherent changes, and verify before declaring implementation work complete.
+Repository context has already been selected for you using the current task. Treat AGENTS.md and other repository instructions as authoritative.
 
 You MUST respond with exactly one JSON object and no markdown.
 
 To use a tool:
-{"type":"tool","tool":"read_file|write_file|search_text|git_status|git_diff|run_command|verify","input":{...},"reason":"short reason"}
+{"type":"tool","tool":"read_file|write_file|search_text|git_status|git_diff|run_command|verify|undo_last_change","input":{...},"reason":"short reason"}
 
 When the task is complete:
 {"type":"final","text":"concise user-facing result"}
@@ -22,8 +24,11 @@ Tool inputs:
 - git_diff: {}
 - run_command: {"command":"program","args":["arg1","arg2"]}
 - verify: {}
+- undo_last_change: {}
 
-Never invent tool results. Never claim a command or edit happened until its tool result says it happened. After edits, inspect git_diff and run verify before finalizing whenever practical.`;
+Never invent tool results. Never claim a command or edit happened until its tool result says it happened. A checkpoint is created automatically before every write_file. After edits, inspect git_diff and run verify before finalizing whenever practical.`;
+
+const diffMutatingTools = new Set<ToolName>(["write_file", "run_command", "undo_last_change"]);
 
 function now(): string {
   return new Date().toISOString();
@@ -62,9 +67,17 @@ export class BorgAgent {
   constructor(private readonly model: ModelAdapter) {}
 
   async run(options: AgentRunOptions): Promise<string> {
-    const tools = new WorkspaceTools(options.workspaceRoot);
-    let transcript = `USER TASK:\n${options.prompt}\n\nWORKSPACE:\n${options.workspaceRoot}\n\nPERMISSION MODE:\n${options.permissionMode}`;
-    const maxTurns = options.maxTurns ?? 16;
+    const context = new WorkspaceContext(options.workspaceRoot);
+    options.onEvent({ type: "agent.status", taskId: options.taskId, at: now(), message: "Indexing repository context" });
+    const taskContext = await context.buildTaskContext(options.prompt);
+    options.onEvent({ type: "workspace.indexed", taskId: options.taskId, at: now(), summary: taskContext.summary, selectedFiles: taskContext.selectedFiles });
+
+    const tools = new WorkspaceTools(options.workspaceRoot, {
+      taskId: options.taskId,
+      onOutput: (tool, stream, text) => options.onEvent({ type: "tool.output", taskId: options.taskId, at: now(), tool, stream, text })
+    });
+    let transcript = `USER TASK:\n${options.prompt}\n\nWORKSPACE:\n${options.workspaceRoot}\n\nPERMISSION MODE:\n${options.permissionMode}\n\nRANKED REPOSITORY CONTEXT:\n${taskContext.text}`;
+    const maxTurns = options.maxTurns ?? 20;
 
     options.onEvent({ type: "agent.status", taskId: options.taskId, at: now(), message: "Inspecting task" });
 
@@ -100,6 +113,18 @@ export class BorgAgent {
       try {
         const result = await tools.execute(turn);
         options.onEvent({ type: "tool.completed", taskId: options.taskId, at: now(), tool: turn.tool, output: result, ok: true });
+        if (turn.tool === "verify") {
+          const verification = result as { ok?: boolean };
+          options.onEvent({ type: "verification.completed", taskId: options.taskId, at: now(), ok: verification.ok === true, output: compact(result, 12000) });
+        }
+        if (diffMutatingTools.has(turn.tool)) {
+          try {
+            const state = await tools.diffState();
+            options.onEvent({ type: "diff.updated", taskId: options.taskId, at: now(), ...state });
+          } catch {
+            // A non-Git workspace can still use file and command tools.
+          }
+        }
         transcript += `\n\nACTION:\n${JSON.stringify(turn)}\n\nTOOL RESULT:\n${compact(result)}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

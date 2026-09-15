@@ -7,7 +7,7 @@ export type PermissionMode = z.infer<typeof PermissionModeSchema>;
 export const taskStatuses = ["queued", "running", "completed", "failed", "cancelled"] as const;
 export type TaskStatus = (typeof taskStatuses)[number];
 
-export const toolNames = ["read_file", "write_file", "search_text", "git_status", "git_diff", "run_command", "verify"] as const;
+export const toolNames = ["read_file", "write_file", "search_text", "git_status", "git_diff", "run_command", "verify", "undo_last_change"] as const;
 export const ToolNameSchema = z.enum(toolNames);
 export type ToolName = z.infer<typeof ToolNameSchema>;
 
@@ -21,6 +21,16 @@ export interface TaskRecord {
   updatedAt: string;
 }
 
+export interface WorkspaceIndexSummary {
+  root: string;
+  generatedAt: string;
+  fileCount: number;
+  instructionFiles: string[];
+  docFiles: string[];
+  metadataFiles: string[];
+  languages: Record<string, number>;
+}
+
 export interface ApprovalRequest {
   approvalId: string;
   taskId: string;
@@ -32,9 +42,12 @@ export interface ApprovalRequest {
 export type AgentEvent =
   | { type: "task.started"; taskId: string; at: string; prompt: string }
   | { type: "agent.status"; taskId: string; at: string; message: string }
+  | { type: "workspace.indexed"; taskId: string; at: string; summary: WorkspaceIndexSummary; selectedFiles: string[] }
   | { type: "model.token"; taskId: string; at: string; text: string }
   | { type: "tool.started"; taskId: string; at: string; tool: ToolName; input: Record<string, unknown> }
+  | { type: "tool.output"; taskId: string; at: string; tool: ToolName; stream: "stdout" | "stderr" | "info"; text: string }
   | { type: "tool.completed"; taskId: string; at: string; tool: ToolName; output: unknown; ok: boolean }
+  | { type: "diff.updated"; taskId: string; at: string; status: string; diff: string }
   | { type: "approval.required"; taskId: string; at: string; approvalId: string; tool: ToolName; input: Record<string, unknown>; reason?: string }
   | { type: "approval.resolved"; taskId: string; at: string; approvalId: string; approved: boolean }
   | { type: "verification.completed"; taskId: string; at: string; ok: boolean; output: string }
