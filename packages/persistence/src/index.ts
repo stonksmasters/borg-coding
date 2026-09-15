@@ -49,7 +49,7 @@ export class TaskStore {
     return rows.map((row) => ({
       id: row.id!,
       prompt: row.prompt!,
-      workspaceRoot: row.workspace_root,
+      workspaceRoot: row.workspace_root ?? null,
       permissionMode: row.permission_mode as PermissionMode,
       status: row.status as TaskStatus,
       createdAt: row.created_at!,
