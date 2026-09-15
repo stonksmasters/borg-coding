@@ -16,8 +16,13 @@ interface AgentOptions {
   emit(event: Record<string, unknown>): void;
 }
 
-async function runTurn(options: AgentOptions): Promise<OllamaMessage> {
-  const toolDefinitions = options.tools.toolDefinitions(options.mode);
+const MAX_TOOL_ROUNDS = 10;
+const MAX_TOOL_CALLS = 20;
+const MAX_TOOL_OUTPUT_CHARACTERS = 120_000;
+const MAX_IDENTICAL_CALLS = 2;
+
+async function runTurn(options: AgentOptions, allowTools = true): Promise<OllamaMessage> {
+  const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode) : [];
   const response = await fetch(`${options.ollamaUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -61,7 +66,11 @@ export async function runOllamaAgent(options: AgentOptions) {
 
   let answer = "";
   let usedTools = false;
-  for (let round = 0; round < 5; round += 1) {
+  let toolCallCount = 0;
+  let toolOutputCharacters = 0;
+  let budgetReason = "tool-round limit";
+  const repeatedCalls = new Map<string, number>();
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     const assistant = await runTurn(options);
     options.messages.push(assistant);
     answer += assistant.content;
@@ -73,11 +82,29 @@ export async function runOllamaAgent(options: AgentOptions) {
 
     usedTools = true;
     for (const call of calls) {
+      if (toolCallCount >= MAX_TOOL_CALLS || toolOutputCharacters >= MAX_TOOL_OUTPUT_CHARACTERS) {
+        budgetReason = toolCallCount >= MAX_TOOL_CALLS ? "tool-call limit" : "tool-output limit";
+        break;
+      }
+      toolCallCount += 1;
+      const signature = `${call.function.name}:${JSON.stringify(call.function.arguments)}`;
+      const repeats = (repeatedCalls.get(signature) ?? 0) + 1;
+      repeatedCalls.set(signature, repeats);
       options.emit({ type: "tool.started", tool: call.function.name, input: call.function.arguments });
+      if (repeats > MAX_IDENTICAL_CALLS) {
+        const message = "Blocked repeated identical tool call. Use the results already provided.";
+        options.emit({ type: "tool.failed", tool: call.function.name, message });
+        options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message }) });
+        continue;
+      }
       try {
         const output = await options.tools.execute(call, options.mode);
         options.emit({ type: "tool.completed", tool: call.function.name, output });
-        options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify(output).slice(0, 30_000) });
+        const serialized = JSON.stringify(output);
+        const remaining = Math.max(0, MAX_TOOL_OUTPUT_CHARACTERS - toolOutputCharacters);
+        const content = serialized.slice(0, Math.min(30_000, remaining));
+        toolOutputCharacters += content.length;
+        options.messages.push({ role: "tool", tool_name: call.function.name, content });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Tool failed";
         options.emit({ type: "tool.failed", tool: call.function.name, message });
@@ -88,6 +115,13 @@ export async function runOllamaAgent(options: AgentOptions) {
       options.emit({ type: "stage.updated", stage: "Discovery", status: "complete" });
       options.emit({ type: "stage.updated", stage: "Plan", status: "active" });
     }
+    if (toolCallCount >= MAX_TOOL_CALLS || toolOutputCharacters >= MAX_TOOL_OUTPUT_CHARACTERS) break;
   }
-  throw new Error("Tool loop reached its five-round safety limit.");
+
+  options.emit({ type: "runtime.notice", message: `Discovery reached its ${budgetReason}; BORG is completing the plan from collected evidence.` });
+  options.messages.push({ role: "system", content: "The bounded discovery budget is exhausted. Do not request more tools. Give the best complete answer or plan possible from the evidence already collected, and clearly identify any remaining uncertainty." });
+  const finalAssistant = await runTurn(options, false);
+  answer += finalAssistant.content;
+  options.emit({ type: "stage.updated", stage: "Plan", status: "complete" });
+  return { answer, usedTools, budgetExhausted: true };
 }

@@ -169,6 +169,8 @@ export function BorgWorkspace() {
     } else if (event.type === "runtime.waiting") {
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: event.message ?? "Agent runtime is waiting." }]);
       setTaskState("WAITING FOR RUNTIME");
+    } else if (event.type === "runtime.notice") {
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: event.message ?? "BORG is completing the task from the evidence collected so far." }]);
     } else if (event.type === "runtime.failed" || event.type === "stream.failed") {
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: event.message ?? "The live stream stopped unexpectedly." }]);
       setTaskState("FAILED");
