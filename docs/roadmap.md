@@ -13,22 +13,27 @@
 - [x] approval protocol for ASK / EDIT / AGENT
 - [x] first inspect → tool → result → final orchestration loop
 - [x] approval cards and live tool activity in the UI
-- [ ] patch/diff review UI
-- [ ] terminal output streaming
-- [ ] repository indexing and `.localcode/` memory
-- [ ] context ranking and symbol-aware retrieval
+- [x] workspace selection with recent repositories
+- [x] repository indexing cached in `.localcode/index.json`
+- [x] AGENTS.md / docs / project metadata discovery
+- [x] task-ranked source context instead of whole-repository prompting
+- [x] live command and verification output streaming
+- [x] working-tree diff review panel
+- [x] automatic pre-edit checkpoints and task-level undo
+- [ ] per-file / per-hunk accept and reject controls
+- [ ] symbol-aware retrieval and language-server integration
 
 ## Alpha 0.2 — coding agent
 
 - planner / implementer / reviewer / verifier roles
 - symbol-aware search and language-server integration
-- checkpoints and undo
-- persistent project instructions from `AGENTS.md`
-- context ranking instead of whole-repository prompting
+- checkpoint history browser and named checkpoints
+- persistent project memory beyond structural indexing
+- richer diff review with per-file and per-hunk actions
 
 ## Later
 
-- desktop wrapper
+- desktop wrapper with native folder picker
 - sandboxed command execution
 - multiple local model profiles
 - vision model support
