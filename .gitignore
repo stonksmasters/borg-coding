@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vite/
+*.log
+.env
+.env.*
+!.env.example
+.localcode/*.sqlite
+.localcode/*.sqlite-*
+.DS_Store
