@@ -7,6 +7,9 @@
     { "path": "./packages/models" },
     { "path": "./packages/persistence" },
     { "path": "./packages/runtime-opencode" },
+    { "path": "./packages/permissions" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/orchestrator" },
     { "path": "./apps/server" }
   ]
 }

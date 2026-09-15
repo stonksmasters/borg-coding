@@ -13,6 +13,7 @@
   "dependencies": {
     "@borg/core": "workspace:*",
     "@borg/models": "workspace:*",
+    "@borg/orchestrator": "workspace:*",
     "@borg/persistence": "workspace:*",
     "@borg/runtime-opencode": "workspace:*",
     "ws": "^8.18.3"

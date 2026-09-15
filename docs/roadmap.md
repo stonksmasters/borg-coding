@@ -10,11 +10,13 @@
 - [x] verification runner
 - [x] SQLite task/event persistence
 - [x] minimal local server and Codex-style task UI
-- [ ] approval protocol for ASK / EDIT / AGENT
+- [x] approval protocol for ASK / EDIT / AGENT
+- [x] first inspect → tool → result → final orchestration loop
+- [x] approval cards and live tool activity in the UI
 - [ ] patch/diff review UI
-- [ ] terminal tool streaming
+- [ ] terminal output streaming
 - [ ] repository indexing and `.localcode/` memory
-- [ ] orchestrated inspect → plan → modify → verify loop
+- [ ] context ranking and symbol-aware retrieval
 
 ## Alpha 0.2 — coding agent
 

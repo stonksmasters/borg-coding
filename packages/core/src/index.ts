@@ -7,6 +7,10 @@ export type PermissionMode = z.infer<typeof PermissionModeSchema>;
 export const taskStatuses = ["queued", "running", "completed", "failed", "cancelled"] as const;
 export type TaskStatus = (typeof taskStatuses)[number];
 
+export const toolNames = ["read_file", "write_file", "search_text", "git_status", "git_diff", "run_command", "verify"] as const;
+export const ToolNameSchema = z.enum(toolNames);
+export type ToolName = z.infer<typeof ToolNameSchema>;
+
 export interface TaskRecord {
   id: string;
   prompt: string;
@@ -17,11 +21,22 @@ export interface TaskRecord {
   updatedAt: string;
 }
 
+export interface ApprovalRequest {
+  approvalId: string;
+  taskId: string;
+  tool: ToolName;
+  input: Record<string, unknown>;
+  reason?: string;
+}
+
 export type AgentEvent =
   | { type: "task.started"; taskId: string; at: string; prompt: string }
+  | { type: "agent.status"; taskId: string; at: string; message: string }
   | { type: "model.token"; taskId: string; at: string; text: string }
-  | { type: "tool.started"; taskId: string; at: string; tool: string; input: unknown }
-  | { type: "tool.completed"; taskId: string; at: string; tool: string; output: unknown; ok: boolean }
+  | { type: "tool.started"; taskId: string; at: string; tool: ToolName; input: Record<string, unknown> }
+  | { type: "tool.completed"; taskId: string; at: string; tool: ToolName; output: unknown; ok: boolean }
+  | { type: "approval.required"; taskId: string; at: string; approvalId: string; tool: ToolName; input: Record<string, unknown>; reason?: string }
+  | { type: "approval.resolved"; taskId: string; at: string; approvalId: string; approved: boolean }
   | { type: "verification.completed"; taskId: string; at: string; ok: boolean; output: string }
   | { type: "task.completed"; taskId: string; at: string; text: string }
   | { type: "task.failed"; taskId: string; at: string; error: string };
@@ -49,6 +64,22 @@ export interface CodingRuntime {
   available(): Promise<boolean>;
   run(prompt: string, cwd: string, onOutput?: (chunk: string) => void): Promise<RuntimeResult>;
 }
+
+export const ToolTurnSchema = z.object({
+  type: z.literal("tool"),
+  tool: ToolNameSchema,
+  input: z.record(z.string(), z.unknown()).default({}),
+  reason: z.string().optional()
+});
+
+export const FinalTurnSchema = z.object({
+  type: z.literal("final"),
+  text: z.string()
+});
+
+export const AgentTurnSchema = z.discriminatedUnion("type", [ToolTurnSchema, FinalTurnSchema]);
+export type AgentTurn = z.infer<typeof AgentTurnSchema>;
+export type ToolTurn = z.infer<typeof ToolTurnSchema>;
 
 export const ChatRequestSchema = z.object({
   taskId: z.string().min(1).optional(),
