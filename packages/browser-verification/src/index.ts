@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import axe from "axe-core";
@@ -113,7 +113,7 @@ interface BrowserSession {
 }
 
 interface ManagedServer {
-  child: ChildProcessWithoutNullStreams;
+  child: ChildProcess;
   command: string;
   args: string[];
   url: string;
@@ -289,7 +289,7 @@ function browserLaunchOptions() {
   return { headless: true as const, channel };
 }
 
-async function waitForLoopback(url: string, timeoutSeconds: number, child: ChildProcessWithoutNullStreams) {
+async function waitForLoopback(url: string, timeoutSeconds: number, child: ChildProcess) {
   const deadline = Date.now() + timeoutSeconds * 1_000;
   let lastError = "No response";
   while (Date.now() < deadline) {
@@ -303,7 +303,7 @@ async function waitForLoopback(url: string, timeoutSeconds: number, child: Child
   throw new Error(`Development server did not become ready: ${lastError}`);
 }
 
-async function stopProcess(child: ChildProcessWithoutNullStreams) {
+async function stopProcess(child: ChildProcess) {
   if (child.exitCode !== null) return;
   if (process.platform === "win32" && child.pid) {
     await new Promise<void>((resolveStop) => execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true }, () => resolveStop()));
@@ -365,8 +365,8 @@ export class BrowserVerification {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const server: ManagedServer = { child, command, args, url, stdout: "", stderr: "" };
-    child.stdout.on("data", (chunk) => { server.stdout = boundedLog(server.stdout, chunk); });
-    child.stderr.on("data", (chunk) => { server.stderr = boundedLog(server.stderr, chunk); });
+    child.stdout?.on("data", (chunk) => { server.stdout = boundedLog(server.stdout, chunk); });
+    child.stderr?.on("data", (chunk) => { server.stderr = boundedLog(server.stderr, chunk); });
     this.servers.set(context.taskId, server);
     try {
       await waitForLoopback(url, numberInRange(input.timeout_seconds, 30, 1, MAX_STARTUP_SECONDS), child);
