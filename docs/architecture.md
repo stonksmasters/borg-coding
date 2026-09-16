@@ -1,19 +1,51 @@
 # Architecture
 
-BORG Coding is split into five layers:
+BORG Code is a single local-first application with one root npm dependency graph. The source is split into layers for maintainability, but `apps/` and `packages/` are not independent package-manager workspaces.
 
-1. **Workspace UI** — task threads, model/runtime status, permission mode, diffs, terminal and verification output.
-2. **Agent server** — owns sessions, event streaming, orchestration and permission enforcement.
-3. **Tool layer** — repository reads/writes, ripgrep, Git, shell and verification.
-4. **Runtime/model adapters** — Ollama and OpenCode are initial implementations, not permanent dependencies.
-5. **Persistence/context** — SQLite task history plus `.localcode/` repository memory.
+## Canonical runtime
 
-The event stream is the contract between server and UI. A task emits lifecycle events such as `task.started`, `model.token`, `tool.started`, `tool.completed`, `verification.completed`, `task.completed`, and `task.failed`.
+1. **Workspace UI (`app/`)** — operator task thread, repository access, permission mode, approvals, implementation progress, review findings, and delivery controls.
+2. **Local agent server (`apps/server/src/`)** — owns task orchestration, Ollama interaction, state transitions, approval handling, deterministic verification, repair loops, fresh-context review, and delivery endpoints.
+3. **Core domain (`packages/core/src/`)** — runtime-validated task/finding/event contracts and legal task-state transitions.
+4. **Repository boundary (`packages/repository/src/`)** — approved repository access, isolated Git worktrees, and non-destructive delivery.
+5. **Tool broker (`packages/tools/src/`)** — permissioned repository inspection, TypeScript/JavaScript structural navigation, bounded worktree mutation/commands, Git inspection, verification, and optional public-web tools.
+6. **Language intelligence (`packages/language-intelligence/src/`)** — provider-neutral symbol navigation. The TypeScript Language Service is the first provider and is filtered through the same approved-repository access policy as normal reads.
+7. **Runtime adapters (`packages/runtimes/src/`)** — local model/runtime boundaries, including OpenCode compatibility.
+8. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, and finding history.
+9. **Desktop host (`apps/desktop/`)** — Windows launcher, tray lifecycle, and WebView2 shell around the same local application.
+
+## Task flow
+
+The canonical mutation flow is:
+
+`DISCOVERING → PLANNING → AWAITING_APPROVAL → IMPLEMENTING → VERIFYING → REVIEWING → DELIVERY_READY → DELIVERING → COMPLETE`
+
+Verification or independent review may schedule a bounded repair loop back to `IMPLEMENTING`. Exhausted repair attempts become `BLOCKED`; failed runtime operations become `FAILED`.
+
+All code mutation happens in an approved task-scoped detached worktree under `.borg/worktrees`. Delivery exports a patch or creates a commit in that isolated worktree; it never silently mutates the user's primary checkout.
 
 ## Permission modes
 
-- **ASK** — reading is automatic; edits and commands require approval.
-- **EDIT** — file edits are allowed; risky commands still require approval.
-- **AGENT** — BORG can edit and execute within the configured workspace policy.
+- **ASK** — conversational mode; repository and mutation tools are unavailable.
+- **PLAN** — approved repository inspection and structural code navigation are available, but mutation is not.
+- **EDIT** — after explicit plan approval, BORG can mutate the isolated worktree and run bounded verification tools.
+- **AGENT** — same isolation boundary as EDIT with the broadest configured autonomous tool access.
 
-Permission checks belong in orchestration/tool execution, never in the frontend alone.
+Permission enforcement belongs in the server/tool layer, never only in the frontend.
+
+## Repository intelligence
+
+Literal search and structural navigation are complementary. For TypeScript/JavaScript, BORG can search symbols, inspect file outlines, resolve definitions/references/implementations, request quick information, and run language-service diagnostics. These tools are read-only and may only index paths accepted by `AccessController`.
+
+## Verification contract
+
+The root project is the source of truth for local and CI verification:
+
+```text
+npm run install:ci
+npm run check
+npm test
+npm run build
+```
+
+GitHub Actions runs that same contract. Package-level build scripts and the former pnpm workspace pipeline are intentionally not part of the canonical architecture.
