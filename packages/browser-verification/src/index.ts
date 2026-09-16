@@ -17,6 +17,8 @@ export interface BrowserTaskContext {
 
 export interface BrowserEvidenceReport {
   taskId: string;
+  passed: boolean;
+  issues: string[];
   url: string | null;
   viewport: { width: number; height: number } | null;
   capturedAt: string;
@@ -646,17 +648,34 @@ export class BrowserVerification {
   private updateReport(taskId: string, context: BrowserTaskContext) {
     const session = this.sessions.get(taskId);
     const server = this.servers.get(taskId);
+    const dom = session?.dom ?? [];
+    const consoleEvidence = session?.console ?? [];
+    const network = session?.network ?? [];
+    const accessibility = session?.accessibility ?? null;
+    const screenshots = session?.screenshots ?? [];
+    const responsive = session?.responsive ?? [];
+    const accessibilityResults = [accessibility, ...responsive.map((item) => item.accessibility)].filter((item): item is AccessibilityEvidence => item !== null);
+    const blockingA11y = accessibilityResults.flatMap((item) => item.violations).filter((item) => item.impact === "critical" || item.impact === "serious").length;
+    const issues: string[] = [];
+    if (!dom.length) issues.push("No DOM evidence was captured.");
+    if (!screenshots.length) issues.push("No screenshot evidence was captured.");
+    const consoleErrors = consoleEvidence.filter((item) => item.level === "error").length;
+    if (consoleErrors) issues.push(`${consoleErrors} browser console error(s) were captured.`);
+    if (network.length) issues.push(`${network.length} failed, blocked, or HTTP-error request(s) were captured.`);
+    if (blockingA11y) issues.push(`${blockingA11y} serious or critical accessibility violation(s) were captured.`);
     const report: BrowserEvidenceReport = {
       taskId,
+      passed: issues.length === 0,
+      issues,
       url: session?.page.url() ?? server?.url ?? null,
       viewport: session?.viewport ?? null,
       capturedAt: new Date().toISOString(),
-      dom: session?.dom ?? [],
-      console: session?.console ?? [],
-      network: session?.network ?? [],
-      accessibility: session?.accessibility ?? null,
-      screenshots: session?.screenshots ?? [],
-      responsive: session?.responsive ?? [],
+      dom,
+      console: consoleEvidence,
+      network,
+      accessibility,
+      screenshots,
+      responsive,
       server: server ? this.serverEvidence(server) : this.reports.get(taskId)?.server ?? null,
     };
     this.reports.set(taskId, report);
