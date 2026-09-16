@@ -14,6 +14,7 @@ type Stage = { name: string; status: StageStatus };
 type Message = { id: string; role: "user" | "assistant" | "system" | "tool"; text: string };
 type AccessConfig = { repositoryPath: string | null; documents: string[]; repositoryName: string | null; documentNames: string[]; updatedAt: string };
 type ToolConfig = { internetEnabled: boolean; webFetchAvailable: boolean; webSearchAvailable: boolean; apiKeyInMemory: boolean; updatedAt: string };
+type LanguageProviderStatus = { id: string; label: string; available: boolean; enabled: boolean; command?: string; reason?: string; extensions: readonly string[] };
 type VisionConfig = { enabled: boolean; provider: "ollama"; model: string; maxScreenshots: number; timeoutMs: number; blockingSeverity: "medium" | "high" | "critical"; configured: boolean; updatedAt: string };
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
 type Finding = { severity: string; title: string; description: string; file?: string; line?: number };
@@ -103,6 +104,7 @@ export function BorgWorkspace() {
   const [accessError, setAccessError] = useState("");
   const [savingAccess, setSavingAccess] = useState(false);
   const [toolConfig, setToolConfig] = useState<ToolConfig | null>(null);
+  const [languageProviders, setLanguageProviders] = useState<LanguageProviderStatus[]>([]);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [internetDraft, setInternetDraft] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState("");
@@ -150,6 +152,18 @@ export function BorgWorkspace() {
       setInternetDraft(result.tools.internetEnabled);
     }).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!accessConfig?.repositoryPath) {
+      setLanguageProviders([]);
+      return;
+    }
+    fetch("http://127.0.0.1:4311/api/language-intelligence").then(async (response) => {
+      if (!response.ok) throw new Error("Unable to load language providers");
+      const result = await response.json() as { providers: LanguageProviderStatus[] };
+      setLanguageProviders(result.providers);
+    }).catch(() => setLanguageProviders([]));
+  }, [accessConfig?.repositoryPath]);
 
   useEffect(() => {
     fetch("http://127.0.0.1:4311/api/vision").then(async (response) => {
@@ -541,6 +555,14 @@ export function BorgWorkspace() {
             <label className="block"><span className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-300"><KeyRound className="size-4" />Ollama API key</span><Input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder={toolConfig?.apiKeyInMemory ? "Key loaded in memory" : "Paste key to enable web search"} disabled={!internetDraft} className="border-white/10 bg-white/4 text-slate-100" /><span className="mt-2 block text-xs text-slate-500">Optional for page fetching; required for web search. The key stays in server memory and is never saved to disk or task history.</span></label>
             <div className="grid grid-cols-2 gap-3 text-sm"><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Page fetch</p><p className={internetDraft ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{internetDraft ? "Available" : "Disabled"}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Web search</p><p className={toolConfig?.webSearchAvailable || apiKeyDraft ? "mt-1 text-[#a7ff4f]" : "mt-1 text-amber-200/80"}>{toolConfig?.webSearchAvailable || apiKeyDraft ? "Available" : "Needs API key"}</p></div></div> 
             <div className="border-t border-white/8 pt-5">
+              <p className="text-sm font-medium text-slate-200">Language intelligence</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Local, read-only symbol navigation and diagnostics. External servers are never installed automatically.</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {languageProviders.length ? languageProviders.map((provider) => <div key={provider.id} className="rounded-md border border-white/8 p-3 text-sm"><div className="flex items-center justify-between gap-3"><span className="truncate text-slate-300">{provider.label}</span><span className={provider.available ? "text-[#a7ff4f]" : "text-amber-200/80"}>{provider.available ? "Ready" : provider.enabled ? "Missing" : "Disabled"}</span></div>{provider.reason ? <p className="mt-1 text-xs leading-4 text-slate-500">{provider.reason}</p> : null}</div>) : <p className="text-xs text-slate-500">Approve a repository to inspect local providers.</p>}
+              </div>
+            </div>
+
+            <div className="border-t border-white/8 pt-5">
               <div className="flex items-center justify-between gap-4"><div><p className="text-sm font-medium text-slate-200">Local vision review</p><p className="mt-1 text-xs leading-5 text-slate-500">Review captured browser screenshots locally through Ollama. Screenshot contents are treated as untrusted evidence.</p></div><Switch checked={visionEnabledDraft} onCheckedChange={setVisionEnabledDraft} aria-label="Enable local vision review" /></div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <label className="block"><span className="mb-2 block text-xs font-medium text-slate-400">Vision model</span><Input value={visionModelDraft} onChange={(event) => setVisionModelDraft(event.target.value)} disabled={!visionEnabledDraft} placeholder="qwen3-vl:8b" className="border-white/10 bg-white/4 text-slate-100" /></label>
@@ -603,7 +625,7 @@ export function BorgWorkspace() {
             <div className="border-b border-white/8 p-5"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Runtime</p><div className="mt-4 flex items-center gap-3"><div className={`grid size-9 place-items-center rounded-lg border ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8" : "border-white/8 bg-white/4"}`}><Bot className={`size-4 ${runtimeConnected ? "text-[#a7ff4f]" : "text-slate-500"}`} /></div><div><p className="text-sm font-medium">Ollama direct</p><p className={`text-xs ${runtimeConnected ? "text-[#a7ff4f]/80" : "text-amber-200/80"}`}>{runtimeConnected ? modelName : "Not connected"}</p></div></div></div>
             <div className="space-y-6 p-5">
               <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Access scope</p><button onClick={() => setAccessOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Repository</dt><dd className="truncate text-right text-slate-300">{accessConfig?.repositoryName ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Documents</dt><dd className="text-slate-300">{accessConfig?.documents.length ?? 0}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Permission</dt><dd className="text-slate-300">Approval gated</dd></div><div className="flex justify-between"><dt className="text-slate-500">Task state</dt><dd className="text-slate-300">{taskState}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Active role</dt><dd className="capitalize text-slate-300">{activeRole?.role ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Discipline</dt><dd className="capitalize text-slate-300">{activeRole?.discipline ?? disciplineRoute?.primary ?? "Unrouted"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Packs</dt><dd className="truncate text-right text-slate-300" title={activePacks.map((pack) => `${pack.id}@${pack.version}`).join(", ")}>{activePacks.length ? activePacks.map((pack) => pack.discipline).join(", ") : "None"}</dd></div></dl></div>
-              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Tools</p><button onClick={() => setToolsOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between"><dt className="text-slate-500">Internet</dt><dd className={toolConfig?.internetEnabled ? "text-[#a7ff4f]" : "text-slate-500"}>{toolConfig?.internetEnabled ? "Allowed" : "Disabled"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Page fetch</dt><dd className="text-slate-300">{toolConfig?.webFetchAvailable ? "Available" : "Off"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Web search</dt><dd className="text-slate-300">{toolConfig?.webSearchAvailable ? "Available" : "Needs key"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Vision review</dt><dd className={visionConfig?.enabled ? "truncate text-[#a7ff4f]" : "text-slate-500"}>{visionConfig?.enabled ? visionConfig.model : "Disabled"}</dd></div></dl></div>
+              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Tools</p><button onClick={() => setToolsOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between"><dt className="text-slate-500">Internet</dt><dd className={toolConfig?.internetEnabled ? "text-[#a7ff4f]" : "text-slate-500"}>{toolConfig?.internetEnabled ? "Allowed" : "Disabled"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Page fetch</dt><dd className="text-slate-300">{toolConfig?.webFetchAvailable ? "Available" : "Off"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Web search</dt><dd className="text-slate-300">{toolConfig?.webSearchAvailable ? "Available" : "Needs key"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Vision review</dt><dd className={visionConfig?.enabled ? "truncate text-[#a7ff4f]" : "text-slate-500"}>{visionConfig?.enabled ? visionConfig.model : "Disabled"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Language providers</dt><dd className="text-slate-300">{languageProviders.filter((provider) => provider.available).length}/{languageProviders.length || 5} ready</dd></div></dl></div>
               <div><p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Protection</p><div className="rounded-lg border border-white/8 bg-white/[0.025] p-3 text-sm leading-5 text-slate-400">Only the approved repository map, key project files, and listed documents are sent to Ollama. Secret-like files are excluded.</div></div>
             </div>
           </aside>

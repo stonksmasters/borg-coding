@@ -523,6 +523,13 @@ createServer((request, response) => {
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid vision settings" }));
     return;
   }
+  if (request.method === "GET" && request.url === "/api/language-intelligence") {
+    try {
+      return send(response, 200, { providers: tools.languageStatus() });
+    } catch (error) {
+      return send(response, 409, { error: error instanceof Error ? error.message : "Language intelligence is unavailable" });
+    }
+  }
   if (request.method === "GET" && request.url === "/api/tools") return send(response, 200, { tools: tools.status() });
   if (request.method === "POST" && request.url === "/api/tools") {
     void readJson(request).then((input) => send(response, 200, { tools: tools.configure(input) }))
