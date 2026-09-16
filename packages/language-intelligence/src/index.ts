@@ -68,11 +68,13 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
   readonly root: string;
   private readonly service: ts.LanguageService;
   private readonly compilerOptions: ts.CompilerOptions;
+  private readonly options: LanguageIntelligenceOptions;
   private fileNames: string[] = [];
   private projectVersion = 0;
 
-  constructor(root: string, private readonly options: LanguageIntelligenceOptions = {}) {
+  constructor(root: string, options: LanguageIntelligenceOptions = {}) {
     this.root = resolve(root);
+    this.options = options;
     this.compilerOptions = this.loadCompilerOptions();
     this.refreshFiles();
 
