@@ -2,7 +2,17 @@ import { createServer, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { createApproval, createTask, type Task, type TaskState } from "../../../packages/core/src/contracts.ts";
+import {
+  createApproval,
+  createHandoff,
+  createRoleAssignment,
+  createTask,
+  type EngineeringDiscipline,
+  type EngineeringRole,
+  type RoleAssignment,
+  type Task,
+  type TaskState,
+} from "../../../packages/core/src/contracts.ts";
 import { assertTransition } from "../../../packages/core/src/state-machine.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
@@ -12,6 +22,7 @@ import { ToolBroker, type PermissionMode } from "../../../packages/tools/src/too
 import type { BrowserEvidenceReport } from "../../../packages/browser-verification/src/index.ts";
 import { OllamaVisionProvider, VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
 import { VisualRegressionService, type BaselineCandidate, type VisualRegressionReport } from "../../../packages/visual-regression/src/index.ts";
+import { DisciplineRouter, TeamPolicyService, roleCapabilities } from "../../../packages/orchestration/src/index.ts";
 import { runFreshReview } from "./fresh-review.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 
@@ -28,6 +39,8 @@ const ollamaUrl = process.env.BORG_OLLAMA_URL ?? "http://127.0.0.1:11434";
 const model = process.env.BORG_MODEL ?? "qwen3-coder:30b";
 const vision = new VisionReviewService(resolve(".borg/vision.json"), new OllamaVisionProvider(ollamaUrl));
 const visualRegression = new VisualRegressionService();
+const disciplineRouter = new DisciplineRouter();
+const teamPolicies = new TeamPolicyService();
 const maxRepairAttempts = 2;
 
 function send(response: ServerResponse, status: number, body: unknown) {
@@ -67,6 +80,74 @@ function transitionTask(task: Task, state: TaskState, emit?: (event: Record<stri
   appendTaskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: state });
   emit?.({ type: "task.state", taskId: task.id, state });
   return updated;
+}
+
+
+function beginRole(
+  task: Task,
+  role: EngineeringRole,
+  discipline: EngineeringDiscipline,
+  selectedModel: string | null,
+  emit?: (event: Record<string, unknown>) => void,
+): RoleAssignment {
+  const assignment = createRoleAssignment({
+    id: randomUUID(),
+    taskId: task.id,
+    role,
+    discipline,
+    model: selectedModel,
+    attempt: task.attempts,
+    capabilities: roleCapabilities(role),
+  });
+  tasks.saveRoleAssignment(assignment);
+  appendTaskEvent(task.id, "ROLE_ASSIGNMENT_STARTED", { assignment });
+  emit?.({ type: "role.started", assignment });
+  return assignment;
+}
+
+function finishRole(
+  assignment: RoleAssignment,
+  status: "completed" | "failed",
+  emit?: (event: Record<string, unknown>) => void,
+): RoleAssignment {
+  const completed = { ...assignment, status, completedAt: new Date().toISOString() };
+  tasks.saveRoleAssignment(completed);
+  appendTaskEvent(assignment.taskId, "ROLE_ASSIGNMENT_COMPLETED", { assignment: completed });
+  emit?.({ type: "role.completed", assignment: completed });
+  return completed;
+}
+
+function recordHandoff(input: {
+  task: Task;
+  fromRole: EngineeringRole;
+  toRole: EngineeringRole;
+  objective: string;
+  constraints?: string[];
+  repositoryContext?: string[];
+  completedWork?: string[];
+  changedFiles?: string[];
+  evidence?: string[];
+  openRisks?: string[];
+  requiredNextAction: string;
+}, emit?: (event: Record<string, unknown>) => void) {
+  const handoff = createHandoff({
+    id: randomUUID(),
+    taskId: input.task.id,
+    fromRole: input.fromRole,
+    toRole: input.toRole,
+    objective: input.objective,
+    constraints: input.constraints ?? [],
+    repositoryContext: input.repositoryContext ?? [],
+    completedWork: input.completedWork ?? [],
+    changedFiles: input.changedFiles ?? [],
+    evidence: input.evidence ?? [],
+    openRisks: input.openRisks ?? [],
+    requiredNextAction: input.requiredNextAction,
+  });
+  tasks.saveHandoff(handoff);
+  appendTaskEvent(input.task.id, "ROLE_HANDOFF_RECORDED", { handoff });
+  emit?.({ type: "role.handoff", handoff });
+  return handoff;
 }
 
 function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
