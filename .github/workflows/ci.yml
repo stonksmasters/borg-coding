@@ -33,3 +33,26 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Install locked root dependencies
+        run: npm run install:ci
+
+      - name: Build and exercise desktop lifecycle
+        run: npm run desktop:lifecycle-test
