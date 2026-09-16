@@ -192,7 +192,11 @@ createServer((request, response) => {
         response.end();
         return;
       }
-    })().catch((error) => {
+    })().catch(async (error) => {
+      await Promise.allSettled([
+        tools.execute({ function: { name: "browser_close", arguments: {} } }, "agent", taskContext),
+        tools.execute({ function: { name: "browser_server_stop", arguments: {} } }, "agent", taskContext),
+      ]);
       const message = error instanceof Error ? error.message : "Approved implementation failed";
       appendTaskEvent(taskId, "IMPLEMENTATION_FAILED", { message });
       if (task && !["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "FAILED", emit);
