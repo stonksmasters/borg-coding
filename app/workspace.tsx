@@ -17,6 +17,21 @@ type ToolConfig = { internetEnabled: boolean; webFetchAvailable: boolean; webSea
 type VisionConfig = { enabled: boolean; provider: "ollama"; model: string; maxScreenshots: number; timeoutMs: number; blockingSeverity: "medium" | "high" | "critical"; configured: boolean; updatedAt: string };
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
 type Finding = { severity: string; title: string; description: string; file?: string; line?: number };
+type BaselineCandidate = { profileId: string; screenshotName: string; candidatePath: string; candidateSha256: string; width: number; height: number };
+type VisualRegressionReport = {
+  status: "disabled" | "pass" | "regression" | "missing-baseline" | "dimension-mismatch" | "failed";
+  passed: boolean;
+  summary: string;
+  comparisons: {
+    profileId: string;
+    screenshotName: string;
+    status: "pass" | "regression" | "missing-baseline" | "dimension-mismatch" | "failed";
+    candidate: { path: string; sha256: string; width: number; height: number };
+    changedPixels: number;
+    changedPixelRatio: number;
+    diff: { path: string; sha256: string } | null;
+  }[];
+};
 type StreamEvent = {
   type: string;
   task?: { id: string; request: string; state: string };
@@ -33,6 +48,7 @@ type StreamEvent = {
   diff?: { stdout?: string };
   review?: { verdict: "pass" | "repair"; summary: string; findings: Finding[] };
   visionReview?: { status: "disabled" | "pass" | "repair" | "inconclusive" | "unavailable" | "failed"; summary: string; model: string; findings: Finding[]; screenshots: { path: string; sha256: string; width: number; height: number }[] };
+  visualRegression?: VisualRegressionReport;
   attempt?: number;
   maximum?: number;
 };
@@ -95,6 +111,9 @@ export function BorgWorkspace() {
   const [deliveryReady, setDeliveryReady] = useState(false);
   const [deliveryBusy, setDeliveryBusy] = useState(false);
   const [deliveryError, setDeliveryError] = useState("");
+  const [baselineCandidates, setBaselineCandidates] = useState<BaselineCandidate[]>([]);
+  const [baselineBusy, setBaselineBusy] = useState(false);
+  const [baselineError, setBaselineError] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [stages, setStages] = useState<Stage[]>(emptyStages);
   const abortRef = useRef<AbortController | null>(null);
@@ -212,6 +231,20 @@ export function BorgWorkspace() {
       const review = event.visionReview;
       const findings = review.findings.length ? `\n\n${review.findings.map((finding) => `${finding.severity.toUpperCase()}: ${finding.title}${finding.file ? ` (${finding.file})` : ""}\n${finding.description}`).join("\n\n")}` : "\n\nNo visual findings.";
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Local vision review [${review.status.toUpperCase()}] · ${review.model}: ${review.summary}${findings}` }]);
+    } else if (event.type === "visual.regression.completed" && event.visualRegression) {
+      const report = event.visualRegression;
+      const details = report.comparisons.length
+        ? `\n\n${report.comparisons.map((comparison) => `${comparison.profileId}/${comparison.screenshotName}: ${comparison.status} · ${comparison.changedPixels} changed pixel(s) (${(comparison.changedPixelRatio * 100).toFixed(3)}%)`).join("\n")}`
+        : "";
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Visual regression [${report.status.toUpperCase()}]: ${report.summary}${details}` }]);
+      setBaselineCandidates(report.comparisons.filter((comparison) => comparison.status === "missing-baseline").map((comparison) => ({
+        profileId: comparison.profileId,
+        screenshotName: comparison.screenshotName,
+        candidatePath: comparison.candidate.path,
+        candidateSha256: comparison.candidate.sha256,
+        width: comparison.candidate.width,
+        height: comparison.candidate.height,
+      })));
     } else if (event.type === "delivery.ready") {
       setDeliveryReady(true);
       setTaskState("DELIVERY_READY");
@@ -342,6 +375,30 @@ export function BorgWorkspace() {
     }
   }
 
+  async function acceptVisualBaselines() {
+    if (!activeTaskId || !baselineCandidates.length || baselineBusy) return;
+    setBaselineBusy(true);
+    setBaselineError("");
+    try {
+      const response = await fetch(`http://127.0.0.1:4311/api/tasks/${encodeURIComponent(activeTaskId)}/visual-baselines`, {
+        method: "POST",
+        body: JSON.stringify({ candidates: baselineCandidates }),
+      });
+      const result = await response.json() as { accepted?: { path: string }[]; error?: string };
+      if (!response.ok || !result.accepted) throw new Error(result.error ?? "Unable to accept visual baselines");
+      setMessages((current) => [...current, {
+        id: crypto.randomUUID(),
+        role: "system",
+        text: `Accepted ${result.accepted!.length} visual baseline(s) into the isolated worktree. They will be included in delivery.`,
+      }]);
+      setBaselineCandidates([]);
+    } catch (error) {
+      setBaselineError(error instanceof Error ? error.message : "Unable to accept visual baselines");
+    } finally {
+      setBaselineBusy(false);
+    }
+  }
+
   async function deliverTask(method: "export" | "commit") {
     if (!activeTaskId || !deliveryReady || deliveryBusy) return;
     setDeliveryBusy(true);
@@ -371,6 +428,8 @@ export function BorgWorkspace() {
     setApproval(null);
     setDeliveryReady(false);
     setDeliveryError("");
+    setBaselineCandidates([]);
+    setBaselineError("");
     setApprovalError("");
     setStages(emptyStages.map((stage) => ({ ...stage })));
     setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", text: cleanPrompt }]);
@@ -497,9 +556,11 @@ export function BorgWorkspace() {
 
             <div className="border-t border-white/8 bg-[#0a0d12]/90 p-4 sm:px-8">
               {approval?.status === "REQUESTED" && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3"><div><p className="text-sm font-medium text-amber-100">Plan approval required</p><p className="mt-1 text-xs text-slate-400">Approval creates an isolated Git worktree, enables bounded mutation tools for this task, and runs deterministic verification.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideApproval("reject")} className="border-white/10 bg-transparent text-slate-300 hover:bg-white/5 hover:text-white">Reject</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideApproval("approve")} className="bg-[#a7ff4f] text-[#071007] hover:bg-[#b5ff6f]"><Check className="size-4" />{approvalBusy ? "Preparing…" : "Approve plan"}</Button></div></div>}
+              {deliveryReady && baselineCandidates.length > 0 && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-300/20 bg-sky-300/5 p-3"><div><p className="text-sm font-medium text-sky-100">Visual baselines need approval</p><p className="mt-1 text-xs text-slate-400">{baselineCandidates.length} screenshot candidate(s) have no baseline. Acceptance copies their verified bytes into <code>.localcode/visual-baselines</code>; BORG never updates baselines automatically.</p></div><Button type="button" disabled={baselineBusy} onClick={() => void acceptVisualBaselines()} className="bg-sky-200 text-sky-950 hover:bg-sky-100"><Check className="size-4" />{baselineBusy ? "Accepting…" : "Accept baselines"}</Button></div>}
               {deliveryReady && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Verified changes ready</p><p className="mt-1 text-xs text-slate-400">Export a portable patch or create a commit in the isolated worktree. Neither option changes your main checkout.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={deliveryBusy} onClick={() => void deliverTask("export")} className="border-white/10 bg-transparent text-slate-300 hover:bg-white/5 hover:text-white"><Download className="size-4" />Export patch</Button><Button type="button" disabled={deliveryBusy} onClick={() => void deliverTask("commit")} className="bg-[#a7ff4f] text-[#071007] hover:bg-[#b5ff6f]"><GitCommit className="size-4" />{deliveryBusy ? "Delivering…" : "Commit changes"}</Button></div></div>}
               {approvalError && <p className="mx-auto mb-3 max-w-3xl rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{approvalError}</p>}
               {deliveryError && <p className="mx-auto mb-3 max-w-3xl rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{deliveryError}</p>}
+              {baselineError && <p className="mx-auto mb-3 max-w-3xl rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{baselineError}</p>}
               <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); const value = request; setRequest(""); void runTask(value); }}><Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={streaming} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder="Ask BORG to inspect, plan, or change this repository…" aria-label="Task request" /><Button type={streaming ? "button" : "submit"} onClick={() => { if (streaming) { abortRef.current?.abort(); setStreaming(false); setTaskState("CANCELLED"); } }} className={`h-11 gap-2 px-5 ${streaming ? "bg-white/8 text-slate-200 hover:bg-white/12" : "bg-[#a7ff4f] text-[#071007] hover:bg-[#b5ff6f]"}`}>{streaming ? <CircleStop className="size-4" /> : <Play className="size-4" />}{actionLabel}</Button></form>
             </div>
           </section>

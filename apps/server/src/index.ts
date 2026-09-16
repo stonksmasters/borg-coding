@@ -11,6 +11,7 @@ import { WorktreeDelivery } from "../../../packages/repository/src/worktree-deli
 import { ToolBroker, type PermissionMode } from "../../../packages/tools/src/tool-broker.ts";
 import type { BrowserEvidenceReport } from "../../../packages/browser-verification/src/index.ts";
 import { OllamaVisionProvider, VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
+import { VisualRegressionService, type BaselineCandidate, type VisualRegressionReport } from "../../../packages/visual-regression/src/index.ts";
 import { runFreshReview } from "./fresh-review.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 
@@ -26,6 +27,7 @@ const port = Number(process.env.BORG_PORT ?? 4311);
 const ollamaUrl = process.env.BORG_OLLAMA_URL ?? "http://127.0.0.1:11434";
 const model = process.env.BORG_MODEL ?? "qwen3-coder:30b";
 const vision = new VisionReviewService(resolve(".borg/vision.json"), new OllamaVisionProvider(ollamaUrl));
+const visualRegression = new VisualRegressionService();
 const maxRepairAttempts = 2;
 
 function send(response: ServerResponse, status: number, body: unknown) {
@@ -147,9 +149,18 @@ createServer((request, response) => {
         task = transitionTask(task, "VERIFYING", emit);
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         emit({ type: "tool.started", tool: "verification_run", input: { profile: "quick" } });
-        const verification = await tools.execute({ function: { name: "verification_run", arguments: { profile: "quick" } } }, "agent", taskContext) as { passed?: boolean; results?: unknown[]; browserEvidence?: BrowserEvidenceReport | null };
+        const verification = await tools.execute({ function: { name: "verification_run", arguments: { profile: "quick" } } }, "agent", taskContext) as {
+          passed?: boolean;
+          results?: unknown[];
+          browserEvidence?: BrowserEvidenceReport | null;
+          visualRegression?: VisualRegressionReport;
+        };
         emit({ type: "tool.completed", tool: "verification_run", output: verification });
         appendTaskEvent(taskId, "VERIFICATION_COMPLETED", { verification, attempt: task.attempts });
+        if (verification.visualRegression && verification.visualRegression.status !== "disabled") {
+          appendTaskEvent(taskId, "VISUAL_REGRESSION_COMPLETED", { report: verification.visualRegression, attempt: task.attempts });
+          emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
+        }
         if (!verification.passed) {
           emit({ type: "stage.updated", stage: "Verification", status: "failed" });
           if (task.attempts >= maxRepairAttempts) {
@@ -241,6 +252,32 @@ createServer((request, response) => {
       emit({ type: "runtime.failed", message });
       response.end();
     });
+    return;
+  }
+  const baselineRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/visual-baselines$/);
+  if (request.method === "POST" && baselineRoute) {
+    const taskId = decodeURIComponent(baselineRoute[1]);
+    void readJson(request).then((input) => {
+      const task = tasks.findTask(taskId);
+      const approval = tasks.findApproval(taskId);
+      if (!task || !approval?.worktreePath || approval.status !== "APPROVED") return send(response, 404, { error: "Approved task worktree not found." });
+      if (task.state !== "DELIVERY_READY") return send(response, 409, { error: "Visual baselines may be accepted only after verification and review complete." });
+      if (!Array.isArray(input.candidates) || !input.candidates.length || input.candidates.length > 16) return send(response, 400, { error: "Provide between one and sixteen baseline candidates." });
+      const worktreePath = approval.worktreePath;
+      const accepted = input.candidates.map((value) => {
+        const candidate = value as Record<string, unknown>;
+        return visualRegression.acceptBaseline(worktreePath, {
+          profileId: String(candidate.profileId ?? ""),
+          screenshotName: String(candidate.screenshotName ?? ""),
+          candidatePath: String(candidate.candidatePath ?? ""),
+          candidateSha256: String(candidate.candidateSha256 ?? ""),
+          width: Number(candidate.width),
+          height: Number(candidate.height),
+        } satisfies BaselineCandidate);
+      });
+      appendTaskEvent(taskId, "VISUAL_BASELINES_ACCEPTED", { accepted });
+      return send(response, 200, { accepted });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to accept visual baselines" }));
     return;
   }
   const approvalRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/approval$/);
