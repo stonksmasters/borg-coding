@@ -15,10 +15,12 @@
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --experimental-sqlite --test tests/*.test.ts",
     "server:dev": "node --experimental-strip-types --experimental-sqlite apps/server/src/index.ts",
+    "gateway:dev": "node --experimental-strip-types --experimental-sqlite apps/server/src/desktop-gateway.ts",
     "desktop:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-desktop.ps1",
     "desktop:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1",
     "desktop:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-desktop.ps1",
-    "desktop:sync": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-desktop.ps1 -Apply"
+    "desktop:sync": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-desktop.ps1 -Apply",
+    "desktop:lifecycle-test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-desktop-lifecycle.ps1"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -46,12 +48,12 @@
     "recharts": "^3.8.0",
     "sonner": "^2.0.8",
     "tailwind-merge": "3.6.0",
-    "vaul": "^1.1.2",
+    "vaul": "^2.0.8",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
-    "@cloudflare/workers-types": "4.20260515.1",
+    "@shadcn/react": "^0.3.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
