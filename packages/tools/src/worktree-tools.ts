@@ -279,14 +279,18 @@ export class WorktreeTools {
   private async verify(root: string, profileId: string, context: TaskToolContext) {
     if (profileId !== "quick" && profileId !== "full") throw new Error("Unknown verification profile.");
     const profile = this.profiles(root).find((item) => item.id === profileId)!;
-    if (!profile.commands.length) throw new Error(`No commands were detected for the ${profileId} verification profile.`);
     const results: (CommandResult & { label: string })[] = [];
-    for (const command of profile.commands) {
-      const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS);
-      results.push({ ...result, label: command.label });
-      if (result.exitCode !== 0 || result.timedOut) break;
+    let browserEvidence = this.browser.latest(context.taskId);
+    try {
+      if (!profile.commands.length) throw new Error(`No commands were detected for the ${profileId} verification profile.`);
+      for (const command of profile.commands) {
+        const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS);
+        results.push({ ...result, label: command.label });
+        if (result.exitCode !== 0 || result.timedOut) break;
+      }
+    } finally {
+      browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
-    const browserEvidence = await this.browser.closeForVerification(context.taskId);
     return { profile: profileId, passed: results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut), results, browserEvidence };
   }
 }
