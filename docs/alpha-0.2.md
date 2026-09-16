@@ -31,9 +31,24 @@ Override discovery when needed:
 4. `browser_capture` records DOM, screenshot, console, network, and accessibility evidence.
 5. `browser_responsive` repeats evidence collection across bounded viewports.
 6. `verification_run` closes browser resources and attaches the latest report to deterministic command evidence.
-7. Fresh review receives the verified diff, deterministic results, and browser report.
+7. When enabled, local vision review validates screenshot provenance, sends at most three screenshots plus bounded browser evidence to the configured provider, and returns structured findings.
+8. Blocking vision findings enter the same bounded repair loop; unavailable, failed, or inconclusive review is recorded explicitly without being represented as a pass.
+9. Fresh review receives the verified diff, deterministic results, browser report, and any non-blocking vision findings.
+
+## Local vision review
+
+Local vision review is disabled by default and uses the provider-neutral `VisionReviewProvider` contract. The first adapter calls the local Ollama API with `qwen3-vl:8b` by default.
+
+Configure it in the Tools dialog or through `POST /api/vision`:
+
+- `enabled` — opt in to screenshot review.
+- `model` — local Ollama vision model tag.
+- `maxScreenshots` — bounded from one to six; defaults to three.
+- `timeoutMs` — bounded request timeout; defaults to 180 seconds.
+- `blockingSeverity` — minimum finding severity that requests repair; defaults to high.
+
+Before image bytes leave the worktree boundary, BORG verifies that every screenshot resolves inside the approved worktree, rejects symlink escapes, enforces a 12 MB limit, and recomputes the SHA-256 digest recorded by browser verification. The reviewer receives screenshots as untrusted evidence and produces schema-constrained findings with screenshot path/hash, viewport, confidence, and selector provenance.
 
 ## Remaining Alpha 0.2 work
 
-- Optional local vision-model review over the screenshot evidence contract.
 - Named visual baselines and pixel/regression comparison profiles.

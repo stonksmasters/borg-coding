@@ -14,6 +14,7 @@ type Stage = { name: string; status: StageStatus };
 type Message = { id: string; role: "user" | "assistant" | "system" | "tool"; text: string };
 type AccessConfig = { repositoryPath: string | null; documents: string[]; repositoryName: string | null; documentNames: string[]; updatedAt: string };
 type ToolConfig = { internetEnabled: boolean; webFetchAvailable: boolean; webSearchAvailable: boolean; apiKeyInMemory: boolean; updatedAt: string };
+type VisionConfig = { enabled: boolean; provider: "ollama"; model: string; maxScreenshots: number; timeoutMs: number; blockingSeverity: "medium" | "high" | "critical"; configured: boolean; updatedAt: string };
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
 type Finding = { severity: string; title: string; description: string; file?: string; line?: number };
 type StreamEvent = {
@@ -31,6 +32,7 @@ type StreamEvent = {
   status?: { stdout?: string };
   diff?: { stdout?: string };
   review?: { verdict: "pass" | "repair"; summary: string; findings: Finding[] };
+  visionReview?: { status: "disabled" | "pass" | "repair" | "inconclusive" | "unavailable" | "failed"; summary: string; model: string; findings: Finding[]; screenshots: { path: string; sha256: string; width: number; height: number }[] };
   attempt?: number;
   maximum?: number;
 };
@@ -80,6 +82,10 @@ export function BorgWorkspace() {
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [savingTools, setSavingTools] = useState(false);
   const [toolsError, setToolsError] = useState("");
+  const [visionConfig, setVisionConfig] = useState<VisionConfig | null>(null);
+  const [visionEnabledDraft, setVisionEnabledDraft] = useState(false);
+  const [visionModelDraft, setVisionModelDraft] = useState("qwen3-vl:8b");
+  const [visionBlockingDraft, setVisionBlockingDraft] = useState<"medium" | "high" | "critical">("high");
   const [activeTitle, setActiveTitle] = useState("New task");
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskState, setTaskState] = useState("READY");
@@ -110,6 +116,17 @@ export function BorgWorkspace() {
       const result = await response.json() as { tools: ToolConfig };
       setToolConfig(result.tools);
       setInternetDraft(result.tools.internetEnabled);
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    fetch("http://127.0.0.1:4311/api/vision").then(async (response) => {
+      if (!response.ok) throw new Error("Unable to load vision settings");
+      const result = await response.json() as { vision: VisionConfig };
+      setVisionConfig(result.vision);
+      setVisionEnabledDraft(result.vision.enabled);
+      setVisionModelDraft(result.vision.model);
+      setVisionBlockingDraft(result.vision.blockingSeverity);
     }).catch(() => undefined);
   }, []);
 
@@ -189,6 +206,12 @@ export function BorgWorkspace() {
       const review = event.review;
       const findings = review.findings.length ? `\n\n${review.findings.map((finding) => `${finding.severity.toUpperCase()}: ${finding.title}${finding.file ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})` : ""}\n${finding.description}`).join("\n\n")}` : "\n\nNo findings.";
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Fresh review: ${review.summary}${findings}` }]);
+    } else if (event.type === "vision.review.started") {
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "tool", text: "Reviewing captured screenshots with the configured local vision model." }]);
+    } else if (event.type === "vision.review.completed" && event.visionReview) {
+      const review = event.visionReview;
+      const findings = review.findings.length ? `\n\n${review.findings.map((finding) => `${finding.severity.toUpperCase()}: ${finding.title}${finding.file ? ` (${finding.file})` : ""}\n${finding.description}`).join("\n\n")}` : "\n\nNo visual findings.";
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Local vision review [${review.status.toUpperCase()}] · ${review.model}: ${review.summary}${findings}` }]);
     } else if (event.type === "delivery.ready") {
       setDeliveryReady(true);
       setTaskState("DELIVERY_READY");
@@ -252,10 +275,16 @@ export function BorgWorkspace() {
     setSavingTools(true);
     setToolsError("");
     try {
-      const response = await fetch("http://127.0.0.1:4311/api/tools", { method: "POST", body: JSON.stringify({ internetEnabled: internetDraft, ollamaApiKey: apiKeyDraft }) });
-      const result = await response.json() as { tools?: ToolConfig; error?: string };
-      if (!response.ok || !result.tools) throw new Error(result.error ?? "Unable to save tool settings");
-      setToolConfig(result.tools);
+      const [toolResponse, visionResponse] = await Promise.all([
+        fetch("http://127.0.0.1:4311/api/tools", { method: "POST", body: JSON.stringify({ internetEnabled: internetDraft, ollamaApiKey: apiKeyDraft }) }),
+        fetch("http://127.0.0.1:4311/api/vision", { method: "POST", body: JSON.stringify({ enabled: visionEnabledDraft, model: visionModelDraft, blockingSeverity: visionBlockingDraft }) }),
+      ]);
+      const toolResult = await toolResponse.json() as { tools?: ToolConfig; error?: string };
+      const visionResult = await visionResponse.json() as { vision?: VisionConfig; error?: string };
+      if (!toolResponse.ok || !toolResult.tools) throw new Error(toolResult.error ?? "Unable to save tool settings");
+      if (!visionResponse.ok || !visionResult.vision) throw new Error(visionResult.error ?? "Unable to save vision settings");
+      setToolConfig(toolResult.tools);
+      setVisionConfig(visionResult.vision);
       setApiKeyDraft("");
       setToolsOpen(false);
     } catch (error) { setToolsError(error instanceof Error ? error.message : "Unable to save tool settings"); }
@@ -417,7 +446,15 @@ export function BorgWorkspace() {
           <div className="space-y-5 py-2">
             <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.025] p-4"><div><p className="text-sm font-medium text-slate-200">Public internet</p><p className="mt-1 text-xs leading-5 text-slate-500">Allow safe page fetching and, with a key, current web search. Local and private network addresses remain blocked.</p></div><Switch checked={internetDraft} onCheckedChange={setInternetDraft} aria-label="Allow public internet tools" /></div>
             <label className="block"><span className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-300"><KeyRound className="size-4" />Ollama API key</span><Input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder={toolConfig?.apiKeyInMemory ? "Key loaded in memory" : "Paste key to enable web search"} disabled={!internetDraft} className="border-white/10 bg-white/4 text-slate-100" /><span className="mt-2 block text-xs text-slate-500">Optional for page fetching; required for web search. The key stays in server memory and is never saved to disk or task history.</span></label>
-            <div className="grid grid-cols-2 gap-3 text-sm"><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Page fetch</p><p className={internetDraft ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{internetDraft ? "Available" : "Disabled"}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Web search</p><p className={toolConfig?.webSearchAvailable || apiKeyDraft ? "mt-1 text-[#a7ff4f]" : "mt-1 text-amber-200/80"}>{toolConfig?.webSearchAvailable || apiKeyDraft ? "Available" : "Needs API key"}</p></div></div>
+            <div className="grid grid-cols-2 gap-3 text-sm"><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Page fetch</p><p className={internetDraft ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{internetDraft ? "Available" : "Disabled"}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Web search</p><p className={toolConfig?.webSearchAvailable || apiKeyDraft ? "mt-1 text-[#a7ff4f]" : "mt-1 text-amber-200/80"}>{toolConfig?.webSearchAvailable || apiKeyDraft ? "Available" : "Needs API key"}</p></div></div> 
+            <div className="border-t border-white/8 pt-5">
+              <div className="flex items-center justify-between gap-4"><div><p className="text-sm font-medium text-slate-200">Local vision review</p><p className="mt-1 text-xs leading-5 text-slate-500">Review captured browser screenshots locally through Ollama. Screenshot contents are treated as untrusted evidence.</p></div><Switch checked={visionEnabledDraft} onCheckedChange={setVisionEnabledDraft} aria-label="Enable local vision review" /></div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="block"><span className="mb-2 block text-xs font-medium text-slate-400">Vision model</span><Input value={visionModelDraft} onChange={(event) => setVisionModelDraft(event.target.value)} disabled={!visionEnabledDraft} placeholder="qwen3-vl:8b" className="border-white/10 bg-white/4 text-slate-100" /></label>
+                <label className="block"><span className="mb-2 block text-xs font-medium text-slate-400">Blocking severity</span><Select value={visionBlockingDraft} onValueChange={(value) => setVisionBlockingDraft(value as "medium" | "high" | "critical")} disabled={!visionEnabledDraft}><SelectTrigger className="w-full border-white/10 bg-white/4 text-slate-200"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem><SelectItem value="critical">Critical</SelectItem></SelectContent></Select></label>
+              </div>
+              <p className="mt-3 text-xs text-slate-500">Default: qwen3-vl:8b. The model must already be installed in Ollama; unavailable vision never silently passes verification.</p>
+            </div>
             {toolsError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{toolsError}</p>}
           </div>
           <DialogFooter><Button variant="outline" onClick={() => setToolsOpen(false)} className="border-white/10 bg-transparent text-slate-300 hover:bg-white/5 hover:text-white">Cancel</Button><Button onClick={() => void saveTools()} disabled={savingTools} className="bg-[#a7ff4f] text-[#071007] hover:bg-[#b5ff6f]">{savingTools ? "Saving…" : "Save tools"}</Button></DialogFooter>
@@ -471,7 +508,7 @@ export function BorgWorkspace() {
             <div className="border-b border-white/8 p-5"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Runtime</p><div className="mt-4 flex items-center gap-3"><div className={`grid size-9 place-items-center rounded-lg border ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8" : "border-white/8 bg-white/4"}`}><Bot className={`size-4 ${runtimeConnected ? "text-[#a7ff4f]" : "text-slate-500"}`} /></div><div><p className="text-sm font-medium">Ollama direct</p><p className={`text-xs ${runtimeConnected ? "text-[#a7ff4f]/80" : "text-amber-200/80"}`}>{runtimeConnected ? modelName : "Not connected"}</p></div></div></div>
             <div className="space-y-6 p-5">
               <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Access scope</p><button onClick={() => setAccessOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Repository</dt><dd className="truncate text-right text-slate-300">{accessConfig?.repositoryName ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Documents</dt><dd className="text-slate-300">{accessConfig?.documents.length ?? 0}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Permission</dt><dd className="text-slate-300">Approval gated</dd></div><div className="flex justify-between"><dt className="text-slate-500">Task state</dt><dd className="text-slate-300">{taskState}</dd></div></dl></div>
-              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Tools</p><button onClick={() => setToolsOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between"><dt className="text-slate-500">Internet</dt><dd className={toolConfig?.internetEnabled ? "text-[#a7ff4f]" : "text-slate-500"}>{toolConfig?.internetEnabled ? "Allowed" : "Disabled"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Page fetch</dt><dd className="text-slate-300">{toolConfig?.webFetchAvailable ? "Available" : "Off"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Web search</dt><dd className="text-slate-300">{toolConfig?.webSearchAvailable ? "Available" : "Needs key"}</dd></div></dl></div>
+              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Tools</p><button onClick={() => setToolsOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between"><dt className="text-slate-500">Internet</dt><dd className={toolConfig?.internetEnabled ? "text-[#a7ff4f]" : "text-slate-500"}>{toolConfig?.internetEnabled ? "Allowed" : "Disabled"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Page fetch</dt><dd className="text-slate-300">{toolConfig?.webFetchAvailable ? "Available" : "Off"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Web search</dt><dd className="text-slate-300">{toolConfig?.webSearchAvailable ? "Available" : "Needs key"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Vision review</dt><dd className={visionConfig?.enabled ? "truncate text-[#a7ff4f]" : "text-slate-500"}>{visionConfig?.enabled ? visionConfig.model : "Disabled"}</dd></div></dl></div>
               <div><p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Protection</p><div className="rounded-lg border border-white/8 bg-white/[0.025] p-3 text-sm leading-5 text-slate-400">Only the approved repository map, key project files, and listed documents are sent to Ollama. Secret-like files are excluded.</div></div>
             </div>
           </aside>

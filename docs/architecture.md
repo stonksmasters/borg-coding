@@ -11,9 +11,10 @@ BORG Code is a single local-first application with one root npm dependency graph
 5. **Tool broker (`packages/tools/src/`)** — permissioned repository inspection, TypeScript/JavaScript structural navigation, bounded worktree mutation/commands, Git inspection, verification, and optional public-web tools.
 6. **Language intelligence (`packages/language-intelligence/src/`)** — provider-neutral symbol navigation. The TypeScript Language Service is the first provider and is filtered through the same approved-repository access policy as normal reads.
 7. **Browser verification (`packages/browser-verification/src/`)** — task-isolated, loopback-only Chromium and development-server lifecycle with DOM, interaction, console, network, screenshot, responsive, and accessibility evidence.
-8. **Runtime adapters (`packages/runtimes/src/`)** — local model/runtime boundaries, including OpenCode compatibility.
-9. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, and finding history.
-10. **Desktop host (`apps/desktop/`)** — Windows launcher, tray lifecycle, and WebView2 shell around the same local application.
+8. **Vision review (`packages/vision-review/src/`)** — optional provider-neutral screenshot review with local Ollama as the first adapter, strict provenance checks, structured findings, and explicit unavailable/failed/inconclusive outcomes.
+9. **Runtime adapters (`packages/runtimes/src/`)** — local model/runtime boundaries, including OpenCode compatibility.
+10. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, and finding history.
+11. **Desktop host (`apps/desktop/`)** — Windows launcher, tray lifecycle, and WebView2 shell around the same local application.
 
 ## Task flow
 
@@ -49,4 +50,4 @@ npm test
 npm run build
 ```
 
-GitHub Actions runs that same contract. Package-level build scripts and the former pnpm workspace pipeline are intentionally not part of the canonical architecture. Browser evidence is additive: for web tasks, the latest structured browser report is attached to the deterministic verification result before fresh-context review and repair decisions.
+GitHub Actions runs that same contract. Package-level build scripts and the former pnpm workspace pipeline are intentionally not part of the canonical architecture. Browser evidence is additive: for web tasks, the latest structured browser report is attached to the deterministic verification result. When local vision review is enabled, provenance-checked screenshots are reviewed after deterministic verification and before fresh-context code review. Blocking visual findings use the existing bounded repair loop; unavailable, failed, and inconclusive outcomes remain explicit task events and never masquerade as a pass.

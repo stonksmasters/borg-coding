@@ -9,6 +9,8 @@ import { AccessController } from "../../../packages/repository/src/access-contro
 import { GitWorktreeManager } from "../../../packages/repository/src/git-worktree-manager.ts";
 import { WorktreeDelivery } from "../../../packages/repository/src/worktree-delivery.ts";
 import { ToolBroker, type PermissionMode } from "../../../packages/tools/src/tool-broker.ts";
+import type { BrowserEvidenceReport } from "../../../packages/browser-verification/src/index.ts";
+import { OllamaVisionProvider, VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
 import { runFreshReview } from "./fresh-review.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 
@@ -23,6 +25,7 @@ const delivery = new WorktreeDelivery(worktreeRoot, resolve(".borg/deliveries"))
 const port = Number(process.env.BORG_PORT ?? 4311);
 const ollamaUrl = process.env.BORG_OLLAMA_URL ?? "http://127.0.0.1:11434";
 const model = process.env.BORG_MODEL ?? "qwen3-coder:30b";
+const vision = new VisionReviewService(resolve(".borg/vision.json"), new OllamaVisionProvider(ollamaUrl));
 const maxRepairAttempts = 2;
 
 function send(response: ServerResponse, status: number, body: unknown) {
@@ -115,6 +118,7 @@ createServer((request, response) => {
     const approval = tasks.findApproval(taskId);
     if (!task || !approval) return send(response, 404, { error: "Approved task not found" });
     if (task.state !== "IMPLEMENTING" || approval.status !== "APPROVED" || !approval.worktreePath || !approval.baseCommit) return send(response, 409, { error: "Task is not ready for approved implementation." });
+    const approvedWorktreePath = approval.worktreePath;
     response.writeHead(200, {
       "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-cache, no-transform",
       "access-control-allow-origin": "http://localhost:5173", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type",
@@ -143,7 +147,7 @@ createServer((request, response) => {
         task = transitionTask(task, "VERIFYING", emit);
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         emit({ type: "tool.started", tool: "verification_run", input: { profile: "quick" } });
-        const verification = await tools.execute({ function: { name: "verification_run", arguments: { profile: "quick" } } }, "agent", taskContext) as { passed?: boolean; results?: unknown[] };
+        const verification = await tools.execute({ function: { name: "verification_run", arguments: { profile: "quick" } } }, "agent", taskContext) as { passed?: boolean; results?: unknown[]; browserEvidence?: BrowserEvidenceReport | null };
         emit({ type: "tool.completed", tool: "verification_run", output: verification });
         appendTaskEvent(taskId, "VERIFICATION_COMPLETED", { verification, attempt: task.attempts });
         if (!verification.passed) {
@@ -160,13 +164,47 @@ createServer((request, response) => {
           continue;
         }
 
+        let visionReview: VisionReviewResult | null = null;
+        if (verification.browserEvidence) {
+          const visionStatus = vision.status();
+          appendTaskEvent(taskId, "VISION_REVIEW_STARTED", { provider: visionStatus.provider, model: visionStatus.model, attempt: task.attempts });
+          emit({ type: "vision.review.started", provider: visionStatus.provider, model: visionStatus.model });
+          visionReview = await vision.review({
+            taskId,
+            request: task.request,
+            worktreePath: approvedWorktreePath,
+            browserEvidence: verification.browserEvidence,
+          });
+          const visionEvent = visionReview.status === "unavailable" ? "VISION_REVIEW_UNAVAILABLE"
+            : visionReview.status === "failed" ? "VISION_REVIEW_FAILED"
+            : visionReview.status === "inconclusive" ? "VISION_REVIEW_INCONCLUSIVE"
+            : visionReview.status === "disabled" ? "VISION_REVIEW_DISABLED"
+            : "VISION_REVIEW_COMPLETED";
+          appendTaskEvent(taskId, visionEvent, { review: visionReview, attempt: task.attempts });
+          emit({ type: "vision.review.completed", visionReview });
+          if (visionReview.status === "repair") {
+            tasks.replaceFindings(taskId, visionReview.findings);
+            emit({ type: "stage.updated", stage: "Verification", status: "failed" });
+            if (task.attempts >= maxRepairAttempts) {
+              task = transitionTask(task, "BLOCKED", emit);
+              appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, visionReview });
+              emit({ type: "stream.blocked", message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.` });
+              response.end();
+              return;
+            }
+            repairEvidence = `Local vision review requires repair:\n${JSON.stringify(visionReview).slice(0, 60_000)}`;
+            task = scheduleRepair(task, emit, "Local vision review found a blocking visual defect.");
+            continue;
+          }
+        }
+
         emit({ type: "stage.updated", stage: "Verification", status: "complete" });
         task = transitionTask(task, "REVIEWING", emit);
         emit({ type: "stage.updated", stage: "Review", status: "active" });
         const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext) as { stdout?: string };
         const diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext) as { stdout?: string };
         const review = await runFreshReview({ ollamaUrl, model, taskId, request: task.request, diff: diff.stdout ?? "", verification });
-        tasks.replaceFindings(taskId, review.findings);
+        tasks.replaceFindings(taskId, [...(visionReview?.findings ?? []), ...review.findings]);
         appendTaskEvent(taskId, "REVIEW_COMPLETED", { review, status, worktreePath: approval.worktreePath, attempt: task.attempts });
         emit({ type: "review.completed", review });
         if (review.verdict === "repair") {
@@ -251,6 +289,14 @@ createServer((request, response) => {
   if (request.method === "POST" && request.url === "/api/access") {
     void readJson(request).then((input) => send(response, 200, { access: access.describe(access.save(input)) }))
       .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid access policy" }));
+    return;
+  }
+  if (request.method === "GET" && request.url === "/api/vision") return send(response, 200, { vision: vision.status() });
+  if (request.method === "POST" && request.url === "/api/vision") {
+    void readJson(request).then((input) => {
+      vision.save(input);
+      return send(response, 200, { vision: vision.status() });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid vision settings" }));
     return;
   }
   if (request.method === "GET" && request.url === "/api/tools") return send(response, 200, { tools: tools.status() });

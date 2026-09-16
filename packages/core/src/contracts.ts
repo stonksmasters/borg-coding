@@ -26,6 +26,9 @@ export const FindingSchema = z.object({
   id: z.string().min(1), taskId: z.string().min(1), discipline: z.string().min(1), severity: z.enum(severityLevels),
   category: z.string().min(1), title: z.string().min(1), description: z.string().min(1),
   file: z.string().optional(), line: z.number().int().positive().optional(), evidence: z.string().optional(), remediation: z.string().optional(),
+  screenshot: z.string().optional(), screenshotSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  viewport: z.object({ width: z.number().int().positive(), height: z.number().int().positive() }).optional(),
+  confidence: z.number().min(0).max(1).optional(), selector: z.string().optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
