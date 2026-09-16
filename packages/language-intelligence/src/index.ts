@@ -44,8 +44,12 @@ export interface LanguageIntelligenceProvider {
   quickInfo(path: string, line: number, column: number): Promise<QuickInfoResult | null>;
 }
 
+export interface LanguageIntelligenceOptions {
+  allowPath?: (relativePath: string) => boolean;
+}
+
 const supportedExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
-const excludedDirectories = ["**/node_modules/**", "**/.git/**", "**/.localcode/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"];
+const excludedDirectories = ["**/node_modules/**", "**/.git/**", "**/.localcode/**", "**/.borg/**", "**/.agents/**", "**/.codex/**", "**/.vinext/**", "**/.wrangler/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"];
 
 function extension(path: string): string {
   const match = path.toLowerCase().match(/\.[^.\\/]+$/);
@@ -67,7 +71,7 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
   private fileNames: string[] = [];
   private projectVersion = 0;
 
-  constructor(root: string) {
+  constructor(root: string, private readonly options: LanguageIntelligenceOptions = {}) {
     this.root = resolve(root);
     this.compilerOptions = this.loadCompilerOptions();
     this.refreshFiles();
@@ -180,7 +184,7 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
       ];
       const seen = new Set<string>();
       for (const diagnostic of diagnostics) {
-        if (!diagnostic.file || diagnostic.start === undefined) continue;
+        if (!diagnostic.file || diagnostic.start === undefined || !this.isWorkspaceFile(diagnostic.file.fileName)) continue;
         const key = `${diagnostic.code}:${diagnostic.start}:${diagnostic.length ?? 0}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -213,7 +217,9 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
     this.refreshFiles();
     const fileName = this.absolute(path);
     const offset = this.offset(fileName, line, column);
-    return (query(fileName, offset) ?? []).map((item) => this.location(item.fileName, item.textSpan));
+    return (query(fileName, offset) ?? [])
+      .filter((item) => this.isWorkspaceFile(item.fileName))
+      .map((item) => this.location(item.fileName, item.textSpan));
   }
 
   private offset(fileName: string, line: number, column: number): number {
@@ -254,6 +260,7 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
     const rel = relative(this.root, fileName);
     if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Path escapes workspace root: ${path}`);
     if (!this.supports(fileName)) throw new Error(`Language intelligence does not support this file: ${path}`);
+    if (!this.isAllowed(fileName)) throw new Error(`Language intelligence access is not allowed for this file: ${path}`);
     return fileName;
   }
 
@@ -262,9 +269,16 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
     return rel.startsWith("..") || isAbsolute(rel) ? resolve(fileName) : rel.replaceAll("\\", "/");
   }
 
+  private isAllowed(fileName: string): boolean {
+    const rel = relative(this.root, resolve(fileName));
+    if (rel.startsWith("..") || isAbsolute(rel)) return false;
+    const display = rel.replaceAll("\\", "/");
+    return this.options.allowPath ? this.options.allowPath(display) : true;
+  }
+
   private isWorkspaceFile(fileName: string): boolean {
     const rel = relative(this.root, resolve(fileName));
-    return !rel.startsWith("..") && !isAbsolute(rel) && !rel.split(/[\\/]/).includes("node_modules") && !rel.startsWith(".localcode");
+    return !rel.startsWith("..") && !isAbsolute(rel) && !rel.split(/[\\/]/).includes("node_modules") && !rel.startsWith(".localcode") && this.isAllowed(fileName);
   }
 
   private refreshFiles(): void {
@@ -274,7 +288,7 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
       excludedDirectories,
       ["**/*"],
       20
-    ).map((file) => resolve(file)).sort();
+    ).map((file) => resolve(file)).filter((file) => this.isAllowed(file)).sort();
     if (next.length === this.fileNames.length && next.every((file, index) => file === this.fileNames[index])) return;
     this.fileNames = next;
     this.projectVersion += 1;
@@ -303,6 +317,6 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
   }
 }
 
-export function createLanguageIntelligence(root: string): LanguageIntelligenceProvider {
-  return new TypeScriptLanguageIntelligence(root);
+export function createLanguageIntelligence(root: string, options: LanguageIntelligenceOptions = {}): LanguageIntelligenceProvider {
+  return new TypeScriptLanguageIntelligence(root, options);
 }
