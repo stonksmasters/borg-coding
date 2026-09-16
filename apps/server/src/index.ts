@@ -180,7 +180,7 @@ createServer((request, response) => {
             : visionReview.status === "disabled" ? "VISION_REVIEW_DISABLED"
             : "VISION_REVIEW_COMPLETED";
           appendTaskEvent(taskId, visionEvent, { review: visionReview, attempt: task.attempts });
-          emit({ type: "vision.review.completed", review: visionReview });
+          emit({ type: "vision.review.completed", visionReview });
           if (visionReview.status === "repair") {
             tasks.replaceFindings(taskId, visionReview.findings);
             emit({ type: "stage.updated", stage: "Verification", status: "failed" });
