@@ -1,79 +1,50 @@
 import { execFile } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { randomUUID } from "node:crypto";
+import type { ApprovalRecord } from "../../core/src/contracts.ts";
 
-export interface RecordedApproval {
-  taskId: string;
-  status: "REQUESTED" | "APPROVED" | "REJECTED";
-  worktreePath: string | null;
-  baseCommit: string | null;
-}
+const MAX_FILE_BYTES = 1_000_000;
+const MAX_OUTPUT_BYTES = 160_000;
+const MAX_COMMAND_SECONDS = Math.max(1, Math.min(900, Number(process.env.BORG_COMMAND_TIMEOUT_SECONDS ?? 900)));
+const MAX_REPLACEMENTS = 500;
+const allowedCommands = new Set(["npm", "node", "git"]);
 
 export interface TaskToolContext { taskId: string; }
 export interface WorktreeToolOptions {
   worktreeRoot: string;
-  findApproval(taskId: string): RecordedApproval | null;
+  findApproval: (taskId: string) => ApprovalRecord | null;
 }
 
-interface CommandResult {
-  command: string;
-  args: string[];
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-  durationMs: number;
-}
+interface CommandResult { command: string; args: string[]; exitCode: number; stdout: string; stderr: string; timedOut: boolean; durationMs: number; }
 
-interface VerificationCommand { command: string; args: string[]; label: string; }
-
-const MAX_FILE_BYTES = 500_000;
-const MAX_OUTPUT_BYTES = 120_000;
-const MAX_COMMAND_SECONDS = 900;
-const allowedCommands = new Set(["node", "npm", "python", "python3", "dotnet", "cargo", "go"]);
-
-export const worktreeToolDefinitions = {
+const worktreeToolDefinitions = {
   worktree_read: {
     type: "function",
     function: {
       name: "worktree_read",
-      description: "Read a text file from the approved task's isolated Git worktree.",
-      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
+      description: "Read a text/source file from the approved task worktree using a worktree-relative path.",
+      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, max_characters: { type: "integer", minimum: 1, maximum: 100000 } } },
     },
   },
   worktree_patch: {
     type: "function",
     function: {
       name: "worktree_patch",
-      description: "Apply an exact text replacement inside the approved task worktree. To create a new file, use an empty old_text and a path that does not exist.",
-      parameters: {
-        type: "object", required: ["path", "old_text", "new_text"],
-        properties: {
-          path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" },
-          expected_replacements: { type: "integer", minimum: 1, maximum: 100 },
-        },
-      },
+      description: "Replace exact text in a source file inside the approved task worktree. The old text must exist and is replaced atomically. Use replace_all only when every exact occurrence should change.",
+      parameters: { type: "object", required: ["path", "old_text", "new_text"], properties: { path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" }, replace_all: { type: "boolean" } } },
     },
   },
   worktree_command: {
     type: "function",
     function: {
       name: "worktree_command",
-      description: "Run a bounded allowlisted command inside the approved task worktree without a shell.",
-      parameters: {
-        type: "object", required: ["command"],
-        properties: {
-          command: { type: "string", enum: [...allowedCommands] },
-          args: { type: "array", maxItems: 40, items: { type: "string" } },
-          cwd: { type: "string" }, timeout_seconds: { type: "integer", minimum: 1, maximum: MAX_COMMAND_SECONDS },
-        },
-      },
+      description: "Run a bounded allowlisted development command inside the approved task worktree. Executable must be npm, node, or git and no shell interpolation is performed.",
+      parameters: { type: "object", required: ["command"], properties: { command: { type: "string", enum: ["npm", "node", "git"] }, args: { type: "array", items: { type: "string" }, maxItems: 40 }, timeout_seconds: { type: "integer", minimum: 1, maximum: 900 } } },
     },
   },
   git_status: {
     type: "function",
-    function: { name: "git_status", description: "Show concise Git status for the approved task worktree.", parameters: { type: "object", properties: {} } },
+    function: { name: "git_status", description: "Show bounded Git status for the approved task worktree.", parameters: { type: "object", properties: {} } },
   },
   git_diff: {
     type: "function",
@@ -111,8 +82,13 @@ function bounded(value: string, maximum = MAX_OUTPUT_BYTES): string {
 }
 
 function npmInvocation(args: string[]): { executable: string; args: string[] } {
-  const npmCli = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  if (!existsSync(npmCli)) throw new Error("The npm CLI could not be located beside Node.js.");
+  const candidates = [
+    process.env.npm_execpath,
+    resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+    resolve(dirname(dirname(process.execPath)), "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const npmCli = candidates.find((candidate) => existsSync(candidate));
+  if (!npmCli) throw new Error("The npm CLI could not be located for the current Node.js installation.");
   return { executable: process.execPath, args: [npmCli, ...args] };
 }
 
@@ -148,134 +124,114 @@ export class WorktreeTools {
 
   definitions() { return Object.values(worktreeToolDefinitions); }
 
-  private approvedRoot(context: TaskToolContext | undefined): string {
-    if (!context?.taskId) throw new Error("An approved task context is required for worktree tools.");
-    const approval = this.options.findApproval(context.taskId);
-    if (!approval || approval.taskId !== context.taskId || approval.status !== "APPROVED" || !approval.worktreePath || !approval.baseCommit) throw new Error("The task does not have an approved worktree.");
-    const configuredRoot = realpathSync(this.worktreeRoot);
-    const worktree = realpathSync(approval.worktreePath);
-    if (!isInside(configuredRoot, worktree)) throw new Error("The recorded worktree is outside BORG's managed worktree root.");
-    return worktree;
-  }
-
-  private resolveExisting(root: string, relativePath: unknown): string {
-    const path = resolve(root, safeRelativePath(relativePath));
-    const realPath = realpathSync(path);
-    if (!isInside(root, realPath)) throw new Error("Worktree path escapes through a link.");
-    return realPath;
-  }
-
-  private resolveWritable(root: string, relativePath: unknown): string {
-    const path = resolve(root, safeRelativePath(relativePath));
-    if (!isInside(root, path)) throw new Error("Worktree path escapes the approved root.");
-    const parent = realpathSync(dirname(path));
-    if (!isInside(root, parent)) throw new Error("Worktree path escapes through a parent link.");
-    if (existsSync(path) && !isInside(root, realpathSync(path))) throw new Error("Worktree path escapes through a link.");
-    return path;
-  }
-
-  async execute(name: string, input: Record<string, unknown>, context?: TaskToolContext): Promise<unknown> {
-    const root = this.approvedRoot(context);
-    if (name === "worktree_read") {
-      const path = this.resolveExisting(root, input.path);
-      if (!lstatSync(path).isFile() || statSync(path).size > MAX_FILE_BYTES) throw new Error("Worktree file is not a bounded regular file.");
-      return { path: relative(root, path), content: readFileSync(path, "utf8") };
-    }
-    if (name === "worktree_patch") return this.patch(root, input);
-    if (name === "worktree_command") return this.command(root, input);
-    if (name === "git_status") return this.git(root, ["status", "--short", "--untracked-files=all"]);
-    if (name === "git_diff") {
-      await this.git(root, ["add", "-N", "--", "."]);
-      const args = ["diff", "--no-ext-diff", "--unified=3"];
-      if (input.path) args.push("--", safeRelativePath(input.path));
-      return this.git(root, args);
-    }
-    if (name === "verification_profiles") return { profiles: this.profiles(root) };
-    if (name === "verification_run") return this.verify(root, String(input.profile ?? "quick"));
+  async execute(name: string, args: Record<string, unknown>, context?: TaskToolContext): Promise<unknown> {
+    const approved = this.approved(context);
+    if (name === "worktree_read") return this.read(approved.worktreePath, args);
+    if (name === "worktree_patch") return this.patch(approved.worktreePath, args);
+    if (name === "worktree_command") return runBounded(String(args.command ?? ""), Array.isArray(args.args) ? args.args.map(String) : [], approved.worktreePath, Number(args.timeout_seconds ?? MAX_COMMAND_SECONDS));
+    if (name === "git_status") return runBounded("git", ["status", "--short", "--untracked-files=all"], approved.worktreePath, 30);
+    if (name === "git_diff") return this.diff(approved.worktreePath, args);
+    if (name === "verification_profiles") return this.profiles(approved.worktreePath);
+    if (name === "verification_run") return this.verify(approved.worktreePath, String(args.profile ?? "quick"));
     throw new Error(`Unknown worktree tool: ${name}`);
   }
 
-  private patch(root: string, input: Record<string, unknown>) {
-    const path = this.resolveWritable(root, input.path);
-    const oldText = String(input.old_text ?? "");
-    const newText = String(input.new_text ?? "");
-    const expected = Math.max(1, Math.min(100, Math.floor(Number(input.expected_replacements ?? 1))));
-    let current = "";
-    let created = false;
-    if (existsSync(path)) {
-      if (!lstatSync(path).isFile() || statSync(path).size > MAX_FILE_BYTES) throw new Error("Worktree file is not a bounded regular file.");
-      if (!oldText) throw new Error("old_text may be empty only when creating a new file.");
-      current = readFileSync(path, "utf8");
-    } else {
-      if (oldText) throw new Error("A new file requires empty old_text.");
-      created = true;
-    }
-    const occurrences = oldText ? current.split(oldText).length - 1 : 1;
-    if (occurrences !== expected) throw new Error(`Patch expected ${expected} replacement(s) but found ${occurrences}.`);
-    const updated = oldText ? current.split(oldText).join(newText) : newText;
-    if (Buffer.byteLength(updated, "utf8") > MAX_FILE_BYTES) throw new Error("Patched file exceeds the size limit.");
-    const temporaryPath = `${path}.borg-${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporaryPath, updated, "utf8");
-      renameSync(temporaryPath, path);
-    } finally {
-      if (existsSync(temporaryPath)) rmSync(temporaryPath, { force: true });
-    }
-    return { path: relative(root, path), created, replacements: occurrences, bytes: Buffer.byteLength(updated, "utf8") };
+  private approved(context?: TaskToolContext) {
+    if (!context?.taskId) throw new Error("Task context is required for mutating tools.");
+    const approval = this.options.findApproval(context.taskId);
+    if (!approval || approval.status !== "APPROVED" || !approval.worktreePath || !approval.baseCommit) throw new Error("Task does not have an approved worktree.");
+    const root = realpathSync(this.worktreeRoot);
+    const worktreePath = realpathSync(approval.worktreePath);
+    if (!isInside(root, worktreePath)) throw new Error("Approved worktree is outside BORG's worktree root.");
+    return { approval, worktreePath };
   }
 
-  private async command(root: string, input: Record<string, unknown>) {
-    const command = String(input.command ?? "").toLowerCase();
-    const args = Array.isArray(input.args) ? input.args.map(String) : [];
-    const cwd = input.cwd ? this.resolveExisting(root, input.cwd) : root;
-    if (!statSync(cwd).isDirectory()) throw new Error("Command cwd must be a directory.");
-    return runBounded(command, args, cwd, Number(input.timeout_seconds ?? 300));
-  }
-
-  private async git(root: string, args: string[]) {
-    const result = await new Promise<CommandResult>((resolveResult) => {
-      const startedAt = Date.now();
-      execFile("git", ["-c", `safe.directory=${root}`, "-C", root, ...args], { timeout: 30_000, maxBuffer: MAX_OUTPUT_BYTES * 2, windowsHide: true }, (error, stdout, stderr) => {
-        const details = error as (Error & { code?: number; killed?: boolean }) | null;
-        resolveResult({ command: "git", args, exitCode: details?.code ?? (error ? 1 : 0), stdout: bounded(String(stdout ?? "")), stderr: bounded(String(stderr ?? "")), timedOut: Boolean(details?.killed), durationMs: Date.now() - startedAt });
-      });
-    });
-    if (result.exitCode !== 0) throw new Error(result.stderr || "Git command failed.");
-    return result;
-  }
-
-  private profiles(root: string) {
-    const commands: Record<"quick" | "full", VerificationCommand[]> = { quick: [], full: [] };
-    const packagePath = join(root, "package.json");
-    if (existsSync(packagePath)) {
-      const pkg = JSON.parse(readFileSync(packagePath, "utf8")) as { scripts?: Record<string, string> };
-      const scripts = pkg.scripts ?? {};
-      for (const name of ["check", "lint", "test"]) if (scripts[name]) commands.quick.push({ command: "npm", args: ["run", name], label: `npm run ${name}` });
-      commands.full.push(...commands.quick);
-      if (scripts.build) commands.full.push({ command: "npm", args: ["run", "build"], label: "npm run build" });
-    } else if (existsSync(join(root, "Cargo.toml"))) {
-      commands.quick.push({ command: "cargo", args: ["test"], label: "cargo test" });
-      commands.full.push({ command: "cargo", args: ["check"], label: "cargo check" }, ...commands.quick);
-    } else if (existsSync(join(root, "go.mod"))) {
-      commands.quick.push({ command: "go", args: ["test", "./..."], label: "go test ./..." });
-      commands.full.push(...commands.quick);
-    } else if (existsSync(join(root, "pyproject.toml")) || existsSync(join(root, "pytest.ini"))) {
-      commands.quick.push({ command: "python", args: ["-m", "pytest"], label: "python -m pytest" });
-      commands.full.push(...commands.quick);
+  private file(worktreePath: string, inputPath: unknown, requireExisting = true) {
+    const relativePath = safeRelativePath(inputPath);
+    const candidate = resolve(worktreePath, relativePath);
+    if (!isInside(worktreePath, candidate)) throw new Error("Path leaves the approved task worktree.");
+    if (requireExisting && !existsSync(candidate)) throw new Error(`Worktree path does not exist: ${relativePath}`);
+    if (existsSync(candidate)) {
+      const details = lstatSync(candidate);
+      if (details.isSymbolicLink()) throw new Error("Symbolic-link file access is not allowed.");
+      const real = realpathSync(candidate);
+      if (!isInside(worktreePath, real)) throw new Error("Resolved file leaves the approved task worktree.");
     }
-    return (["quick", "full"] as const).map((id) => ({ id, commands: commands[id] }));
+    return { absolute: candidate, relativePath: relative(worktreePath, candidate).replaceAll("\\", "/") };
   }
 
-  private async verify(root: string, profileId: string) {
-    if (profileId !== "quick" && profileId !== "full") throw new Error("Unknown verification profile.");
-    const profile = this.profiles(root).find((item) => item.id === profileId)!;
-    if (!profile.commands.length) throw new Error(`No commands were detected for the ${profileId} verification profile.`);
-    const results: (CommandResult & { label: string })[] = [];
-    for (const command of profile.commands) {
-      const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS);
-      results.push({ ...result, label: command.label });
-      if (result.exitCode !== 0 || result.timedOut) break;
+  private read(worktreePath: string, args: Record<string, unknown>) {
+    const file = this.file(worktreePath, args.path);
+    if (!statSync(file.absolute).isFile()) throw new Error("Path must identify a file.");
+    const size = statSync(file.absolute).size;
+    if (size > MAX_FILE_BYTES) throw new Error("File is too large for bounded worktree reading.");
+    const max = Math.max(1, Math.min(100_000, Number(args.max_characters ?? 60_000)));
+    const raw = readFileSync(file.absolute, "utf8");
+    return { path: file.relativePath, content: raw.slice(0, max), truncated: raw.length > max };
+  }
+
+  private patch(worktreePath: string, args: Record<string, unknown>) {
+    const file = this.file(worktreePath, args.path);
+    if (!statSync(file.absolute).isFile()) throw new Error("Path must identify a file.");
+    const before = readFileSync(file.absolute, "utf8");
+    if (Buffer.byteLength(before, "utf8") > MAX_FILE_BYTES) throw new Error("File is too large for bounded patching.");
+    const oldText = String(args.old_text ?? "");
+    const newText = String(args.new_text ?? "");
+    if (!oldText || oldText.length > 100_000 || newText.length > 200_000) throw new Error("Patch text exceeds the bounded patch policy.");
+    const occurrences = before.split(oldText).length - 1;
+    if (occurrences === 0) throw new Error("Exact old_text was not found; inspect the current file before patching.");
+    const replaceAll = args.replace_all === true;
+    if (!replaceAll && occurrences !== 1) throw new Error(`old_text matched ${occurrences} locations; provide more context or set replace_all intentionally.`);
+    if (occurrences > MAX_REPLACEMENTS) throw new Error("Patch would replace too many locations.");
+    const after = replaceAll ? before.split(oldText).join(newText) : before.replace(oldText, newText);
+    const temporary = `${file.absolute}.borg-tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(temporary, after, "utf8");
+    renameSync(temporary, file.absolute);
+    return { path: file.relativePath, replacements: replaceAll ? occurrences : 1, bytesBefore: Buffer.byteLength(before), bytesAfter: Buffer.byteLength(after) };
+  }
+
+  private async diff(worktreePath: string, args: Record<string, unknown>) {
+    const path = String(args.path ?? "").trim();
+    if (!path) return runBounded("git", ["diff", "--no-ext-diff", "--binary"], worktreePath, 45);
+    const safePath = safeRelativePath(path);
+    return runBounded("git", ["diff", "--no-ext-diff", "--binary", "--", safePath], worktreePath, 45);
+  }
+
+  private profiles(worktreePath: string) {
+    const packageJson = join(worktreePath, "package.json");
+    const pyproject = join(worktreePath, "pyproject.toml");
+    const requirements = join(worktreePath, "requirements.txt");
+    const cargo = join(worktreePath, "Cargo.toml");
+    const goMod = join(worktreePath, "go.mod");
+    const quick: { label: string; command: string; args: string[] }[] = [];
+    const full: { label: string; command: string; args: string[] }[] = [];
+
+    if (existsSync(packageJson)) {
+      const scripts = JSON.parse(readFileSync(packageJson, "utf8")).scripts ?? {};
+      for (const name of ["lint", "check", "typecheck"]) if (scripts[name]) quick.push({ label: `npm ${name}`, command: "npm", args: ["run", name] });
+      if (scripts.test) full.push({ label: "npm test", command: "npm", args: ["test", "--", "--runInBand"] });
+      if (scripts.build) full.push({ label: "npm build", command: "npm", args: ["run", "build"] });
+      if (!quick.length && scripts.test) quick.push({ label: "npm test", command: "npm", args: ["test", "--", "--runInBand"] });
     }
-    return { profile: profileId, passed: results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut), results };
+    if (existsSync(pyproject) || existsSync(requirements)) {
+      if (existsSync(join(worktreePath, "pytest.ini")) || existsSync(join(worktreePath, "tests"))) quick.push({ label: "pytest", command: "python", args: ["-m", "pytest", "-q"] });
+    }
+    if (existsSync(cargo)) quick.push({ label: "cargo check", command: "cargo", args: ["check"] });
+    if (existsSync(cargo)) full.push({ label: "cargo test", command: "cargo", args: ["test"] });
+    if (existsSync(goMod)) quick.push({ label: "go test", command: "go", args: ["test", "./..."] });
+    return { quick, full: [...quick, ...full] };
+  }
+
+  private async verify(worktreePath: string, profile: string) {
+    const profiles = this.profiles(worktreePath);
+    const selected = profile === "full" ? profiles.full : profiles.quick;
+    if (!selected.length) return { profile, passed: true, results: [], message: "No deterministic verification commands were detected for this project." };
+    const results = [];
+    for (const step of selected) {
+      const result = await runBounded(step.command, step.args, worktreePath, MAX_COMMAND_SECONDS);
+      results.push({ ...step, ...result });
+      if (result.exitCode !== 0 || result.timedOut) return { profile, passed: false, results };
+    }
+    return { profile, passed: true, results };
   }
 }
