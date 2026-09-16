@@ -11,7 +11,7 @@
 - Screenshot captures are stored under the isolated worktree at `.borg/evidence/browser/`, include SHA-256 provenance, and never enter the primary checkout.
 - Responsive verification captures mobile, tablet, and desktop evidence by default, with up to eight explicitly requested viewports.
 - Accessibility verification injects the local pinned `axe-core` runtime and returns structured violations, incomplete checks, pass counts, affected targets, HTML evidence, and remediation summaries.
-- The latest browser evidence report is attached to `verification_run`. The same verification payload is persisted and passed into fresh-context review and evidence-driven repair.
+- The latest browser evidence report is attached to `verification_run`. Missing DOM/screenshots, console errors, failed or blocked requests, HTTP errors, and serious/critical accessibility violations fail the combined verification and enter the same bounded repair loop.
 - Browser sessions and managed development servers are closed automatically when deterministic verification begins.
 
 ## Runtime prerequisites
