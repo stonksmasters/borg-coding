@@ -291,6 +291,7 @@ export class WorktreeTools {
     } finally {
       browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
-    return { profile: profileId, passed: results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut), results, browserEvidence };
+    const commandPassed = results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut);
+    return { profile: profileId, passed: commandPassed && (browserEvidence?.passed ?? true), commandPassed, results, browserEvidence };
   }
 }
