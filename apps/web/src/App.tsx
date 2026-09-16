@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import ReviewPanel, { type ReviewAction, type TaskReviewState } from "./ReviewPanel";
 
 type PermissionMode = "ask" | "edit" | "agent";
 type InspectorTab = "diff" | "terminal" | "context";
@@ -57,6 +58,8 @@ export default function App() {
   const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>(loadRecentWorkspaces);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const [diffState, setDiffState] = useState<DiffState>(EMPTY_DIFF);
+  const [review, setReview] = useState<TaskReviewState | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
   const [terminal, setTerminal] = useState("");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("diff");
   const [prompt, setPrompt] = useState("");
@@ -86,9 +89,7 @@ export default function App() {
         setActivity((items) => [...items, `Context ready: ${event.selectedFiles?.length ?? 0} files selected`]);
       }
       if (event.type === "tool.started" && event.tool) setActivity((items) => [...items, `Running ${event.tool}`]);
-      if (event.type === "tool.output" && event.text) {
-        setTerminal((value) => clipTerminal(`${value}${event.text}`));
-      }
+      if (event.type === "tool.output" && event.text) setTerminal((value) => clipTerminal(`${value}${event.text}`));
       if (event.type === "tool.completed" && event.tool) setActivity((items) => [...items, `${event.tool} completed`]);
       if (event.type === "verification.completed") setActivity((items) => [...items, event.ok ? "Verification passed" : "Verification failed"]);
       if (event.type === "diff.updated") setDiffState({ status: event.status ?? "", diff: event.diff ?? "" });
@@ -96,9 +97,7 @@ export default function App() {
         const approval: Approval = { approvalId: event.approvalId, taskId: event.taskId, tool: event.tool, input: event.input, reason: event.reason };
         setApprovals((items) => upsertApproval(items, approval));
       }
-      if (event.type === "approval.resolved" && event.approvalId) {
-        setApprovals((items) => items.filter((item) => item.approvalId !== event.approvalId));
-      }
+      if (event.type === "approval.resolved" && event.approvalId) setApprovals((items) => items.filter((item) => item.approvalId !== event.approvalId));
     };
     return () => socket.close();
   }, []);
@@ -115,7 +114,7 @@ export default function App() {
         const matching = (body.approvals ?? []).filter((approval) => approval.taskId === activeTask);
         if (!cancelled) setApprovals((items) => matching.reduce(upsertApproval, items.filter((item) => item.taskId !== activeTask)));
       } catch {
-        // WebSocket is primary; this polling path only recovers missed approval events.
+        // WebSocket is primary; polling only recovers missed approval events.
       }
     };
 
@@ -157,6 +156,47 @@ export default function App() {
     }
   }
 
+  async function refreshReview(root = workspaceRoot, taskId = latestTaskId) {
+    if (!root.trim() || !taskId) {
+      setReview(null);
+      return;
+    }
+    setReviewLoading(true);
+    try {
+      const response = await fetch(`${API}/api/workspace/review?root=${encodeURIComponent(root.trim())}&taskId=${encodeURIComponent(taskId)}`);
+      const body = await response.json() as { review?: TaskReviewState; error?: string };
+      if (!response.ok || !body.review) throw new Error(body.error ?? `Review request failed with ${response.status}`);
+      setReview(body.review);
+    } catch (error) {
+      setReview(null);
+      setActivity((items) => [...items, `Review unavailable: ${error instanceof Error ? error.message : String(error)}`]);
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  async function applyReviewAction(action: ReviewAction, path?: string, hunkId?: string) {
+    if (!latestTaskId || !workspaceRoot.trim() || reviewLoading || busy) return;
+    setReviewLoading(true);
+    try {
+      const response = await fetch(`${API}/api/workspace/review`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspaceRoot: workspaceRoot.trim(), taskId: latestTaskId, action, path, hunkId })
+      });
+      const body = await response.json() as { review?: TaskReviewState; status?: string; diff?: string; error?: string };
+      if (!response.ok || !body.review) throw new Error(body.error ?? `Review action failed with ${response.status}`);
+      setReview(body.review);
+      setDiffState({ status: body.status ?? "", diff: body.diff ?? "" });
+      setActivity((items) => [...items, `${action.replaceAll("-", " ")}${path ? ` · ${path}` : ""}`]);
+    } catch (error) {
+      setActivity((items) => [...items, `Review error: ${error instanceof Error ? error.message : String(error)}`]);
+      await refreshReview();
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
   async function openWorkspace(root = workspaceRoot) {
     if (indexing) return;
     setIndexing(true);
@@ -172,6 +212,8 @@ export default function App() {
       setWorkspaceRoot(body.root);
       setWorkspaceSummary(body.summary);
       setContextFiles([]);
+      setLatestTaskId(null);
+      setReview(null);
       rememberWorkspace(body.root);
       setActivity((items) => [...items, `Indexed ${body.summary!.fileCount} files`]);
       await refreshDiff(body.root);
@@ -205,6 +247,7 @@ export default function App() {
       if (!response.ok) throw new Error(body.error ?? `Undo failed with ${response.status}`);
       setDiffState({ status: body.status ?? "", diff: body.diff ?? "" });
       setActivity((items) => [...items, body.restored?.path ? `Restored ${body.restored.path}` : "No remaining checkpoint for this task"]);
+      await refreshReview(workspaceRoot, latestTaskId);
     } catch (error) {
       setActivity((items) => [...items, `Undo error: ${error instanceof Error ? error.message : String(error)}`]);
     } finally {
@@ -219,6 +262,7 @@ export default function App() {
     const taskId = crypto.randomUUID();
     activeTaskRef.current = taskId;
     setLatestTaskId(taskId);
+    setReview(null);
     setPrompt("");
     setBusy(true);
     setActiveTask(taskId);
@@ -234,10 +278,19 @@ export default function App() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ taskId, prompt: value, permissionMode, ...(workspaceRoot.trim() ? { workspaceRoot: workspaceRoot.trim() } : {}) })
       });
-      const body = await response.json() as { text?: string; error?: string };
+      const body = await response.json() as { text?: string; error?: string; workspaceRoot?: string };
       const text = body.text ?? body.error ?? "BORG returned no output.";
+      const resolvedRoot = body.workspaceRoot ?? workspaceRoot;
+      if (resolvedRoot) {
+        setWorkspaceRoot(resolvedRoot);
+        rememberWorkspace(resolvedRoot);
+      }
       setMessages((items) => [...items, { id: crypto.randomUUID(), role: "assistant", text }]);
-      if (workspaceRoot.trim()) await refreshDiff(workspaceRoot);
+      if (resolvedRoot) {
+        await refreshDiff(resolvedRoot);
+        await refreshReview(resolvedRoot, taskId);
+        setInspectorTab("diff");
+      }
     } finally {
       activeTaskRef.current = null;
       setBusy(false);
@@ -290,10 +343,12 @@ export default function App() {
             <div className="inspectorTabs">
               {(["diff", "terminal", "context"] as InspectorTab[]).map((tab) => <button key={tab} className={inspectorTab === tab ? "active" : ""} onClick={() => setInspectorTab(tab)}>{tab.toUpperCase()}</button>)}
             </div>
-            {inspectorTab === "diff" && <div className="inspectorBody">
-              <div className="panelToolbar"><strong>Working tree</strong><div><button onClick={() => void refreshDiff()} disabled={!workspaceRoot.trim()}>Refresh</button><button onClick={() => void undoLastChange()} disabled={!latestTaskId || undoing}>{undoing ? "Undoing…" : "Undo last"}</button></div></div>
-              <pre className="statusBlock">{diffState.status || "Working tree clean"}</pre>
-              <pre className="diffBlock">{diffState.diff || "No diff to review."}</pre>
+            {inspectorTab === "diff" && <div className="inspectorBody reviewInspector">
+              <div className="panelToolbar"><strong>{latestTaskId ? "BORG change review" : "Working tree"}</strong><div><button onClick={() => latestTaskId ? void refreshReview() : void refreshDiff()} disabled={!workspaceRoot.trim() || reviewLoading}>Refresh</button><button onClick={() => void undoLastChange()} disabled={!latestTaskId || undoing}>{undoing ? "Undoing…" : "Undo last"}</button></div></div>
+              {latestTaskId ? <ReviewPanel review={review} loading={reviewLoading || busy} onRefresh={() => void refreshReview()} onAction={(action, path, hunkId) => void applyReviewAction(action, path, hunkId)} /> : <>
+                <pre className="statusBlock">{diffState.status || "Working tree clean"}</pre>
+                <pre className="diffBlock">{diffState.diff || "No diff to review."}</pre>
+              </>}
             </div>}
             {inspectorTab === "terminal" && <div className="inspectorBody terminalBody"><div className="panelToolbar"><strong>Live tool output</strong><button onClick={() => setTerminal("")}>Clear</button></div><pre className="terminalBlock">{terminal || "Command and verification output will stream here."}</pre></div>}
             {inspectorTab === "context" && <div className="inspectorBody">

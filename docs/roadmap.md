@@ -20,7 +20,10 @@
 - [x] live command and verification output streaming
 - [x] working-tree diff review panel
 - [x] automatic pre-edit checkpoints and task-level undo
-- [ ] per-file / per-hunk accept and reject controls
+- [x] task-relative review baselines that preserve pre-existing local edits
+- [x] per-file accept and reject controls
+- [x] per-hunk accept and reject controls
+- [x] accept-all / reject-all review controls without staging or committing
 - [ ] symbol-aware retrieval and language-server integration
 
 ## Alpha 0.2 — coding agent
@@ -29,7 +32,7 @@
 - symbol-aware search and language-server integration
 - checkpoint history browser and named checkpoints
 - persistent project memory beyond structural indexing
-- richer diff review with per-file and per-hunk actions
+- review decision history and review-session persistence across task continuations
 
 ## Later
 

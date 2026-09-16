@@ -67,6 +67,11 @@ async function workspaceRoot(value: unknown): Promise<string> {
   return root;
 }
 
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
+  return value.trim();
+}
+
 const server = createServer(async (request, response) => {
   try {
     if (request.method === "OPTIONS") return json(response, 204, null);
@@ -102,6 +107,34 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { root, status, diff });
     }
 
+    if (request.method === "GET" && url.pathname === "/api/workspace/review") {
+      const root = await workspaceRoot(url.searchParams.get("root"));
+      const taskId = requiredString(url.searchParams.get("taskId"), "taskId");
+      const repository = new RepositoryTools(root);
+      const review = await repository.getTaskReview(taskId);
+      return json(response, 200, { root, review });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace/review") {
+      const body = await readJson(request) as { workspaceRoot?: unknown; taskId?: unknown; action?: unknown; path?: unknown; hunkId?: unknown };
+      const root = await workspaceRoot(body.workspaceRoot);
+      const taskId = requiredString(body.taskId, "taskId");
+      const action = requiredString(body.action, "action");
+      const repository = new RepositoryTools(root);
+      let review;
+
+      if (action === "accept-all") review = await repository.acceptAllReviewChanges(taskId);
+      else if (action === "reject-all") review = await repository.rejectAllReviewChanges(taskId);
+      else if (action === "accept-file") review = await repository.acceptReviewFile(taskId, requiredString(body.path, "path"));
+      else if (action === "reject-file") review = await repository.rejectReviewFile(taskId, requiredString(body.path, "path"));
+      else if (action === "accept-hunk") review = await repository.acceptReviewHunk(taskId, requiredString(body.path, "path"), requiredString(body.hunkId, "hunkId"));
+      else if (action === "reject-hunk") review = await repository.rejectReviewHunk(taskId, requiredString(body.path, "path"), requiredString(body.hunkId, "hunkId"));
+      else return json(response, 400, { error: `Unsupported review action: ${action}` });
+
+      const [status, diff] = await Promise.all([repository.gitStatus(), repository.gitDiff()]);
+      return json(response, 200, { root, review, status, diff });
+    }
+
     if (request.method === "POST" && url.pathname === "/api/workspace/undo") {
       const body = await readJson(request) as { workspaceRoot?: unknown; taskId?: unknown };
       if (typeof body.taskId !== "string" || !body.taskId.trim()) return json(response, 400, { error: "taskId is required" });
@@ -126,6 +159,8 @@ const server = createServer(async (request, response) => {
 
       const taskId = parsed.data.taskId ?? randomUUID();
       const root = await workspaceRoot(parsed.data.workspaceRoot);
+      const repository = new RepositoryTools(root);
+      await repository.captureTaskBaseline(taskId).catch(() => undefined);
       store.createTask({ id: taskId, prompt: parsed.data.prompt, workspaceRoot: root, permissionMode: parsed.data.permissionMode });
       store.setStatus(taskId, "running");
       emit({ type: "task.started", taskId, at: new Date().toISOString(), prompt: parsed.data.prompt });
@@ -140,12 +175,12 @@ const server = createServer(async (request, response) => {
           requestApproval: (approval) => approvals.request(approval)
         });
         store.setStatus(taskId, "completed");
-        return json(response, 200, { taskId, text });
+        return json(response, 200, { taskId, text, workspaceRoot: root });
       } catch (error) {
         store.setStatus(taskId, "failed");
         const message = error instanceof Error ? error.message : String(error);
         emit({ type: "task.failed", taskId, at: new Date().toISOString(), error: message });
-        return json(response, 500, { taskId, error: message });
+        return json(response, 500, { taskId, error: message, workspaceRoot: root });
       }
     }
 
