@@ -78,10 +78,10 @@ test("vision review reads only hash-matched screenshots inside the worktree", as
   const bytes = Buffer.from("bounded-test-image");
   writeFileSync(absolute, bytes);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  let received: VisionReviewRequest | null = null;
+  const captured: { request?: VisionReviewRequest } = {};
   const provider: VisionReviewProvider = {
     async review(request) {
-      received = request;
+      captured.request = request;
       return {
         taskId: request.taskId,
         status: "pass",
@@ -104,8 +104,8 @@ test("vision review reads only hash-matched screenshots inside the worktree", as
       browserEvidence: evidence(screenshotPath, sha256),
     });
     assert.equal(result.status, "pass");
-    assert.equal(received?.images[0].sha256, sha256);
-    assert.equal(received?.images[0].base64, bytes.toString("base64"));
+    assert.equal(captured.request?.images[0].sha256, sha256);
+    assert.equal(captured.request?.images[0].base64, bytes.toString("base64"));
 
     await assert.rejects(() => service.review({
       taskId: "task-vision",
