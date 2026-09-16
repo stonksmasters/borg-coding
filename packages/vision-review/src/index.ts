@@ -209,7 +209,11 @@ export function parseVisionResponse(
 }
 
 export class OllamaVisionProvider implements VisionReviewProvider {
-  constructor(private readonly ollamaUrl: string) {}
+  private readonly ollamaUrl: string;
+
+  constructor(ollamaUrl: string) {
+    this.ollamaUrl = ollamaUrl;
+  }
 
   async review(request: VisionReviewRequest): Promise<VisionReviewResult> {
     let tagsResponse: Response;
@@ -267,10 +271,13 @@ export class OllamaVisionProvider implements VisionReviewProvider {
 }
 
 export class VisionReviewService {
-  constructor(
-    private readonly policyPath: string,
-    private readonly provider: VisionReviewProvider,
-  ) {}
+  private readonly policyPath: string;
+  private readonly provider: VisionReviewProvider;
+
+  constructor(policyPath: string, provider: VisionReviewProvider) {
+    this.policyPath = policyPath;
+    this.provider = provider;
+  }
 
   load(): VisionPolicy {
     if (!existsSync(this.policyPath)) return defaultPolicy();
