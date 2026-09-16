@@ -366,7 +366,7 @@ export class PolyglotLanguageIntelligence implements LanguageIntelligenceService
   async symbols(query: string, limit = 30): Promise<SymbolResult[]> {
     const providers = [
       this.typescript,
-      ...this.lsp.filter((provider) => provider.status().available),
+      ...this.lsp.filter((provider) => provider.status().available && provider.hasWorkspaceFiles()),
     ];
     const results = await Promise.all(providers.map((provider) => provider.symbols(query, limit)));
     return results.flat().slice(0, Math.max(1, Math.min(limit, 100)));
@@ -396,7 +396,7 @@ export class PolyglotLanguageIntelligence implements LanguageIntelligenceService
     if (path) return this.forPath(path).diagnostics(path);
     const providers = [
       this.typescript,
-      ...this.lsp.filter((provider) => provider.status().available),
+      ...this.lsp.filter((provider) => provider.status().available && provider.hasWorkspaceFiles()),
     ];
     const results = await Promise.all(providers.map((provider) => provider.diagnostics()));
     return results.flat().slice(0, 300);
