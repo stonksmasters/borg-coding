@@ -24,11 +24,19 @@ const DEFAULT_CONFIGURATION: InternetConfiguration = {
 };
 
 export class InternetConfigurationStore {
+  private readonly path: string;
+  private readonly credentials: CredentialStore;
+  private readonly credentialTarget: string;
+
   constructor(
-    private readonly path: string,
-    private readonly credentials: CredentialStore,
-    private readonly credentialTarget = "BORG Code/OllamaWebApiKey",
-  ) {}
+    path: string,
+    credentials: CredentialStore,
+    credentialTarget = "BORG Code/OllamaWebApiKey",
+  ) {
+    this.path = path;
+    this.credentials = credentials;
+    this.credentialTarget = credentialTarget;
+  }
 
   load(): InternetConfiguration {
     let stored: Partial<InternetConfiguration> = {};
@@ -42,9 +50,7 @@ export class InternetConfigurationStore {
       ? "not_configured"
       : stored.state === "connection_failed"
         ? "connection_failed"
-        : credentialConfigured
-          ? "configured"
-          : "configured";
+        : "configured";
     return {
       ...DEFAULT_CONFIGURATION,
       ...stored,
