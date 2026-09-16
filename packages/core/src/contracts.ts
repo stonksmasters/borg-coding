@@ -42,6 +42,13 @@ export type TaskEvent = z.infer<typeof TaskEventSchema>;
 export type EngineeringRole = (typeof engineeringRoles)[number];
 export type EngineeringDiscipline = (typeof engineeringDisciplines)[number];
 
+export const SpecialistPackRefSchema = z.object({
+  id: z.string().min(1),
+  version: z.number().int().positive(),
+  discipline: z.enum(engineeringDisciplines),
+});
+export type SpecialistPackRef = z.infer<typeof SpecialistPackRefSchema>;
+
 export const RoleAssignmentSchema = z.object({
   id: z.string().min(1),
   taskId: z.string().min(1),
@@ -51,6 +58,7 @@ export const RoleAssignmentSchema = z.object({
   model: z.string().min(1).nullable(),
   attempt: z.number().int().nonnegative(),
   capabilities: z.array(z.string().min(1)),
+  specialistPacks: z.array(SpecialistPackRefSchema).default([]),
   createdAt: z.string().datetime(),
   startedAt: z.string().datetime().nullable(),
   completedAt: z.string().datetime().nullable(),
@@ -82,11 +90,13 @@ export function createRoleAssignment(input: {
   model: string | null;
   attempt?: number;
   capabilities: readonly string[];
+  specialistPacks?: readonly SpecialistPackRef[];
 }): RoleAssignment {
   const now = new Date().toISOString();
   return RoleAssignmentSchema.parse({
     ...input,
     capabilities: [...input.capabilities],
+    specialistPacks: [...(input.specialistPacks ?? [])],
     attempt: input.attempt ?? 0,
     status: "active",
     createdAt: now,
