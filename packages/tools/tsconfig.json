@@ -3,6 +3,7 @@
   "compilerOptions": { "outDir": "dist", "rootDir": "src", "declaration": true, "composite": true },
   "references": [
     { "path": "../core" },
+    { "path": "../language-intelligence" },
     { "path": "../repository" },
     { "path": "../verification" }
   ],

@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/core" },
     { "path": "./packages/repository" },
+    { "path": "./packages/language-intelligence" },
     { "path": "./packages/context" },
     { "path": "./packages/verification" },
     { "path": "./packages/models" },

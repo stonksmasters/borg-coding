@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ToolName, ToolTurn } from "@borg/core";
+import { createLanguageIntelligence } from "@borg/language-intelligence";
 import { RepositoryTools } from "@borg/repository";
 import { verifyProject } from "@borg/verification";
 
@@ -13,35 +14,34 @@ function requiredString(input: Record<string, unknown>, key: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${key} must be a non-empty string`);
   return value;
 }
-
+function optionalString(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`${key} must be a string`);
+  return value;
+}
 function stringValue(input: Record<string, unknown>, key: string): string {
   const value = input[key];
   if (typeof value !== "string") throw new Error(`${key} must be a string`);
   return value;
 }
-
 function stringArray(input: Record<string, unknown>, key: string): string[] {
   const value = input[key];
   if (value === undefined) return [];
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) throw new Error(`${key} must be an array of strings`);
   return value;
 }
-
+function positiveInteger(input: Record<string, unknown>, key: string): number {
+  const value = input[key];
+  if (!Number.isInteger(value) || (value as number) < 1) throw new Error(`${key} must be a 1-based positive integer`);
+  return value as number;
+}
 function runCommand(command: string, args: string[], cwd: string, onOutput?: (stream: "stdout" | "stderr", text: string) => void): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, shell: process.platform === "win32", env: process.env });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      stdout += text;
-      onOutput?.("stdout", text);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      stderr += text;
-      onOutput?.("stderr", text);
-    });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { const text = chunk.toString(); stdout += text; onOutput?.("stdout", text); });
+    child.stderr.on("data", (chunk: Buffer) => { const text = chunk.toString(); stderr += text; onOutput?.("stderr", text); });
     child.once("error", reject);
     child.once("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
   });
@@ -49,28 +49,32 @@ function runCommand(command: string, args: string[], cwd: string, onOutput?: (st
 
 export class WorkspaceTools {
   private readonly repository: RepositoryTools;
+  private readonly intelligence;
 
   constructor(readonly root: string, private readonly options: WorkspaceToolOptions) {
     this.repository = new RepositoryTools(root);
+    this.intelligence = createLanguageIntelligence(root);
   }
 
   async execute(turn: ToolTurn): Promise<unknown> {
     switch (turn.tool) {
-      case "read_file":
-        return { content: await this.repository.read(requiredString(turn.input, "path")) };
+      case "read_file": return { content: await this.repository.read(requiredString(turn.input, "path")) };
       case "write_file": {
-        const path = requiredString(turn.input, "path");
-        const content = stringValue(turn.input, "content");
+        const path = requiredString(turn.input, "path"); const content = stringValue(turn.input, "content");
         const checkpoint = await this.repository.createCheckpoint(this.options.taskId, path);
         await this.repository.write(path, content);
         return { path, bytes: Buffer.byteLength(content, "utf8"), checkpointId: checkpoint.id };
       }
-      case "search_text":
-        return { matches: await this.repository.searchText(requiredString(turn.input, "query")) };
-      case "git_status":
-        return { status: await this.repository.gitStatus() };
-      case "git_diff":
-        return { diff: await this.repository.gitDiff() };
+      case "search_text": return { matches: await this.repository.searchText(requiredString(turn.input, "query")) };
+      case "git_status": return { status: await this.repository.gitStatus() };
+      case "git_diff": return { diff: await this.repository.gitDiff() };
+      case "symbol_search": return { symbols: await this.intelligence.symbols(requiredString(turn.input, "query"), 50) };
+      case "file_symbols": return { symbols: await this.intelligence.fileSymbols(requiredString(turn.input, "path")) };
+      case "symbol_definition": return { locations: await this.intelligence.definitions(requiredString(turn.input, "path"), positiveInteger(turn.input, "line"), positiveInteger(turn.input, "column")) };
+      case "symbol_references": return { locations: await this.intelligence.references(requiredString(turn.input, "path"), positiveInteger(turn.input, "line"), positiveInteger(turn.input, "column")) };
+      case "symbol_implementations": return { locations: await this.intelligence.implementations(requiredString(turn.input, "path"), positiveInteger(turn.input, "line"), positiveInteger(turn.input, "column")) };
+      case "symbol_info": return { info: await this.intelligence.quickInfo(requiredString(turn.input, "path"), positiveInteger(turn.input, "line"), positiveInteger(turn.input, "column")) };
+      case "code_diagnostics": return { diagnostics: await this.intelligence.diagnostics(optionalString(turn.input, "path")) };
       case "run_command": {
         const tool = turn.tool;
         return runCommand(requiredString(turn.input, "command"), stringArray(turn.input, "args"), this.root, (stream, text) => this.options.onOutput?.(tool, stream, text));
@@ -84,10 +88,7 @@ export class WorkspaceTools {
         if (!checkpoint) return { restored: false, reason: "No checkpoint exists for this task." };
         return { restored: true, path: checkpoint.path, checkpointId: checkpoint.id };
       }
-      default: {
-        const exhaustive: never = turn.tool;
-        throw new Error(`Unsupported tool: ${exhaustive}`);
-      }
+      default: { const exhaustive: never = turn.tool; throw new Error(`Unsupported tool: ${exhaustive}`); }
     }
   }
 

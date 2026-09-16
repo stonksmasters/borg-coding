@@ -7,7 +7,7 @@ export type PermissionMode = z.infer<typeof PermissionModeSchema>;
 export const taskStatuses = ["queued", "running", "completed", "failed", "cancelled"] as const;
 export type TaskStatus = (typeof taskStatuses)[number];
 
-export const toolNames = ["read_file", "write_file", "search_text", "git_status", "git_diff", "run_command", "verify", "undo_last_change"] as const;
+export const toolNames = ["read_file", "write_file", "search_text", "git_status", "git_diff", "run_command", "verify", "undo_last_change", "symbol_search", "file_symbols", "symbol_definition", "symbol_references", "symbol_implementations", "symbol_info", "code_diagnostics"] as const;
 export const ToolNameSchema = z.enum(toolNames);
 export type ToolName = z.infer<typeof ToolNameSchema>;
 
@@ -31,6 +31,15 @@ export interface WorkspaceIndexSummary {
   languages: Record<string, number>;
 }
 
+export interface WorkspaceSymbolSummary {
+  name: string;
+  kind: string;
+  path: string;
+  line: number;
+  column: number;
+  container?: string;
+}
+
 export interface ApprovalRequest {
   approvalId: string;
   taskId: string;
@@ -42,7 +51,7 @@ export interface ApprovalRequest {
 export type AgentEvent =
   | { type: "task.started"; taskId: string; at: string; prompt: string }
   | { type: "agent.status"; taskId: string; at: string; message: string }
-  | { type: "workspace.indexed"; taskId: string; at: string; summary: WorkspaceIndexSummary; selectedFiles: string[] }
+  | { type: "workspace.indexed"; taskId: string; at: string; summary: WorkspaceIndexSummary; selectedFiles: string[]; selectedSymbols: WorkspaceSymbolSummary[] }
   | { type: "model.token"; taskId: string; at: string; text: string }
   | { type: "tool.started"; taskId: string; at: string; tool: ToolName; input: Record<string, unknown> }
   | { type: "tool.output"; taskId: string; at: string; tool: ToolName; stream: "stdout" | "stderr" | "info"; text: string }

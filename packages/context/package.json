@@ -5,14 +5,10 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test",
-    "lint": "tsc -p tsconfig.json --noEmit"
-  },
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "node --test", "lint": "tsc -p tsconfig.json --noEmit" },
   "dependencies": {
     "@borg/core": "workspace:*",
+    "@borg/language-intelligence": "workspace:*",
     "@borg/repository": "workspace:*"
   }
 }

@@ -24,15 +24,18 @@
 - [x] per-file accept and reject controls
 - [x] per-hunk accept and reject controls
 - [x] accept-all / reject-all review controls without staging or committing
-- [ ] symbol-aware retrieval and language-server integration
+- [x] TypeScript/JavaScript symbol-aware retrieval
+- [x] definitions, references, implementations, quick info, outlines and diagnostics
+- [ ] external/multi-language LSP providers
 
 ## Alpha 0.2 — coding agent
 
 - planner / implementer / reviewer / verifier roles
-- symbol-aware search and language-server integration
+- Python / Rust / Go / C# language-server providers
 - checkpoint history browser and named checkpoints
 - persistent project memory beyond structural indexing
 - review decision history and review-session persistence across task continuations
+- richer code graph and call-hierarchy context
 
 ## Later
 
