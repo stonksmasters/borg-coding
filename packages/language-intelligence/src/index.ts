@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
+import { createLspProviders, type LanguageProviderStatus, type LspLanguageIntelligence } from "./lsp-provider.ts";
 
 export interface CodeLocation {
   path: string;
@@ -46,6 +47,11 @@ export interface LanguageIntelligenceProvider {
 
 export interface LanguageIntelligenceOptions {
   allowPath?: (relativePath: string) => boolean;
+}
+
+export interface LanguageIntelligenceService extends LanguageIntelligenceProvider {
+  status(): LanguageProviderStatus[];
+  close(): Promise<void>;
 }
 
 const supportedExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
@@ -329,6 +335,88 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
   }
 }
 
-export function createLanguageIntelligence(root: string, options: LanguageIntelligenceOptions = {}): LanguageIntelligenceProvider {
-  return new TypeScriptLanguageIntelligence(root, options);
+export class PolyglotLanguageIntelligence implements LanguageIntelligenceService {
+  readonly id = "polyglot";
+  private readonly typescript: TypeScriptLanguageIntelligence;
+  private readonly lsp: LspLanguageIntelligence[];
+
+  constructor(root: string, options: LanguageIntelligenceOptions = {}, providers?: LspLanguageIntelligence[]) {
+    this.typescript = new TypeScriptLanguageIntelligence(root, options);
+    this.lsp = providers ?? createLspProviders(root, options);
+  }
+
+  supports(path: string): boolean {
+    return this.providers().some((provider) => provider.supports(path));
+  }
+
+  status(): LanguageProviderStatus[] {
+    return [
+      {
+        id: this.typescript.id,
+        label: "TypeScript / JavaScript",
+        available: true,
+        enabled: true,
+        command: "built-in TypeScript Language Service",
+        extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
+      },
+      ...this.lsp.map((provider) => provider.status()),
+    ];
+  }
+
+  async symbols(query: string, limit = 30): Promise<SymbolResult[]> {
+    const providers = [
+      this.typescript,
+      ...this.lsp.filter((provider) => provider.status().available),
+    ];
+    const results = await Promise.all(providers.map((provider) => provider.symbols(query, limit)));
+    return results.flat().slice(0, Math.max(1, Math.min(limit, 100)));
+  }
+
+  async fileSymbols(path: string): Promise<FileSymbol[]> {
+    return this.forPath(path).fileSymbols(path);
+  }
+
+  async definitions(path: string, line: number, column: number): Promise<CodeLocation[]> {
+    return this.forPath(path).definitions(path, line, column);
+  }
+
+  async references(path: string, line: number, column: number): Promise<CodeLocation[]> {
+    return this.forPath(path).references(path, line, column);
+  }
+
+  async implementations(path: string, line: number, column: number): Promise<CodeLocation[]> {
+    return this.forPath(path).implementations(path, line, column);
+  }
+
+  async quickInfo(path: string, line: number, column: number): Promise<QuickInfoResult | null> {
+    return this.forPath(path).quickInfo(path, line, column);
+  }
+
+  async diagnostics(path?: string): Promise<DiagnosticResult[]> {
+    if (path) return this.forPath(path).diagnostics(path);
+    const providers = [
+      this.typescript,
+      ...this.lsp.filter((provider) => provider.status().available),
+    ];
+    const results = await Promise.all(providers.map((provider) => provider.diagnostics()));
+    return results.flat().slice(0, 300);
+  }
+
+  async close(): Promise<void> {
+    await Promise.all(this.lsp.map((provider) => provider.close()));
+  }
+
+  private providers(): LanguageIntelligenceProvider[] {
+    return [this.typescript, ...this.lsp];
+  }
+
+  private forPath(path: string): LanguageIntelligenceProvider {
+    const provider = this.providers().find((candidate) => candidate.supports(path));
+    if (!provider) throw new Error(`Language intelligence does not support this file: ${path}`);
+    return provider;
+  }
+}
+
+export function createLanguageIntelligence(root: string, options: LanguageIntelligenceOptions = {}): LanguageIntelligenceService {
+  return new PolyglotLanguageIntelligence(root, options);
 }
