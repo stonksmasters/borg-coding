@@ -430,7 +430,14 @@ createServer((request, response) => {
     const taskId = decodeURIComponent(approvalRoute[1]);
     const task = tasks.findTask(taskId);
     if (!task) return send(response, 404, { error: "Task not found" });
-    return send(response, 200, {\n      task,\n      approval: tasks.findApproval(taskId),\n      findings: tasks.listFindings(taskId),\n      events: tasks.listEvents(taskId),\n      roleAssignments: tasks.listRoleAssignments(taskId),\n      handoffs: tasks.listHandoffs(taskId),\n    });
+    return send(response, 200, {
+      task,
+      approval: tasks.findApproval(taskId),
+      findings: tasks.listFindings(taskId),
+      events: tasks.listEvents(taskId),
+      roleAssignments: tasks.listRoleAssignments(taskId),
+      handoffs: tasks.listHandoffs(taskId),
+    });
   }
   if (request.method === "POST" && approvalRoute) {
     const taskId = decodeURIComponent(approvalRoute[1]);
