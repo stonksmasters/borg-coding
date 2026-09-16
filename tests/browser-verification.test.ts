@@ -60,6 +60,9 @@ test("managed development servers stay bounded to the approved worktree", async 
     }, context) as { running: boolean; url: string };
     assert.equal(started.running, true);
     assert.equal(started.url, `${url}/`);
+    assert.equal(runtime.latest(context.taskId)?.passed, false);
+    assert.match(runtime.latest(context.taskId)?.issues.join(" ") ?? "", /DOM evidence/);
+    assert.match(runtime.latest(context.taskId)?.issues.join(" ") ?? "", /screenshot evidence/);
     const response = await fetch(url);
     assert.equal(await response.text(), "ready");
 
