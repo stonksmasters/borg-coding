@@ -4,6 +4,9 @@ export const taskStates = ["CREATED", "CLASSIFYING", "DISCOVERING", "PLANNING", 
 export const riskLevels = ["R0", "R1", "R2", "R3", "R4"] as const;
 export const severityLevels = ["info", "low", "medium", "high", "critical"] as const;
 export const approvalStatuses = ["REQUESTED", "APPROVED", "REJECTED"] as const;
+export const engineeringRoles = ["architect", "implementer", "verifier", "reviewer"] as const;
+export const engineeringDisciplines = ["general", "frontend", "backend", "database", "security", "qa", "devops", "infrastructure"] as const;
+export const roleAssignmentStatuses = ["pending", "active", "completed", "failed"] as const;
 
 export const TaskSchema = z.object({
   id: z.string().min(1), projectId: z.string().min(1), request: z.string().min(1),
@@ -34,6 +37,67 @@ export type Finding = z.infer<typeof FindingSchema>;
 
 export const TaskEventSchema = z.object({ id: z.string().min(1), taskId: z.string().min(1), type: z.string().min(1), payload: z.record(z.string(), z.unknown()), occurredAt: z.string().datetime() });
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
+
+
+export type EngineeringRole = (typeof engineeringRoles)[number];
+export type EngineeringDiscipline = (typeof engineeringDisciplines)[number];
+
+export const RoleAssignmentSchema = z.object({
+  id: z.string().min(1),
+  taskId: z.string().min(1),
+  role: z.enum(engineeringRoles),
+  discipline: z.enum(engineeringDisciplines),
+  status: z.enum(roleAssignmentStatuses),
+  model: z.string().min(1).nullable(),
+  attempt: z.number().int().nonnegative(),
+  capabilities: z.array(z.string().min(1)),
+  createdAt: z.string().datetime(),
+  startedAt: z.string().datetime().nullable(),
+  completedAt: z.string().datetime().nullable(),
+});
+export type RoleAssignment = z.infer<typeof RoleAssignmentSchema>;
+
+export const HandoffSchema = z.object({
+  id: z.string().min(1),
+  taskId: z.string().min(1),
+  fromRole: z.enum(engineeringRoles),
+  toRole: z.enum(engineeringRoles),
+  objective: z.string().min(1),
+  constraints: z.array(z.string()),
+  repositoryContext: z.array(z.string()),
+  completedWork: z.array(z.string()),
+  changedFiles: z.array(z.string()),
+  evidence: z.array(z.string()),
+  openRisks: z.array(z.string()),
+  requiredNextAction: z.string().min(1),
+  createdAt: z.string().datetime(),
+});
+export type Handoff = z.infer<typeof HandoffSchema>;
+
+export function createRoleAssignment(input: {
+  id: string;
+  taskId: string;
+  role: EngineeringRole;
+  discipline: EngineeringDiscipline;
+  model: string | null;
+  attempt?: number;
+  capabilities: readonly string[];
+}): RoleAssignment {
+  const now = new Date().toISOString();
+  return RoleAssignmentSchema.parse({
+    ...input,
+    capabilities: [...input.capabilities],
+    attempt: input.attempt ?? 0,
+    status: "active",
+    createdAt: now,
+    startedAt: now,
+    completedAt: null,
+  });
+}
+
+export function createHandoff(input: Omit<Handoff, "createdAt">): Handoff {
+  return HandoffSchema.parse({ ...input, createdAt: new Date().toISOString() });
+}
 
 export function createTask(input: Pick<Task, "id" | "projectId" | "request"> & Partial<Pick<Task, "riskLevel">>): Task {
   const now = new Date().toISOString();
