@@ -49,6 +49,40 @@ Configure it in the Tools dialog or through `POST /api/vision`:
 
 Before image bytes leave the worktree boundary, BORG verifies that every screenshot resolves inside the approved worktree, rejects symlink escapes, enforces a 12 MB limit, and recomputes the SHA-256 digest recorded by browser verification. The reviewer receives screenshots as untrusted evidence and produces schema-constrained findings with screenshot path/hash, viewport, confidence, and selector provenance.
 
-## Remaining Alpha 0.2 work
+## Deterministic visual regression
 
-- Named visual baselines and pixel/regression comparison profiles.
+Repositories opt in by adding `.localcode/visual-regression.json`. Profiles select quick or full verification, optionally select screenshot names, define per-pixel sensitivity, set percentage and absolute changed-pixel budgets, and declare bounded ignored regions.
+
+```json
+{
+  "version": 1,
+  "baselineRoot": ".localcode/visual-baselines",
+  "profiles": [
+    {
+      "id": "app-shell",
+      "verificationProfiles": ["quick", "full"],
+      "screenshotNames": ["responsive-mobile", "responsive-desktop"],
+      "pixelThreshold": 0.1,
+      "maxChangedPixelRatio": 0.01,
+      "maxChangedPixels": 500,
+      "ignoreRegions": [{ "x": 0, "y": 0, "width": 120, "height": 40 }]
+    }
+  ]
+}
+```
+
+Baseline PNGs are durable repository files under the configured baseline root. Current screenshots and highlighted diff images remain task evidence under `.borg/evidence/`. Every candidate and baseline is constrained to the approved worktree, limited by size and dimensions, and hash-checked against browser evidence.
+
+Comparison outcomes are explicit:
+
+- `pass` — changes remain inside both configured budgets.
+- `regression` — changed pixels exceed a percentage or absolute budget and enter bounded repair.
+- `missing-baseline` — verification may continue, but the workspace presents an explicit acceptance control.
+- `dimension-mismatch` — verification fails until the layout is repaired or a new baseline is deliberately accepted.
+- `failed` — malformed configuration, unsafe paths, tampered evidence, or unsupported images fail verification.
+
+BORG never creates or replaces a baseline autonomously. After review reaches `DELIVERY_READY`, the operator may accept the verified missing-baseline candidates. Accepted files remain in the isolated worktree and are included in the normal patch or commit delivery.
+
+## Alpha 0.2 completion
+
+Alpha 0.2 now combines deterministic DOM, console, network, responsive, accessibility, and pixel-regression evidence with optional local semantic vision review.
