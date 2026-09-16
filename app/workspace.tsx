@@ -17,6 +17,11 @@ type ToolConfig = { internetEnabled: boolean; webFetchAvailable: boolean; webSea
 type VisionConfig = { enabled: boolean; provider: "ollama"; model: string; maxScreenshots: number; timeoutMs: number; blockingSeverity: "medium" | "high" | "critical"; configured: boolean; updatedAt: string };
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
 type Finding = { severity: string; title: string; description: string; file?: string; line?: number };
+type EngineeringRole = "architect" | "implementer" | "verifier" | "reviewer";
+type EngineeringDiscipline = "general" | "frontend" | "backend" | "database" | "security" | "qa" | "devops" | "infrastructure";
+type RoleAssignment = { id: string; taskId: string; role: EngineeringRole; discipline: EngineeringDiscipline; model: string | null; attempt: number; status: "pending" | "active" | "completed" | "failed"; capabilities: string[]; startedAt: string; completedAt: string | null };
+type Handoff = { id: string; taskId: string; fromRole: EngineeringRole; toRole: EngineeringRole; objective: string; requiredNextAction: string; createdAt: string };
+type DisciplineRoute = { primary: EngineeringDiscipline; disciplines: EngineeringDiscipline[]; signals: string[] };
 type BaselineCandidate = { profileId: string; screenshotName: string; candidatePath: string; candidateSha256: string; width: number; height: number };
 type VisualRegressionReport = {
   status: "disabled" | "pass" | "regression" | "missing-baseline" | "dimension-mismatch" | "failed";
@@ -49,6 +54,9 @@ type StreamEvent = {
   review?: { verdict: "pass" | "repair"; summary: string; findings: Finding[] };
   visionReview?: { status: "disabled" | "pass" | "repair" | "inconclusive" | "unavailable" | "failed"; summary: string; model: string; findings: Finding[]; screenshots: { path: string; sha256: string; width: number; height: number }[] };
   visualRegression?: VisualRegressionReport;
+  assignment?: RoleAssignment;
+  handoff?: Handoff;
+  route?: DisciplineRoute;
   attempt?: number;
   maximum?: number;
 };
@@ -114,6 +122,8 @@ export function BorgWorkspace() {
   const [baselineCandidates, setBaselineCandidates] = useState<BaselineCandidate[]>([]);
   const [baselineBusy, setBaselineBusy] = useState(false);
   const [baselineError, setBaselineError] = useState("");
+  const [activeRole, setActiveRole] = useState<RoleAssignment | null>(null);
+  const [disciplineRoute, setDisciplineRoute] = useState<DisciplineRoute | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [stages, setStages] = useState<Stage[]>(emptyStages);
   const abortRef = useRef<AbortController | null>(null);
@@ -167,7 +177,7 @@ export function BorgWorkspace() {
       if (!latest || !["AWAITING_APPROVAL", "DELIVERY_READY"].includes(latest.state)) return;
       const detailResponse = await fetch(`http://127.0.0.1:4311/api/tasks/${encodeURIComponent(latest.id)}/approval`);
       if (!detailResponse.ok) return;
-      const detail = await detailResponse.json() as { approval?: Approval; events?: { type: string; payload: Record<string, unknown> }[] };
+      const detail = await detailResponse.json() as { approval?: Approval; events?: { type: string; payload: Record<string, unknown> }[]; roleAssignments?: RoleAssignment[]; handoffs?: Handoff[] };
       if (!detail.approval) return;
       const responseEvent = detail.events?.findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED");
       const answer = typeof responseEvent?.payload.answer === "string" ? responseEvent.payload.answer : "The saved plan is ready for approval.";
@@ -177,7 +187,9 @@ export function BorgWorkspace() {
       setStages(stagesForState(latest.state));
       setApproval(detail.approval);
       setDeliveryReady(latest.state === "DELIVERY_READY");
-      setMessages([{ id: crypto.randomUUID(), role: "assistant", text: answer }, { id: crypto.randomUUID(), role: "system", text: latest.state === "DELIVERY_READY" ? "This verified task is ready for delivery." : "This approval was restored from the durable task history." }]);
+      setActiveRole(detail.roleAssignments?.findLast((assignment) => assignment.status === "active") ?? null);
+      const latestHandoff = detail.handoffs?.at(-1);
+      setMessages([{ id: crypto.randomUUID(), role: "assistant", text: answer }, { id: crypto.randomUUID(), role: "system", text: latest.state === "DELIVERY_READY" ? "This verified task is ready for delivery." : "This approval was restored from the durable task history." }, ...(latestHandoff ? [{ id: crypto.randomUUID(), role: "system" as const, text: `Latest handoff: ${latestHandoff.fromRole} → ${latestHandoff.toRole}. ${latestHandoff.requiredNextAction}` }] : [])]);
     }).catch(() => undefined);
   }, []);
 
@@ -195,6 +207,15 @@ export function BorgWorkspace() {
       setTaskState(event.state);
       setStages(stagesForState(event.state));
       setDeliveryReady(event.state === "DELIVERY_READY");
+    } else if (event.type === "discipline.routed" && event.route) {
+      setDisciplineRoute(event.route);
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Routed to ${event.route.primary} with ${event.route.disciplines.join(", ")} coverage.` }]);
+    } else if (event.type === "role.started" && event.assignment) {
+      setActiveRole(event.assignment);
+    } else if (event.type === "role.completed" && event.assignment) {
+      setActiveRole((current) => current?.id === event.assignment?.id ? null : current);
+    } else if (event.type === "role.handoff" && event.handoff) {
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `${event.handoff?.fromRole} → ${event.handoff?.toRole}: ${event.handoff?.requiredNextAction}` }]);
     } else if (event.type === "message.delta" && event.text) {
       setMessages((current) => {
         const last = current.at(-1);
@@ -431,6 +452,8 @@ export function BorgWorkspace() {
     setBaselineCandidates([]);
     setBaselineError("");
     setApprovalError("");
+    setActiveRole(null);
+    setDisciplineRoute(null);
     setStages(emptyStages.map((stage) => ({ ...stage })));
     setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", text: cleanPrompt }]);
 
@@ -534,7 +557,7 @@ export function BorgWorkspace() {
       <SidebarInset className="min-w-0 bg-[#0d1117] text-slate-100">
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400 hover:bg-white/8 hover:text-white" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeTitle}</span></div></div>
-          <div className="flex items-center gap-2"><Select value={mode} onValueChange={setMode}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${modelName} · Ollama` : "Runtime not connected"}</div></div>
+          <div className="flex items-center gap-2">{activeRole && <div className="hidden rounded-md border border-sky-300/20 bg-sky-300/8 px-3 py-1.5 text-xs capitalize text-sky-200 md:block">{activeRole.role} · {activeRole.discipline}</div>}<Select value={mode} onValueChange={setMode}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${modelName} · Ollama` : "Runtime not connected"}</div></div>
         </header>
 
         <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_310px]">
@@ -568,7 +591,7 @@ export function BorgWorkspace() {
           <aside className="hidden border-l border-white/8 bg-[#0a0d12] xl:block">
             <div className="border-b border-white/8 p-5"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Runtime</p><div className="mt-4 flex items-center gap-3"><div className={`grid size-9 place-items-center rounded-lg border ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8" : "border-white/8 bg-white/4"}`}><Bot className={`size-4 ${runtimeConnected ? "text-[#a7ff4f]" : "text-slate-500"}`} /></div><div><p className="text-sm font-medium">Ollama direct</p><p className={`text-xs ${runtimeConnected ? "text-[#a7ff4f]/80" : "text-amber-200/80"}`}>{runtimeConnected ? modelName : "Not connected"}</p></div></div></div>
             <div className="space-y-6 p-5">
-              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Access scope</p><button onClick={() => setAccessOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Repository</dt><dd className="truncate text-right text-slate-300">{accessConfig?.repositoryName ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Documents</dt><dd className="text-slate-300">{accessConfig?.documents.length ?? 0}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Permission</dt><dd className="text-slate-300">Approval gated</dd></div><div className="flex justify-between"><dt className="text-slate-500">Task state</dt><dd className="text-slate-300">{taskState}</dd></div></dl></div>
+              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Access scope</p><button onClick={() => setAccessOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Repository</dt><dd className="truncate text-right text-slate-300">{accessConfig?.repositoryName ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Documents</dt><dd className="text-slate-300">{accessConfig?.documents.length ?? 0}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Permission</dt><dd className="text-slate-300">Approval gated</dd></div><div className="flex justify-between"><dt className="text-slate-500">Task state</dt><dd className="text-slate-300">{taskState}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Active role</dt><dd className="capitalize text-slate-300">{activeRole?.role ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Discipline</dt><dd className="capitalize text-slate-300">{activeRole?.discipline ?? disciplineRoute?.primary ?? "Unrouted"}</dd></div></dl></div>
               <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Tools</p><button onClick={() => setToolsOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between"><dt className="text-slate-500">Internet</dt><dd className={toolConfig?.internetEnabled ? "text-[#a7ff4f]" : "text-slate-500"}>{toolConfig?.internetEnabled ? "Allowed" : "Disabled"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Page fetch</dt><dd className="text-slate-300">{toolConfig?.webFetchAvailable ? "Available" : "Off"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Web search</dt><dd className="text-slate-300">{toolConfig?.webSearchAvailable ? "Available" : "Needs key"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Vision review</dt><dd className={visionConfig?.enabled ? "truncate text-[#a7ff4f]" : "text-slate-500"}>{visionConfig?.enabled ? visionConfig.model : "Disabled"}</dd></div></dl></div>
               <div><p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Protection</p><div className="rounded-lg border border-white/8 bg-white/[0.025] p-3 text-sm leading-5 text-slate-400">Only the approved repository map, key project files, and listed documents are sent to Ollama. Secret-like files are excluded.</div></div>
             </div>
