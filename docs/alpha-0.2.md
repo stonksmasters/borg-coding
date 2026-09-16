@@ -43,7 +43,7 @@ Configure it in the Tools dialog or through `POST /api/vision`:
 
 - `enabled` — opt in to screenshot review.
 - `model` — local Ollama vision model tag.
-- `maximumScreenshots` — bounded from one to six; defaults to three.
+- `maxScreenshots` — bounded from one to six; defaults to three.
 - `timeoutMs` — bounded request timeout; defaults to 180 seconds.
 - `blockingSeverity` — minimum finding severity that requests repair; defaults to high.
 
