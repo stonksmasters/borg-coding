@@ -27,6 +27,6 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Granular review smoke test
-        run: node packages/repository/test/granular-review-smoke.mjs
+        run: node scripts/review-smoke.mjs
       - name: TypeScript language intelligence smoke test
         run: node packages/language-intelligence/test/typescript-smoke.mjs
