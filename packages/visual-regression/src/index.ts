@@ -392,6 +392,8 @@ export class VisualRegressionService {
     try {
       const candidateFile = checkedFile(worktree, screenshot.path, screenshot.sha256);
       const candidatePng = decodePng(candidateFile.bytes);
+      candidate.width = candidatePng.width;
+      candidate.height = candidatePng.height;
       const baselineRelative = join(config.baselineRoot, profile.id, `${safeName(screenshot.name)}.png`);
       const baselineAbsolute = resolve(worktree, baselineRelative);
       if (!isInside(worktree, baselineAbsolute)) throw new Error("Visual baseline path escaped the approved worktree.");
@@ -413,9 +415,11 @@ export class VisualRegressionService {
       const changedPixelRatio = totalPixels ? comparison.changedPixels / totalPixels : 0;
       const regression = changedPixelRatio > profile.maxChangedPixelRatio
         || (profile.maxChangedPixels !== undefined && comparison.changedPixels > profile.maxChangedPixels);
-      const diffRoot = resolve(worktree, ".borg", "evidence", "visual", profile.id);
-      if (!isInside(worktree, diffRoot)) throw new Error("Visual diff path escaped the approved worktree.");
-      mkdirSync(diffRoot, { recursive: true });
+      const configuredDiffRoot = resolve(worktree, ".borg", "evidence", "visual", profile.id);
+      if (!isInside(worktree, configuredDiffRoot)) throw new Error("Visual diff path escaped the approved worktree.");
+      mkdirSync(configuredDiffRoot, { recursive: true });
+      const diffRoot = realpathSync(configuredDiffRoot);
+      if (!isInside(worktree, diffRoot)) throw new Error("Visual diff directory escapes through a link.");
       const diffAbsolute = join(diffRoot, `${safeName(screenshot.name)}-${randomUUID().slice(0, 8)}-diff.png`);
       writeFileSync(diffAbsolute, comparison.diff);
       return {
@@ -447,9 +451,12 @@ export class VisualRegressionService {
     const candidate = checkedFile(worktree, input.candidatePath, input.candidateSha256);
     const png = decodePng(candidate.bytes);
     if (png.width !== input.width || png.height !== input.height) throw new Error("Candidate dimensions changed before baseline acceptance.");
-    const target = resolve(worktree, loaded.config.baselineRoot, profile.id, `${safeName(input.screenshotName)}.png`);
-    if (!isInside(worktree, target)) throw new Error("Visual baseline target escaped the approved worktree.");
-    mkdirSync(resolve(target, ".."), { recursive: true });
+    const configuredParent = resolve(worktree, loaded.config.baselineRoot, profile.id);
+    if (!isInside(worktree, configuredParent)) throw new Error("Visual baseline target escaped the approved worktree.");
+    mkdirSync(configuredParent, { recursive: true });
+    const parent = realpathSync(configuredParent);
+    if (!isInside(worktree, parent)) throw new Error("Visual baseline directory escapes through a link.");
+    const target = join(parent, `${safeName(input.screenshotName)}.png`);
     const temporary = `${target}.borg-${randomUUID()}.tmp`;
     try {
       copyFileSync(candidate.absolute, temporary);
