@@ -19,7 +19,8 @@ type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" |
 type Finding = { severity: string; title: string; description: string; file?: string; line?: number };
 type EngineeringRole = "architect" | "implementer" | "verifier" | "reviewer";
 type EngineeringDiscipline = "general" | "frontend" | "backend" | "database" | "security" | "qa" | "devops" | "infrastructure";
-type RoleAssignment = { id: string; taskId: string; role: EngineeringRole; discipline: EngineeringDiscipline; model: string | null; attempt: number; status: "pending" | "active" | "completed" | "failed"; capabilities: string[]; createdAt: string; startedAt: string | null; completedAt: string | null };
+type SpecialistPackRef = { id: string; version: number; discipline: EngineeringDiscipline };
+type RoleAssignment = { id: string; taskId: string; role: EngineeringRole; discipline: EngineeringDiscipline; model: string | null; attempt: number; status: "pending" | "active" | "completed" | "failed"; capabilities: string[]; specialistPacks: SpecialistPackRef[]; createdAt: string; startedAt: string | null; completedAt: string | null };
 type Handoff = { id: string; taskId: string; fromRole: EngineeringRole; toRole: EngineeringRole; objective: string; requiredNextAction: string; createdAt: string };
 type DisciplineRoute = { primary: EngineeringDiscipline; disciplines: EngineeringDiscipline[]; reasons: string[] };
 type BaselineCandidate = { profileId: string; screenshotName: string; candidatePath: string; candidateSha256: string; width: number; height: number };
@@ -57,6 +58,7 @@ type StreamEvent = {
   assignment?: RoleAssignment;
   handoff?: Handoff;
   route?: DisciplineRoute;
+  packs?: SpecialistPackRef[];
   attempt?: number;
   maximum?: number;
 };
@@ -124,6 +126,7 @@ export function BorgWorkspace() {
   const [baselineError, setBaselineError] = useState("");
   const [activeRole, setActiveRole] = useState<RoleAssignment | null>(null);
   const [disciplineRoute, setDisciplineRoute] = useState<DisciplineRoute | null>(null);
+  const [activePacks, setActivePacks] = useState<SpecialistPackRef[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [stages, setStages] = useState<Stage[]>(emptyStages);
   const abortRef = useRef<AbortController | null>(null);
@@ -187,7 +190,9 @@ export function BorgWorkspace() {
       setStages(stagesForState(latest.state));
       setApproval(detail.approval);
       setDeliveryReady(latest.state === "DELIVERY_READY");
-      setActiveRole(detail.roleAssignments?.findLast((assignment) => assignment.status === "active") ?? null);
+      const restoredRole = detail.roleAssignments?.findLast((assignment) => assignment.status === "active") ?? null;
+      setActiveRole(restoredRole);
+      setActivePacks(restoredRole?.specialistPacks ?? detail.roleAssignments?.at(-1)?.specialistPacks ?? []);
       const latestHandoff = detail.handoffs?.at(-1);
       setMessages([{ id: crypto.randomUUID(), role: "assistant", text: answer }, { id: crypto.randomUUID(), role: "system", text: latest.state === "DELIVERY_READY" ? "This verified task is ready for delivery." : "This approval was restored from the durable task history." }, ...(latestHandoff ? [{ id: crypto.randomUUID(), role: "system" as const, text: `Latest handoff: ${latestHandoff.fromRole} → ${latestHandoff.toRole}. ${latestHandoff.requiredNextAction}` }] : [])]);
     }).catch(() => undefined);
@@ -211,8 +216,12 @@ export function BorgWorkspace() {
       const route = event.route;
       setDisciplineRoute(route);
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Routed to ${route.primary} with ${route.disciplines.join(", ")} coverage.` }]);
+    } else if (event.type === "specialist.packs.selected" && event.packs) {
+      setActivePacks(event.packs);
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Activated specialist packs: ${event.packs?.map((pack) => `${pack.id}@${pack.version}`).join(", ")}.` }]);
     } else if (event.type === "role.started" && event.assignment) {
       setActiveRole(event.assignment);
+      setActivePacks(event.assignment.specialistPacks);
     } else if (event.type === "role.completed" && event.assignment) {
       setActiveRole((current) => current?.id === event.assignment?.id ? null : current);
     } else if (event.type === "role.handoff" && event.handoff) {
@@ -455,6 +464,7 @@ export function BorgWorkspace() {
     setApprovalError("");
     setActiveRole(null);
     setDisciplineRoute(null);
+    setActivePacks([]);
     setStages(emptyStages.map((stage) => ({ ...stage })));
     setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", text: cleanPrompt }]);
 
@@ -592,7 +602,7 @@ export function BorgWorkspace() {
           <aside className="hidden border-l border-white/8 bg-[#0a0d12] xl:block">
             <div className="border-b border-white/8 p-5"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Runtime</p><div className="mt-4 flex items-center gap-3"><div className={`grid size-9 place-items-center rounded-lg border ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8" : "border-white/8 bg-white/4"}`}><Bot className={`size-4 ${runtimeConnected ? "text-[#a7ff4f]" : "text-slate-500"}`} /></div><div><p className="text-sm font-medium">Ollama direct</p><p className={`text-xs ${runtimeConnected ? "text-[#a7ff4f]/80" : "text-amber-200/80"}`}>{runtimeConnected ? modelName : "Not connected"}</p></div></div></div>
             <div className="space-y-6 p-5">
-              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Access scope</p><button onClick={() => setAccessOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Repository</dt><dd className="truncate text-right text-slate-300">{accessConfig?.repositoryName ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Documents</dt><dd className="text-slate-300">{accessConfig?.documents.length ?? 0}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Permission</dt><dd className="text-slate-300">Approval gated</dd></div><div className="flex justify-between"><dt className="text-slate-500">Task state</dt><dd className="text-slate-300">{taskState}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Active role</dt><dd className="capitalize text-slate-300">{activeRole?.role ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Discipline</dt><dd className="capitalize text-slate-300">{activeRole?.discipline ?? disciplineRoute?.primary ?? "Unrouted"}</dd></div></dl></div>
+              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Access scope</p><button onClick={() => setAccessOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Repository</dt><dd className="truncate text-right text-slate-300">{accessConfig?.repositoryName ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Documents</dt><dd className="text-slate-300">{accessConfig?.documents.length ?? 0}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Permission</dt><dd className="text-slate-300">Approval gated</dd></div><div className="flex justify-between"><dt className="text-slate-500">Task state</dt><dd className="text-slate-300">{taskState}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Active role</dt><dd className="capitalize text-slate-300">{activeRole?.role ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Discipline</dt><dd className="capitalize text-slate-300">{activeRole?.discipline ?? disciplineRoute?.primary ?? "Unrouted"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Packs</dt><dd className="truncate text-right text-slate-300" title={activePacks.map((pack) => `${pack.id}@${pack.version}`).join(", ")}>{activePacks.length ? activePacks.map((pack) => pack.discipline).join(", ") : "None"}</dd></div></dl></div>
               <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Tools</p><button onClick={() => setToolsOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between"><dt className="text-slate-500">Internet</dt><dd className={toolConfig?.internetEnabled ? "text-[#a7ff4f]" : "text-slate-500"}>{toolConfig?.internetEnabled ? "Allowed" : "Disabled"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Page fetch</dt><dd className="text-slate-300">{toolConfig?.webFetchAvailable ? "Available" : "Off"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Web search</dt><dd className="text-slate-300">{toolConfig?.webSearchAvailable ? "Available" : "Needs key"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Vision review</dt><dd className={visionConfig?.enabled ? "truncate text-[#a7ff4f]" : "text-slate-500"}>{visionConfig?.enabled ? visionConfig.model : "Disabled"}</dd></div></dl></div>
               <div><p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Protection</p><div className="rounded-lg border border-white/8 bg-white/[0.025] p-3 text-sm leading-5 text-slate-400">Only the approved repository map, key project files, and listed documents are sent to Ollama. Secret-like files are excluded.</div></div>
             </div>
