@@ -254,7 +254,7 @@ createServer((request, response) => {
     });
     return;
   }
-  const baselineRoute = request.url?.match(/^\\/api\\/tasks\\/([^/]+)\\/visual-baselines$/);
+  const baselineRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/visual-baselines$/);
   if (request.method === "POST" && baselineRoute) {
     const taskId = decodeURIComponent(baselineRoute[1]);
     void readJson(request).then((input) => {
