@@ -213,24 +213,41 @@ createServer((request, response) => {
       if (String(event.type).startsWith("tool.")) appendTaskEvent(taskId, String(event.type).toUpperCase().replaceAll(".", "_"), enriched);
     };
     const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+    const teamPolicy = teamPolicies.load(access.load().repositoryPath);
+    const primaryDiscipline = (task.disciplines[0] ?? teamPolicy.defaultDiscipline) as EngineeringDiscipline;
+    let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
       let repairEvidence = "";
       while (task) {
+        const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model);
+        activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, emit);
         const repairPrompt = task.attempts > 0
           ? `This is bounded repair attempt ${task.attempts} of ${maxRepairAttempts}. Fix only the evidenced failure below, then inspect the diff.\n\n${repairEvidence}`
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
         const { answer, usedTools } = await runOllamaAgent({
-          ollamaUrl, model, tools, mode: "agent", taskContext, phase: "implementation", emit,
+          ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", phase: "implementation", emit,
           messages: [
             { role: "system", content: `You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Use exact, small patches; inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, start the local app with browser_server_start, inspect and interact with it through browser tools, capture responsive screenshots, console/network failures, DOM evidence, and accessibility results, then stop it. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
         });
-        appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model, answer, usedTools, attempt: task.attempts });
+        appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, attempt: task.attempts });
+        finishRole(activeRoleAssignment, "completed", emit);
+        recordHandoff({
+          task,
+          fromRole: "implementer",
+          toRole: "verifier",
+          objective: task.request,
+          completedWork: [task.attempts > 0 ? `Repair attempt ${task.attempts} completed.` : "Approved implementation completed."],
+          evidence: [`Implementation response recorded with ${usedTools ? "tool use" : "no tool use"}.`],
+          requiredNextAction: "Run deterministic verification and collect independent evidence.",
+        }, emit);
+        const verifierModel = teamPolicies.modelFor(teamPolicy, "verifier", model);
+        activeRoleAssignment = beginRole(task, "verifier", primaryDiscipline, verifierModel, emit);
         task = transitionTask(task, "VERIFYING", emit);
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         emit({ type: "tool.started", tool: "verification_run", input: { profile: "quick" } });
-        const verification = await tools.execute({ function: { name: "verification_run", arguments: { profile: "quick" } } }, "agent", taskContext) as {
+        const verification = await tools.execute({ function: { name: "verification_run", arguments: { profile: "quick" } } }, "agent", taskContext, "verifier") as {
           passed?: boolean;
           results?: unknown[];
           browserEvidence?: BrowserEvidenceReport | null;
@@ -243,6 +260,17 @@ createServer((request, response) => {
           emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
         }
         if (!verification.passed) {
+          finishRole(activeRoleAssignment, "completed", emit);
+          recordHandoff({
+            task,
+            fromRole: "verifier",
+            toRole: "implementer",
+            objective: task.request,
+            evidence: [JSON.stringify(verification).slice(0, 20_000)],
+            openRisks: ["Deterministic verification failed."],
+            requiredNextAction: "Repair only the evidenced verification failure.",
+          }, emit);
+          activeRoleAssignment = null;
           emit({ type: "stage.updated", stage: "Verification", status: "failed" });
           if (task.attempts >= maxRepairAttempts) {
             task = transitionTask(task, "BLOCKED", emit);
@@ -275,6 +303,17 @@ createServer((request, response) => {
           appendTaskEvent(taskId, visionEvent, { review: visionReview, attempt: task.attempts });
           emit({ type: "vision.review.completed", visionReview });
           if (visionReview.status === "repair") {
+            finishRole(activeRoleAssignment, "completed", emit);
+            recordHandoff({
+              task,
+              fromRole: "verifier",
+              toRole: "implementer",
+              objective: task.request,
+              evidence: [JSON.stringify(visionReview).slice(0, 20_000)],
+              openRisks: ["Local vision review found a blocking visual defect."],
+              requiredNextAction: "Repair only the evidenced visual defect.",
+            }, emit);
+            activeRoleAssignment = null;
             tasks.replaceFindings(taskId, visionReview.findings);
             emit({ type: "stage.updated", stage: "Verification", status: "failed" });
             if (task.attempts >= maxRepairAttempts) {
@@ -290,16 +329,40 @@ createServer((request, response) => {
           }
         }
 
+        const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier") as { stdout?: string };
+        const diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier") as { stdout?: string };
+        finishRole(activeRoleAssignment, "completed", emit);
+        recordHandoff({
+          task,
+          fromRole: "verifier",
+          toRole: "reviewer",
+          objective: task.request,
+          changedFiles: (status.stdout ?? "").split("\n").filter(Boolean).slice(0, 200),
+          evidence: [JSON.stringify(verification).slice(0, 20_000)],
+          requiredNextAction: "Review the verified diff from fresh context without mutation access.",
+        }, emit);
+        activeRoleAssignment = null;
         emit({ type: "stage.updated", stage: "Verification", status: "complete" });
         task = transitionTask(task, "REVIEWING", emit);
         emit({ type: "stage.updated", stage: "Review", status: "active" });
-        const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext) as { stdout?: string };
-        const diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext) as { stdout?: string };
-        const review = await runFreshReview({ ollamaUrl, model, taskId, request: task.request, diff: diff.stdout ?? "", verification });
+        const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model);
+        activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, emit);
+        const review = await runFreshReview({ ollamaUrl, model: reviewerModel, taskId, request: task.request, diff: diff.stdout ?? "", verification });
+        finishRole(activeRoleAssignment, "completed", emit);
+        activeRoleAssignment = null;
         tasks.replaceFindings(taskId, [...(visionReview?.findings ?? []), ...review.findings]);
-        appendTaskEvent(taskId, "REVIEW_COMPLETED", { review, status, worktreePath: approval.worktreePath, attempt: task.attempts });
+        appendTaskEvent(taskId, "REVIEW_COMPLETED", { review, status, worktreePath: approval.worktreePath, model: reviewerModel, role: "reviewer", attempt: task.attempts });
         emit({ type: "review.completed", review });
         if (review.verdict === "repair") {
+          recordHandoff({
+            task,
+            fromRole: "reviewer",
+            toRole: "implementer",
+            objective: task.request,
+            evidence: review.findings.map((finding) => `${finding.severity}: ${finding.title} — ${finding.description}`).slice(0, 20),
+            openRisks: [review.summary],
+            requiredNextAction: "Repair only the blocking findings from independent review.",
+          }, emit);
           emit({ type: "stage.updated", stage: "Review", status: "failed" });
           if (task.attempts >= maxRepairAttempts) {
             task = transitionTask(task, "BLOCKED", emit);
@@ -323,6 +386,7 @@ createServer((request, response) => {
         return;
       }
     })().catch(async (error) => {
+      if (activeRoleAssignment?.status === "active") finishRole(activeRoleAssignment, "failed", emit);
       await Promise.allSettled([
         tools.execute({ function: { name: "browser_close", arguments: {} } }, "agent", taskContext),
         tools.execute({ function: { name: "browser_server_stop", arguments: {} } }, "agent", taskContext),
