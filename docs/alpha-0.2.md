@@ -85,4 +85,4 @@ BORG never creates or replaces a baseline autonomously. After review reaches `DE
 
 ## Alpha 0.2 completion
 
-Alpha 0.2 now combines deterministic DOM, console, network, responsive, accessibility, and pixel-regression evidence with optional local semantic vision review.
+Alpha 0.2 now combines deterministic DOM, console, network, responsive, accessibility, and pixel-regression evidence with optional local semantic vision review. The next roadmap phase can build specialist engineering roles on top of this shared evidence contract.
