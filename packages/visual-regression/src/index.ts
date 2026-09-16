@@ -83,7 +83,7 @@ export interface BaselineCandidate {
   height: number;
 }
 
-interface DecodedPng {
+export interface DecodedPng {
   width: number;
   height: number;
   data: Buffer;
@@ -392,7 +392,7 @@ export class VisualRegressionService {
     try {
       const candidateFile = checkedFile(worktree, screenshot.path, screenshot.sha256);
       const candidatePng = decodePng(candidateFile.bytes);
-      const baselineRelative = join(config.baselineRoot, profile.id, `${safeName(screenshot.name)}-${candidatePng.width}x${candidatePng.height}.png`);
+      const baselineRelative = join(config.baselineRoot, profile.id, `${safeName(screenshot.name)}.png`);
       const baselineAbsolute = resolve(worktree, baselineRelative);
       if (!isInside(worktree, baselineAbsolute)) throw new Error("Visual baseline path escaped the approved worktree.");
       if (!existsSync(baselineAbsolute)) return {
@@ -447,7 +447,7 @@ export class VisualRegressionService {
     const candidate = checkedFile(worktree, input.candidatePath, input.candidateSha256);
     const png = decodePng(candidate.bytes);
     if (png.width !== input.width || png.height !== input.height) throw new Error("Candidate dimensions changed before baseline acceptance.");
-    const target = resolve(worktree, loaded.config.baselineRoot, profile.id, `${safeName(input.screenshotName)}-${png.width}x${png.height}.png`);
+    const target = resolve(worktree, loaded.config.baselineRoot, profile.id, `${safeName(input.screenshotName)}.png`);
     if (!isInside(worktree, target)) throw new Error("Visual baseline target escaped the approved worktree.");
     mkdirSync(resolve(target, ".."), { recursive: true });
     const temporary = `${target}.borg-${randomUUID()}.tmp`;
