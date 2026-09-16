@@ -1,3 +1,5 @@
+import "./review.css";
+
 export type ReviewAction = "accept-all" | "reject-all" | "accept-file" | "reject-file" | "accept-hunk" | "reject-hunk";
 
 export type ReviewHunk = {
