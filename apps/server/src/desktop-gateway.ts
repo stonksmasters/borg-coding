@@ -102,13 +102,14 @@ async function syncInternetToCore() {
 
 function toolStatus() {
   const config = internet.load();
+  const runtimeAvailable = config.state === "available";
   return {
     provider: config.provider,
     internetEnabled: config.internetEnabled,
     configurationState: config.state,
     credentialConfigured: config.credentialConfigured,
-    webFetchAvailable: config.internetEnabled && config.state !== "connection_failed",
-    webSearchAvailable: config.internetEnabled && config.credentialConfigured && config.state !== "connection_failed",
+    webFetchAvailable: runtimeAvailable,
+    webSearchAvailable: runtimeAvailable && config.credentialConfigured,
     lastConnectionError: config.lastConnectionError,
     lastCheckedAt: config.lastCheckedAt,
     updatedAt: config.updatedAt,
@@ -188,69 +189,74 @@ async function approveCoreTask(taskId: string) {
 async function streamChat(session: ChatSession, prompt: string, response: ServerResponse) {
   const controller = new AbortController();
   activeStreams.set(session.id, controller);
-  appendMessage({ sessionId: session.id, role: "user", kind: "prose", text: prompt });
-  if (session.title === "New chat") session = chats.updateSession(session.id, { title: compactTitle(prompt) }) ?? session;
+  try {
+    appendMessage({ sessionId: session.id, role: "user", kind: "prose", text: prompt });
+    if (session.title === "New chat") session = chats.updateSession(session.id, { title: compactTitle(prompt) }) ?? session;
 
-  // The legacy core creates durable approval records only for edit/agent planning. PLAN is still
-  // non-mutating because its planning phase exposes only repository/internet tools; the gateway
-  // withholds the mutation transition until the operator explicitly escalates the session to EDIT.
-  const corePlanningMode: PermissionMode = session.activeMode === "plan" ? "edit" : session.activeMode;
-  const upstream = await fetch(`${coreUrl}/api/chat`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: corePlanningMode }),
-    signal: controller.signal,
-  });
-  if (!upstream.ok || !upstream.body) throw new Error(`Planning stream failed (${upstream.status}).`);
+    // The core planner currently creates the resumable approval checkpoint only for EDIT/AGENT.
+    // PLAN is mapped to that planning capability internally so the same exact plan can be resumed,
+    // but the durable session remains PLAN and no task context/worktree exists, so mutation tools are
+    // unavailable until the explicit PLAN -> EDIT transition succeeds below.
+    const corePlanningMode: PermissionMode = session.activeMode === "plan" ? "edit" : session.activeMode;
+    const upstream = await fetch(`${coreUrl}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: corePlanningMode }),
+      signal: controller.signal,
+    });
+    if (!upstream.ok || !upstream.body) throw new Error(`Planning stream failed (${upstream.status}).`);
 
-  const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let taskId: string | null = null;
-  let assistantText = "";
-  let coreApproval: Record<string, unknown> | null = null;
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let taskId: string | null = null;
+    let assistantText = "";
+    let coreApproval: Record<string, unknown> | null = null;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const event = JSON.parse(line) as Record<string, unknown>;
-      if (event.type === "task.created") {
-        const task = event.task as { id?: string } | undefined;
-        taskId = task?.id ?? null;
-        if (taskId) chats.bindTask(session.id, taskId);
-      }
-      if (event.type === "message.delta") assistantText += String(event.text ?? "");
-      if (event.type === "approval.requested") {
-        coreApproval = event.approval as Record<string, unknown> | null;
-        if (session.activeMode === "plan" && taskId) {
-          const escalation = createModeEscalationRequest({ id: randomUUID(), sessionId: session.id, taskId, planText: assistantText.trim() });
-          appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "PLAN is complete. Switching to EDIT is required before any mutation can occur.", metadata: { escalation, approval: coreApproval } });
-          writeEvent(response, { type: "mode.escalation.requested", taskId, approval: coreApproval, escalation, message: "PLAN is read-only. Switch to Edit & Continue to execute the proposed plan." });
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as Record<string, unknown>;
+        if (event.type === "task.created") {
+          const task = event.task as { id?: string } | undefined;
+          taskId = task?.id ?? null;
+          if (taskId) chats.bindTask(session.id, taskId);
         }
-        continue;
+        if (event.type === "message.delta") assistantText += String(event.text ?? "");
+        if (event.type === "approval.requested") {
+          coreApproval = event.approval as Record<string, unknown> | null;
+          if (session.activeMode === "plan" && taskId) {
+            const escalation = createModeEscalationRequest({ id: randomUUID(), sessionId: session.id, taskId, planText: assistantText.trim() });
+            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "PLAN is complete. Switching to EDIT is required before any mutation can occur.", metadata: { escalation, approval: coreApproval } });
+            writeEvent(response, { type: "mode.escalation.requested", taskId, approval: coreApproval, escalation, message: "PLAN is read-only. Switch to Edit & Continue to execute the proposed plan." });
+          }
+          continue;
+        }
+        const toolText = describeToolEvent(event);
+        if (toolText && event.type !== "tool.started") {
+          appendMessage({ sessionId: session.id, taskId, role: event.type === "tool.failed" ? "system" : "tool", kind: event.type === "tool.failed" ? "warning" : "tool", text: toolText, metadata: event });
+          if (event.type === "tool.failed" && ["web_search", "web_fetch"].includes(String(event.tool ?? ""))) internet.markConnectionFailed(String(event.message ?? "Internet tool failed"));
+          if (event.type === "tool.completed" && ["web_search", "web_fetch"].includes(String(event.tool ?? ""))) internet.markAvailable();
+        }
+        if (event.type !== "stream.completed" || session.activeMode === "ask" || session.activeMode === "plan") writeEvent(response, event);
       }
-      const toolText = describeToolEvent(event);
-      if (toolText && event.type !== "tool.started") {
-        appendMessage({ sessionId: session.id, taskId, role: event.type === "tool.failed" ? "system" : "tool", kind: event.type === "tool.failed" ? "warning" : "tool", text: toolText, metadata: event });
-        if (event.type === "tool.failed" && ["web_search", "web_fetch"].includes(String(event.tool ?? ""))) internet.markConnectionFailed(String(event.message ?? "Internet tool failed"));
-        if (event.type === "tool.completed" && ["web_search", "web_fetch"].includes(String(event.tool ?? ""))) internet.markAvailable();
-      }
-      if (event.type !== "stream.completed" || session.activeMode === "ask" || session.activeMode === "plan") writeEvent(response, event);
+      if (done) break;
     }
-    if (done) break;
-  }
 
-  if (assistantText.trim()) appendMessage({ sessionId: session.id, taskId, role: "assistant", kind: session.activeMode === "ask" ? "prose" : "plan", text: assistantText.trim() });
+    if (assistantText.trim()) appendMessage({ sessionId: session.id, taskId, role: "assistant", kind: session.activeMode === "ask" ? "prose" : "plan", text: assistantText.trim() });
 
-  if ((session.activeMode === "edit" || session.activeMode === "agent") && taskId && coreApproval) {
-    await approveCoreTask(taskId);
-    writeEvent(response, { type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
-    await pipeExecution(taskId, session, response, controller);
-    writeEvent(response, { type: "stream.completed", taskId });
+    if ((session.activeMode === "edit" || session.activeMode === "agent") && taskId && coreApproval) {
+      await approveCoreTask(taskId);
+      writeEvent(response, { type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
+      await pipeExecution(taskId, session, response, controller);
+      writeEvent(response, { type: "stream.completed", taskId });
+    }
+  } finally {
+    if (activeStreams.get(session.id) === controller) activeStreams.delete(session.id);
   }
 }
 
@@ -265,21 +271,23 @@ async function streamExecutionRoute(taskId: string, response: ServerResponse) {
   } catch (error) {
     writeEvent(response, { type: "runtime.failed", taskId, message: error instanceof Error ? error.message : "Execution failed" });
   } finally {
-    activeStreams.delete(session.id);
+    if (activeStreams.get(session.id) === controller) activeStreams.delete(session.id);
     response.end();
   }
 }
 
-void syncInternetToCore();
+const startupInternetSync = syncInternetToCore();
 
 const server = createServer((request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, null);
 
   if (request.method === "GET" && request.url === "/health") {
-    void fetch(`${coreUrl}/health`, { signal: AbortSignal.timeout(2_500) }).then(async (upstream) => {
-      const core = await upstream.json().catch(() => ({}));
-      send(response, 200, { status: "ok", gateway: true, core, sessions: chats.listSessions().length, tools: toolStatus() });
-    }).catch(() => send(response, 200, { status: "ok", gateway: true, core: { runtimeConnected: false }, sessions: chats.listSessions().length, tools: toolStatus() }));
+    void startupInternetSync.finally(() => {
+      void fetch(`${coreUrl}/health`, { signal: AbortSignal.timeout(2_500) }).then(async (upstream) => {
+        const core = await upstream.json().catch(() => ({}));
+        send(response, 200, { status: "ok", gateway: true, core, sessions: chats.listSessions().length, tools: toolStatus() });
+      }).catch(() => send(response, 200, { status: "ok", gateway: true, core: { runtimeConnected: false }, sessions: chats.listSessions().length, tools: toolStatus() }));
+    });
     return;
   }
 
@@ -333,6 +341,17 @@ const server = createServer((request, response) => {
     }
   }
 
+  if (request.method === "GET" && request.url === "/api/access") return send(response, 200, { access: access.describe() });
+  if (request.method === "POST" && request.url === "/api/access") {
+    void readJson(request).then((input) => {
+      const saved = access.save(input);
+      const sessionId = typeof input.sessionId === "string" ? input.sessionId : null;
+      if (sessionId) chats.updateSession(sessionId, { repositoryPath: saved.repositoryPath });
+      return send(response, 200, { access: access.describe(saved) });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid access policy" }));
+    return;
+  }
+
   if (request.method === "GET" && request.url === "/api/tools") return send(response, 200, { tools: toolStatus() });
   if (request.method === "POST" && request.url === "/api/tools") {
     void readJson(request).then(async (input) => {
@@ -368,7 +387,6 @@ const server = createServer((request, response) => {
       const session = chats.sessionForTask(taskId);
       if (!session) return send(response, 404, { error: "Session for approval was not found." });
       const decision = String(input.decision ?? "").toLowerCase();
-      if (decision === "approve" && session.activeMode === "plan") chats.updateSession(session.id, { activeMode: "edit" });
       const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/approval`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -377,13 +395,19 @@ const server = createServer((request, response) => {
       });
       const body = await upstream.json().catch(() => ({})) as Record<string, unknown>;
       if (!upstream.ok) return send(response, upstream.status, body);
-      const updatedSession = chats.findSession(session.id);
+
+      const escalated = decision === "approve" && session.activeMode === "plan";
+      const updatedSession = escalated ? chats.updateSession(session.id, { activeMode: "edit" }) ?? session : session;
       appendMessage({
         sessionId: session.id,
         taskId,
         role: "system",
         kind: decision === "approve" ? "status" : "plan",
-        text: decision === "approve" ? "Mode escalated from PLAN to EDIT. Approved execution may continue." : "Stayed in PLAN. No mutation authorization was granted.",
+        text: escalated
+          ? "Mode escalated from PLAN to EDIT. Approved execution may continue."
+          : decision === "reject"
+            ? "Stayed in PLAN. No mutation authorization was granted."
+            : `${updatedSession.activeMode.toUpperCase()} authorization was confirmed.`,
       });
       return send(response, 200, { ...body, session: updatedSession });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
