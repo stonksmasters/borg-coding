@@ -211,7 +211,8 @@ export function BorgWorkspaceV2() {
     } else if (event.type === "implementation.summary") {
       setMessages((current) => [...current, transientMessage("system", event.diff?.stdout?.trim() || "No diff produced.", "diff")]);
     } else if (event.type === "review.completed" && event.review?.summary) {
-      setMessages((current) => [...current, transientMessage("system", event.review.summary, "evidence")]);
+      const summary = event.review.summary;
+      setMessages((current) => [...current, transientMessage("system", summary, "evidence")]);
     } else if (event.type === "delivery.ready") {
       setDeliveryReady(true);
       setTaskState("DELIVERY_READY");
