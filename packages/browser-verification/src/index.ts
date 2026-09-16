@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import axe from "axe-core";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 
@@ -338,10 +338,9 @@ export class BrowserVerification {
   }
 
   async closeForVerification(taskId: string) {
-    const report = this.latest(taskId);
     await this.close(taskId);
     await this.stopServer(taskId);
-    return report;
+    return this.latest(taskId);
   }
 
   private async startServer(input: Record<string, unknown>, context: BrowserTaskContext) {
@@ -351,10 +350,12 @@ export class BrowserVerification {
     const args = Array.isArray(input.args) ? input.args.map(String) : [];
     if (args.length > 40 || args.some((argument) => argument.length > 1_000 || argument.includes("\0"))) throw new Error("Development server arguments exceed the bounded policy.");
     const url = assertLoopbackUrl(String(input.url ?? "")).toString();
-    const root = resolve(context.worktreePath);
+    const root = realpathSync(resolve(context.worktreePath));
     const requestedCwd = String(input.cwd ?? "").trim();
-    const cwd = requestedCwd ? resolve(root, requestedCwd) : root;
-    if (!isInside(root, cwd) || !existsSync(cwd)) throw new Error("Development server cwd must remain inside the approved worktree.");
+    const candidateCwd = requestedCwd ? resolve(root, requestedCwd) : root;
+    if (!isInside(root, candidateCwd) || !existsSync(candidateCwd)) throw new Error("Development server cwd must remain inside the approved worktree.");
+    const cwd = realpathSync(candidateCwd);
+    if (!isInside(root, cwd) || !statSync(cwd).isDirectory()) throw new Error("Development server cwd cannot escape through a link.");
     const executable = command === "node" ? process.execPath : command === "npm" && process.platform === "win32" ? "npm.cmd" : command;
     const child = spawn(executable, args, {
       cwd,
@@ -369,7 +370,8 @@ export class BrowserVerification {
     child.stderr?.on("data", (chunk) => { server.stderr = boundedLog(server.stderr, chunk); });
     this.servers.set(context.taskId, server);
     try {
-      await waitForLoopback(url, numberInRange(input.timeout_seconds, 30, 1, MAX_STARTUP_SECONDS), child);
+      const spawnFailure = new Promise<never>((_, reject) => child.once("error", reject));
+      await Promise.race([waitForLoopback(url, numberInRange(input.timeout_seconds, 30, 1, MAX_STARTUP_SECONDS), child), spawnFailure]);
     } catch (error) {
       await this.stopServer(context.taskId);
       throw error;
@@ -657,7 +659,6 @@ export class BrowserVerification {
       responsive: session?.responsive ?? [],
       server: server ? this.serverEvidence(server) : this.reports.get(taskId)?.server ?? null,
     };
-    if (!isInside(resolve(context.worktreePath), resolve(context.worktreePath))) throw new Error("Invalid worktree context.");
     this.reports.set(taskId, report);
   }
 
