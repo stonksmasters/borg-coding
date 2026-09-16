@@ -30,7 +30,7 @@
 - [x] accessibility checks
 - [x] browser evidence attached to verification/review/repair loops
 - [x] optional local vision-model review of screenshots
-- [ ] visual/regression verification profiles for web tasks
+- [x] named visual baselines and deterministic regression profiles for web tasks
 
 ## Alpha 0.3 — software engineering team
 
