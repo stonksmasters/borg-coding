@@ -51,6 +51,19 @@ jobs:
         with:
           dotnet-version: 9.0.x
 
+      - name: Configure public NuGet source for CI
+        shell: pwsh
+        run: |
+          @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+            </packageSources>
+          </configuration>
+          "@ | Set-Content -Path NuGet.Config
+
       - name: Install locked root dependencies
         run: npm run install:ci
 
