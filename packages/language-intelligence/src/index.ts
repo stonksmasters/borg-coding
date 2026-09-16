@@ -83,6 +83,7 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
       getProjectVersion: () => String(this.projectVersion),
       getScriptFileNames: () => this.fileNames,
       getScriptVersion: (fileName) => {
+        if (!this.canReadHostFile(fileName)) return "0";
         try {
           const info = statSync(fileName);
           return `${info.mtimeMs}:${info.size}`;
@@ -91,12 +92,13 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
         }
       },
       getScriptSnapshot: (fileName) => {
+        if (!this.canReadHostFile(fileName)) return undefined;
         const text = ts.sys.readFile(fileName);
         return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
       },
-      fileExists: ts.sys.fileExists,
-      readFile: ts.sys.readFile,
-      readDirectory: ts.sys.readDirectory,
+      fileExists: (fileName) => this.canReadHostFile(fileName) && ts.sys.fileExists(fileName),
+      readFile: (fileName) => this.canReadHostFile(fileName) ? ts.sys.readFile(fileName) : undefined,
+      readDirectory: (path, extensions, exclude, include, depth) => ts.sys.readDirectory(path, extensions, exclude, include, depth).filter((fileName) => this.canReadHostFile(fileName)),
       directoryExists: ts.sys.directoryExists,
       getDirectories: ts.sys.getDirectories,
       useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames
@@ -250,6 +252,7 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
     const program = this.service.getProgram();
     const existing = program?.getSourceFile(absolute) ?? program?.getSourceFile(absolute.replaceAll("\\", "/"));
     if (existing) return existing;
+    if (!this.canReadHostFile(absolute)) throw new Error(`Language intelligence access is not allowed for this file: ${this.displayPath(absolute)}`);
     const text = ts.sys.readFile(absolute);
     if (text === undefined) throw new Error(`File not found: ${this.displayPath(absolute)}`);
     return ts.createSourceFile(absolute, text, this.compilerOptions.target ?? ts.ScriptTarget.ES2022, true);
@@ -274,6 +277,13 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
     if (rel.startsWith("..") || isAbsolute(rel)) return false;
     const display = rel.replaceAll("\\", "/");
     return this.options.allowPath ? this.options.allowPath(display) : true;
+  }
+
+  private canReadHostFile(fileName: string): boolean {
+    const rel = relative(this.root, resolve(fileName));
+    if (rel.startsWith("..") || isAbsolute(rel)) return true;
+    if (rel.split(/[\\/]/).includes("node_modules")) return true;
+    return this.isAllowed(fileName);
   }
 
   private isWorkspaceFile(fileName: string): boolean {
