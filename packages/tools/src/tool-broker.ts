@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
+import { createLanguageIntelligence, type LanguageIntelligenceProvider } from "../../language-intelligence/src/index.ts";
 import type { AccessController } from "../../repository/src/access-controller.ts";
 import { WorktreeTools, type TaskToolContext, type WorktreeToolOptions } from "./worktree-tools.ts";
 
@@ -33,6 +34,62 @@ const definitions = {
       parameters: { type: "object", required: ["query"], properties: { query: { type: "string" }, path: { type: "string" }, max_results: { type: "integer", minimum: 1, maximum: 200 } } },
     },
   },
+  repository_symbols: {
+    type: "function",
+    function: {
+      name: "repository_symbols",
+      description: "Find TypeScript or JavaScript symbols by name in the approved repository. Prefer this over literal search for named functions, classes, interfaces, methods, types, and variables.",
+      parameters: { type: "object", required: ["query"], properties: { query: { type: "string" }, max_results: { type: "integer", minimum: 1, maximum: 100 } } },
+    },
+  },
+  repository_file_symbols: {
+    type: "function",
+    function: {
+      name: "repository_file_symbols",
+      description: "Return the structural symbol outline for an approved TypeScript or JavaScript file.",
+      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
+    },
+  },
+  repository_definition: {
+    type: "function",
+    function: {
+      name: "repository_definition",
+      description: "Resolve the definition of the symbol at a 1-based line and column in an approved TypeScript or JavaScript file.",
+      parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
+    },
+  },
+  repository_references: {
+    type: "function",
+    function: {
+      name: "repository_references",
+      description: "Find references to the symbol at a 1-based line and column in an approved TypeScript or JavaScript file. Use this before changing shared or public symbols.",
+      parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
+    },
+  },
+  repository_implementations: {
+    type: "function",
+    function: {
+      name: "repository_implementations",
+      description: "Find implementations of the symbol at a 1-based line and column in an approved TypeScript or JavaScript file.",
+      parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
+    },
+  },
+  repository_symbol_info: {
+    type: "function",
+    function: {
+      name: "repository_symbol_info",
+      description: "Return TypeScript Language Service quick information for the symbol at a 1-based line and column.",
+      parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
+    },
+  },
+  repository_diagnostics: {
+    type: "function",
+    function: {
+      name: "repository_diagnostics",
+      description: "Return TypeScript or JavaScript syntactic, semantic, and suggestion diagnostics for one approved file, or for the approved workspace when path is omitted.",
+      parameters: { type: "object", properties: { path: { type: "string" } } },
+    },
+  },
   web_search: {
     type: "function",
     function: {
@@ -51,6 +108,19 @@ const definitions = {
   },
 } as const;
 
+const repositoryDefinitions = [
+  definitions.repository_list,
+  definitions.repository_read,
+  definitions.repository_search,
+  definitions.repository_symbols,
+  definitions.repository_file_symbols,
+  definitions.repository_definition,
+  definitions.repository_references,
+  definitions.repository_implementations,
+  definitions.repository_symbol_info,
+  definitions.repository_diagnostics,
+];
+
 function isPrivateAddress(address: string): boolean {
   if (address === "::1" || address === "0.0.0.0" || address === "::") return true;
   if (address.startsWith("fc") || address.startsWith("fd") || address.startsWith("fe80:")) return true;
@@ -63,7 +133,7 @@ function isPrivateAddress(address: string): boolean {
 
 async function validatePublicUrl(rawUrl: string): Promise<URL> {
   const url = new URL(rawUrl);
-  if (!['http:', 'https:'].includes(url.protocol)) throw new Error("Only HTTP and HTTPS URLs are allowed.");
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP and HTTPS URLs are allowed.");
   if (url.username || url.password) throw new Error("URLs containing credentials are not allowed.");
   const hostname = url.hostname.toLowerCase();
   if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) throw new Error("Local network addresses are blocked.");
@@ -87,6 +157,8 @@ export class ToolBroker {
   private readonly access: AccessController | undefined;
   private readonly worktree: WorktreeTools | undefined;
   private ollamaApiKey: string | undefined;
+  private languageRoot: string | undefined;
+  private language: LanguageIntelligenceProvider | undefined;
 
   constructor(policyPath: string, access?: AccessController, worktreeOptions?: WorktreeToolOptions) {
     this.policyPath = policyPath;
@@ -120,7 +192,7 @@ export class ToolBroker {
   toolDefinitions(mode: PermissionMode = "ask", context?: TaskToolContext) {
     const status = this.status();
     const available = [];
-    if (mode !== "ask" && this.access?.load().repositoryPath) available.push(definitions.repository_list, definitions.repository_read, definitions.repository_search);
+    if (mode !== "ask" && this.access?.load().repositoryPath) available.push(...repositoryDefinitions);
     if ((mode === "edit" || mode === "agent") && context && this.worktree) available.push(...this.worktree.definitions());
     if (status.internetEnabled) available.push(...(status.webSearchAvailable ? [definitions.web_search, definitions.web_fetch] : [definitions.web_fetch]));
     return available;
@@ -133,6 +205,19 @@ export class ToolBroker {
       if (call.function.name === "repository_list") return this.access.listFiles({ path: String(call.function.arguments.path ?? "."), depth: Number(call.function.arguments.depth ?? 2), maxEntries: Number(call.function.arguments.max_entries ?? 300) });
       if (call.function.name === "repository_read") return this.access.readFile(String(call.function.arguments.path ?? ""));
       if (call.function.name === "repository_search") return this.access.searchFiles(String(call.function.arguments.query ?? ""), { path: String(call.function.arguments.path ?? "."), maxResults: Number(call.function.arguments.max_results ?? 50) });
+
+      const language = this.languageIntelligence();
+      const path = String(call.function.arguments.path ?? "");
+      const line = Number(call.function.arguments.line);
+      const column = Number(call.function.arguments.column);
+      if (call.function.name === "repository_symbols") return { symbols: await language.symbols(String(call.function.arguments.query ?? ""), Number(call.function.arguments.max_results ?? 50)) };
+      if (call.function.name === "repository_file_symbols") return { symbols: await language.fileSymbols(path) };
+      if (call.function.name === "repository_definition") return { locations: await language.definitions(path, line, column) };
+      if (call.function.name === "repository_references") return { locations: await language.references(path, line, column) };
+      if (call.function.name === "repository_implementations") return { locations: await language.implementations(path, line, column) };
+      if (call.function.name === "repository_symbol_info") return { info: await language.quickInfo(path, line, column) };
+      if (call.function.name === "repository_diagnostics") return { diagnostics: await language.diagnostics(path.trim() || undefined) };
+      throw new Error(`Unknown repository tool: ${call.function.name}`);
     }
     if (call.function.name.startsWith("worktree_") || call.function.name.startsWith("git_") || call.function.name.startsWith("verification_")) {
       if (mode !== "edit" && mode !== "agent") throw new Error("Worktree tools require EDIT or AGENT mode.");
@@ -143,6 +228,16 @@ export class ToolBroker {
     if (call.function.name === "web_search") return this.webSearch(String(call.function.arguments.query ?? ""), Number(call.function.arguments.max_results ?? 5));
     if (call.function.name === "web_fetch") return this.webFetch(String(call.function.arguments.url ?? ""));
     throw new Error(`Unknown or unavailable tool: ${call.function.name}`);
+  }
+
+  private languageIntelligence(): LanguageIntelligenceProvider {
+    if (!this.access) throw new Error("Repository tools are not configured.");
+    const root = this.access.repositoryRootPath();
+    if (!this.language || this.languageRoot !== root) {
+      this.languageRoot = root;
+      this.language = createLanguageIntelligence(root, { allowPath: (path) => this.access?.allowsRepositoryFile(path) === true });
+    }
+    return this.language;
   }
 
   private async webSearch(query: string, maxResults: number) {
@@ -162,7 +257,7 @@ export class ToolBroker {
   private async webFetch(rawUrl: string) {
     let url = await validatePublicUrl(rawUrl);
     for (let redirect = 0; redirect <= 3; redirect += 1) {
-      const response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000), headers: { "user-agent": "BORG-Code/0.1" } });
+      const response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000), headers: { "user-agent": "BORG-Code/0.3" } });
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
         if (!location) throw new Error("Redirect did not include a destination.");
