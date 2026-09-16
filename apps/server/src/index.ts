@@ -135,7 +135,7 @@ createServer((request, response) => {
         const { answer, usedTools } = await runOllamaAgent({
           ollamaUrl, model, tools, mode: "agent", taskContext, phase: "implementation", emit,
           messages: [
-            { role: "system", content: `You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Use exact, small patches; inspect Git status and diff; run relevant bounded commands when useful. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            { role: "system", content: `You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Use exact, small patches; inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, start the local app with browser_server_start, inspect and interact with it through browser tools, capture responsive screenshots, console/network failures, DOM evidence, and accessibility results, then stop it. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
         });
@@ -192,7 +192,11 @@ createServer((request, response) => {
         response.end();
         return;
       }
-    })().catch((error) => {
+    })().catch(async (error) => {
+      await Promise.allSettled([
+        tools.execute({ function: { name: "browser_close", arguments: {} } }, "agent", taskContext),
+        tools.execute({ function: { name: "browser_server_stop", arguments: {} } }, "agent", taskContext),
+      ]);
       const message = error instanceof Error ? error.message : "Approved implementation failed";
       appendTaskEvent(taskId, "IMPLEMENTATION_FAILED", { message });
       if (task && !["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "FAILED", emit);

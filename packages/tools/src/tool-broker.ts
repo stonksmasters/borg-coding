@@ -219,7 +219,7 @@ export class ToolBroker {
       if (call.function.name === "repository_diagnostics") return { diagnostics: await language.diagnostics(path.trim() || undefined) };
       throw new Error(`Unknown repository tool: ${call.function.name}`);
     }
-    if (call.function.name.startsWith("worktree_") || call.function.name.startsWith("git_") || call.function.name.startsWith("verification_")) {
+    if (call.function.name.startsWith("worktree_") || call.function.name.startsWith("git_") || call.function.name.startsWith("verification_") || call.function.name.startsWith("browser_")) {
       if (mode !== "edit" && mode !== "agent") throw new Error("Worktree tools require EDIT or AGENT mode.");
       if (!this.worktree) throw new Error("Worktree tools are not configured.");
       return this.worktree.execute(call.function.name, call.function.arguments, context);

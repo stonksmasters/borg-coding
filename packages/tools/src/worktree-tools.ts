@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
+import { BrowserVerification } from "../../browser-verification/src/index.ts";
 
 export interface RecordedApproval {
   taskId: string;
@@ -14,6 +15,7 @@ export interface TaskToolContext { taskId: string; }
 export interface WorktreeToolOptions {
   worktreeRoot: string;
   findApproval(taskId: string): RecordedApproval | null;
+  browser?: BrowserVerification;
 }
 
 interface CommandResult {
@@ -146,12 +148,14 @@ async function runBounded(command: string, args: string[], cwd: string, timeoutS
 export class WorktreeTools {
   private readonly worktreeRoot: string;
   private readonly options: WorktreeToolOptions;
+  private readonly browser: BrowserVerification;
   constructor(options: WorktreeToolOptions) {
     this.options = options;
     this.worktreeRoot = resolve(options.worktreeRoot);
+    this.browser = options.browser ?? new BrowserVerification();
   }
 
-  definitions() { return Object.values(worktreeToolDefinitions); }
+  definitions() { return [...Object.values(worktreeToolDefinitions), ...this.browser.definitions()]; }
 
   private approvedRoot(context: TaskToolContext | undefined): string {
     if (!context?.taskId) throw new Error("An approved task context is required for worktree tools.");
@@ -196,7 +200,8 @@ export class WorktreeTools {
       return this.git(root, args);
     }
     if (name === "verification_profiles") return { profiles: this.profiles(root) };
-    if (name === "verification_run") return this.verify(root, String(input.profile ?? "quick"));
+    if (name.startsWith("browser_")) return this.browser.execute(name, input, { taskId: context!.taskId, worktreePath: root });
+    if (name === "verification_run") return this.verify(root, String(input.profile ?? "quick"), context!);
     throw new Error(`Unknown worktree tool: ${name}`);
   }
 
@@ -271,16 +276,22 @@ export class WorktreeTools {
     return (["quick", "full"] as const).map((id) => ({ id, commands: commands[id] }));
   }
 
-  private async verify(root: string, profileId: string) {
+  private async verify(root: string, profileId: string, context: TaskToolContext) {
     if (profileId !== "quick" && profileId !== "full") throw new Error("Unknown verification profile.");
     const profile = this.profiles(root).find((item) => item.id === profileId)!;
-    if (!profile.commands.length) throw new Error(`No commands were detected for the ${profileId} verification profile.`);
     const results: (CommandResult & { label: string })[] = [];
-    for (const command of profile.commands) {
-      const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS);
-      results.push({ ...result, label: command.label });
-      if (result.exitCode !== 0 || result.timedOut) break;
+    let browserEvidence = this.browser.latest(context.taskId);
+    try {
+      if (!profile.commands.length) throw new Error(`No commands were detected for the ${profileId} verification profile.`);
+      for (const command of profile.commands) {
+        const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS);
+        results.push({ ...result, label: command.label });
+        if (result.exitCode !== 0 || result.timedOut) break;
+      }
+    } finally {
+      browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
-    return { profile: profileId, passed: results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut), results };
+    const commandPassed = results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut);
+    return { profile: profileId, passed: commandPassed && (browserEvidence?.passed ?? true), commandPassed, results, browserEvidence };
   }
 }

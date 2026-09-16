@@ -21,14 +21,14 @@
 
 ## Alpha 0.2 — browser-driven Web Engineer
 
-- [ ] controlled browser runtime for locally running applications
-- [ ] DOM inspection and element interaction
-- [ ] browser console error/warning capture
-- [ ] failed request and network evidence
-- [ ] screenshot capture and before/after evidence
-- [ ] responsive viewport verification
-- [ ] accessibility checks
-- [ ] browser evidence attached to verification/review/repair loops
+- [x] controlled browser runtime for locally running applications
+- [x] DOM inspection and element interaction
+- [x] browser console error/warning capture
+- [x] failed request and network evidence
+- [x] screenshot capture and before/after evidence
+- [x] responsive viewport verification
+- [x] accessibility checks
+- [x] browser evidence attached to verification/review/repair loops
 - [ ] optional local vision-model review of screenshots
 - [ ] visual/regression verification profiles for web tasks
 

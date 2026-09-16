@@ -10,9 +10,10 @@ BORG Code is a single local-first application with one root npm dependency graph
 4. **Repository boundary (`packages/repository/src/`)** — approved repository access, isolated Git worktrees, and non-destructive delivery.
 5. **Tool broker (`packages/tools/src/`)** — permissioned repository inspection, TypeScript/JavaScript structural navigation, bounded worktree mutation/commands, Git inspection, verification, and optional public-web tools.
 6. **Language intelligence (`packages/language-intelligence/src/`)** — provider-neutral symbol navigation. The TypeScript Language Service is the first provider and is filtered through the same approved-repository access policy as normal reads.
-7. **Runtime adapters (`packages/runtimes/src/`)** — local model/runtime boundaries, including OpenCode compatibility.
-8. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, and finding history.
-9. **Desktop host (`apps/desktop/`)** — Windows launcher, tray lifecycle, and WebView2 shell around the same local application.
+7. **Browser verification (`packages/browser-verification/src/`)** — task-isolated, loopback-only Chromium and development-server lifecycle with DOM, interaction, console, network, screenshot, responsive, and accessibility evidence.
+8. **Runtime adapters (`packages/runtimes/src/`)** — local model/runtime boundaries, including OpenCode compatibility.
+9. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, and finding history.
+10. **Desktop host (`apps/desktop/`)** — Windows launcher, tray lifecycle, and WebView2 shell around the same local application.
 
 ## Task flow
 
@@ -48,4 +49,4 @@ npm test
 npm run build
 ```
 
-GitHub Actions runs that same contract. Package-level build scripts and the former pnpm workspace pipeline are intentionally not part of the canonical architecture.
+GitHub Actions runs that same contract. Package-level build scripts and the former pnpm workspace pipeline are intentionally not part of the canonical architecture. Browser evidence is additive: for web tasks, the latest structured browser report is attached to the deterministic verification result before fresh-context review and repair decisions.
