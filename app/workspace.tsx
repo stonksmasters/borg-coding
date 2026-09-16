@@ -19,9 +19,9 @@ type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" |
 type Finding = { severity: string; title: string; description: string; file?: string; line?: number };
 type EngineeringRole = "architect" | "implementer" | "verifier" | "reviewer";
 type EngineeringDiscipline = "general" | "frontend" | "backend" | "database" | "security" | "qa" | "devops" | "infrastructure";
-type RoleAssignment = { id: string; taskId: string; role: EngineeringRole; discipline: EngineeringDiscipline; model: string | null; attempt: number; status: "pending" | "active" | "completed" | "failed"; capabilities: string[]; startedAt: string; completedAt: string | null };
+type RoleAssignment = { id: string; taskId: string; role: EngineeringRole; discipline: EngineeringDiscipline; model: string | null; attempt: number; status: "pending" | "active" | "completed" | "failed"; capabilities: string[]; createdAt: string; startedAt: string | null; completedAt: string | null };
 type Handoff = { id: string; taskId: string; fromRole: EngineeringRole; toRole: EngineeringRole; objective: string; requiredNextAction: string; createdAt: string };
-type DisciplineRoute = { primary: EngineeringDiscipline; disciplines: EngineeringDiscipline[]; signals: string[] };
+type DisciplineRoute = { primary: EngineeringDiscipline; disciplines: EngineeringDiscipline[]; reasons: string[] };
 type BaselineCandidate = { profileId: string; screenshotName: string; candidatePath: string; candidateSha256: string; width: number; height: number };
 type VisualRegressionReport = {
   status: "disabled" | "pass" | "regression" | "missing-baseline" | "dimension-mismatch" | "failed";
