@@ -50,7 +50,9 @@ export class InternetConfigurationStore {
       ? "not_configured"
       : stored.state === "connection_failed"
         ? "connection_failed"
-        : "configured";
+        : stored.state === "available"
+          ? "available"
+          : "configured";
     return {
       ...DEFAULT_CONFIGURATION,
       ...stored,
@@ -86,9 +88,9 @@ export class InternetConfigurationStore {
 
   markAvailable(): InternetConfiguration {
     const current = this.load();
-    const next = {
+    const next: InternetConfiguration = {
       ...current,
-      state: current.internetEnabled ? "available" as const : "not_configured" as const,
+      state: current.internetEnabled ? "available" : "not_configured",
       lastConnectionError: null,
       lastCheckedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -99,9 +101,9 @@ export class InternetConfigurationStore {
 
   markConnectionFailed(error: string): InternetConfiguration {
     const current = this.load();
-    const next = {
+    const next: InternetConfiguration = {
       ...current,
-      state: current.internetEnabled ? "connection_failed" as const : "not_configured" as const,
+      state: current.internetEnabled ? "connection_failed" : "not_configured",
       lastConnectionError: error,
       lastCheckedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
