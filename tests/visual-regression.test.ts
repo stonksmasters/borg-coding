@@ -74,10 +74,11 @@ test("visual baselines require explicit acceptance before deterministic comparis
   writeFileSync(absolute, original);
   const service = new VisualRegressionService();
   try {
-    const first = service.compare(root, evidence(screenshotPath, original, 2, 2), "quick");
+    const first = service.compare(root, evidence(screenshotPath, original, 2, 1), "quick");
     assert.equal(first.status, "missing-baseline");
     assert.equal(first.passed, true);
     const candidate = first.comparisons[0].candidate;
+    assert.deepEqual({ width: candidate.width, height: candidate.height }, { width: 2, height: 2 });
     const accepted = service.acceptBaseline(root, {
       profileId: "app",
       screenshotName: "responsive-mobile",
