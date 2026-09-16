@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
-import { createLanguageIntelligence, type LanguageIntelligenceProvider } from "../../language-intelligence/src/index.ts";
+import { createLanguageIntelligence, type LanguageIntelligenceService } from "../../language-intelligence/src/index.ts";
 import type { EngineeringDiscipline, EngineeringRole } from "../../core/src/contracts.ts";
 import { roleAllowsTool, specialistAllowsTool } from "../../orchestration/src/index.ts";
 import type { AccessController } from "../../repository/src/access-controller.ts";
@@ -36,11 +36,19 @@ const definitions = {
       parameters: { type: "object", required: ["query"], properties: { query: { type: "string" }, path: { type: "string" }, max_results: { type: "integer", minimum: 1, maximum: 200 } } },
     },
   },
+  repository_language_status: {
+    type: "function",
+    function: {
+      name: "repository_language_status",
+      description: "Report configured language-intelligence providers and whether each local language server is available.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
   repository_symbols: {
     type: "function",
     function: {
       name: "repository_symbols",
-      description: "Find TypeScript or JavaScript symbols by name in the approved repository. Prefer this over literal search for named functions, classes, interfaces, methods, types, and variables.",
+      description: "Find repository symbols by name in the approved repository. Prefer this over literal search for named functions, classes, interfaces, methods, types, and variables.",
       parameters: { type: "object", required: ["query"], properties: { query: { type: "string" }, max_results: { type: "integer", minimum: 1, maximum: 100 } } },
     },
   },
@@ -48,7 +56,7 @@ const definitions = {
     type: "function",
     function: {
       name: "repository_file_symbols",
-      description: "Return the structural symbol outline for an approved TypeScript or JavaScript file.",
+      description: "Return the structural symbol outline for an approved supported source file.",
       parameters: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
     },
   },
@@ -56,7 +64,7 @@ const definitions = {
     type: "function",
     function: {
       name: "repository_definition",
-      description: "Resolve the definition of the symbol at a 1-based line and column in an approved TypeScript or JavaScript file.",
+      description: "Resolve the definition of the symbol at a 1-based line and column in an approved supported source file.",
       parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
     },
   },
@@ -64,7 +72,7 @@ const definitions = {
     type: "function",
     function: {
       name: "repository_references",
-      description: "Find references to the symbol at a 1-based line and column in an approved TypeScript or JavaScript file. Use this before changing shared or public symbols.",
+      description: "Find references to the symbol at a 1-based line and column in an approved supported source file. Use this before changing shared or public symbols.",
       parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
     },
   },
@@ -72,7 +80,7 @@ const definitions = {
     type: "function",
     function: {
       name: "repository_implementations",
-      description: "Find implementations of the symbol at a 1-based line and column in an approved TypeScript or JavaScript file.",
+      description: "Find implementations of the symbol at a 1-based line and column in an approved supported source file.",
       parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
     },
   },
@@ -80,7 +88,7 @@ const definitions = {
     type: "function",
     function: {
       name: "repository_symbol_info",
-      description: "Return TypeScript Language Service quick information for the symbol at a 1-based line and column.",
+      description: "Return language-server quick information for the symbol at a 1-based line and column.",
       parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
     },
   },
@@ -88,7 +96,7 @@ const definitions = {
     type: "function",
     function: {
       name: "repository_diagnostics",
-      description: "Return TypeScript or JavaScript syntactic, semantic, and suggestion diagnostics for one approved file, or for the approved workspace when path is omitted.",
+      description: "Return language diagnostics for one approved file, or for the approved workspace when path is omitted.",
       parameters: { type: "object", properties: { path: { type: "string" } } },
     },
   },
@@ -114,6 +122,7 @@ const repositoryDefinitions = [
   definitions.repository_list,
   definitions.repository_read,
   definitions.repository_search,
+  definitions.repository_language_status,
   definitions.repository_symbols,
   definitions.repository_file_symbols,
   definitions.repository_definition,
@@ -160,7 +169,7 @@ export class ToolBroker {
   private readonly worktree: WorktreeTools | undefined;
   private ollamaApiKey: string | undefined;
   private languageRoot: string | undefined;
-  private language: LanguageIntelligenceProvider | undefined;
+  private language: LanguageIntelligenceService | undefined;
 
   constructor(policyPath: string, access?: AccessController, worktreeOptions?: WorktreeToolOptions) {
     this.policyPath = policyPath;
@@ -219,6 +228,7 @@ export class ToolBroker {
       if (call.function.name === "repository_search") return this.access.searchFiles(String(call.function.arguments.query ?? ""), { path: String(call.function.arguments.path ?? "."), maxResults: Number(call.function.arguments.max_results ?? 50) });
 
       const language = this.languageIntelligence();
+      if (call.function.name === "repository_language_status") return { providers: language.status() };
       const path = String(call.function.arguments.path ?? "");
       const line = Number(call.function.arguments.line);
       const column = Number(call.function.arguments.column);
@@ -242,7 +252,11 @@ export class ToolBroker {
     throw new Error(`Unknown or unavailable tool: ${call.function.name}`);
   }
 
-  private languageIntelligence(): LanguageIntelligenceProvider {
+  languageStatus() {
+    return this.languageIntelligence().status();
+  }
+
+  private languageIntelligence(): LanguageIntelligenceService {
     if (!this.access) throw new Error("Repository tools are not configured.");
     const root = this.access.repositoryRootPath();
     if (!this.language || this.languageRoot !== root) {
