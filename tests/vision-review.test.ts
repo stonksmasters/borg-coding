@@ -127,7 +127,7 @@ test("unavailable vision models are explicit and do not throw", async () => {
   writeFileSync(absolute, bytes);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const provider: VisionReviewProvider = {
-    async review(_request): Promise<VisionReviewResult> {
+    async review(): Promise<VisionReviewResult> {
       throw new VisionUnavailableError("qwen3-vl:8b is not installed.");
     },
   };

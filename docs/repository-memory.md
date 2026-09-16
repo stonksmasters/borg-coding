@@ -1,0 +1,7 @@
+# Repository memory
+
+BORG keeps a local SQLite index at `.borg/repository-memory.db`. It records approved TypeScript/JavaScript symbols and import relationships with source file paths and index times. It also retains independent review findings and operator approval decisions with task IDs. The database is app-owned state and is not written into the Git repository or its isolated worktrees. Project-authored durable knowledge can continue to live in `.localcode/`.
+
+When a PLAN, EDIT, or AGENT task starts, BORG compares source file hashes, refreshes changed files, and removes deleted files from the index. It records the refresh result as a task event. Indexing is bounded to 500 source files of at most 500 KB each; the refresh result reports truncation when that cap is reached. ASK mode receives no repository context.
+
+`repository_memory_search` is a read-only PLAN/EDIT/AGENT tool. It returns matching symbols, imports, findings, and decisions, with file or task provenance. Results are filtered through the current `AccessController` policy. The architect receives at most 3,000 characters of relevant historical memory and is instructed to verify current files before relying on it. Memory lookup is lexical, and findings or decisions remain historical evidence rather than a claim that code still behaves the same way.

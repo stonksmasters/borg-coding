@@ -5,6 +5,7 @@ import { createLanguageIntelligence, type LanguageIntelligenceService } from "..
 import type { EngineeringDiscipline, EngineeringRole } from "../../core/src/contracts.ts";
 import { roleAllowsTool, specialistAllowsTool } from "../../orchestration/src/index.ts";
 import type { AccessController } from "../../repository/src/access-controller.ts";
+import type { RepositoryMemory } from "../../repository/src/repository-memory.ts";
 import { WorktreeTools, type TaskToolContext, type WorktreeToolOptions } from "./worktree-tools.ts";
 
 interface ToolPolicy { internetEnabled: boolean; updatedAt: string; }
@@ -100,6 +101,38 @@ const definitions = {
       parameters: { type: "object", properties: { path: { type: "string" } } },
     },
   },
+  repository_file_graph: {
+    type: "function",
+    function: {
+      name: "repository_file_graph",
+      description: "Show direct import and reverse-import edges for an approved TypeScript or JavaScript file.",
+      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
+    },
+  },
+  repository_call_hierarchy: {
+    type: "function",
+    function: {
+      name: "repository_call_hierarchy",
+      description: "Show incoming and outgoing calls for a TypeScript or JavaScript symbol at a 1-based position, with call sites.",
+      parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
+    },
+  },
+  repository_change_impact: {
+    type: "function",
+    function: {
+      name: "repository_change_impact",
+      description: "Estimate file change impact from direct and transitive importers; optionally include references to a symbol at a 1-based position. Results are static evidence, not a guarantee of runtime behavior.",
+      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
+    },
+  },
+  repository_memory_search: {
+    type: "function",
+    function: {
+      name: "repository_memory_search",
+      description: "Search durable indexed symbols, imports, review findings, and decisions from this approved repository. Results include source paths or task IDs. Refresh occurs at task start.",
+      parameters: { type: "object", required: ["query"], properties: { query: { type: "string" }, max_results: { type: "integer", minimum: 1, maximum: 50 } } },
+    },
+  },
   web_search: {
     type: "function",
     function: {
@@ -130,6 +163,10 @@ const repositoryDefinitions = [
   definitions.repository_implementations,
   definitions.repository_symbol_info,
   definitions.repository_diagnostics,
+  definitions.repository_file_graph,
+  definitions.repository_call_hierarchy,
+  definitions.repository_change_impact,
+  definitions.repository_memory_search,
 ];
 
 function isPrivateAddress(address: string): boolean {
@@ -170,11 +207,13 @@ export class ToolBroker {
   private ollamaApiKey: string | undefined;
   private languageRoot: string | undefined;
   private language: LanguageIntelligenceService | undefined;
+  private readonly memory: RepositoryMemory | undefined;
 
-  constructor(policyPath: string, access?: AccessController, worktreeOptions?: WorktreeToolOptions) {
+  constructor(policyPath: string, access?: AccessController, worktreeOptions?: WorktreeToolOptions, memory?: RepositoryMemory) {
     this.policyPath = policyPath;
     this.access = access;
     this.worktree = worktreeOptions ? new WorktreeTools(worktreeOptions) : undefined;
+    this.memory = memory;
     this.ollamaApiKey = process.env.OLLAMA_API_KEY;
   }
 
@@ -208,7 +247,7 @@ export class ToolBroker {
         (!role || roleAllowsTool(role, item.function.name))
         && (!disciplines?.length || specialistAllowsTool(disciplines, item.function.name))
       );
-    if (mode !== "ask" && this.access?.load().repositoryPath) available.push(...allowed(repositoryDefinitions));
+    if (mode !== "ask" && this.access?.load().repositoryPath) available.push(...allowed(repositoryDefinitions.filter((item) => item.function.name !== "repository_memory_search" || this.memory)));
     if ((mode === "edit" || mode === "agent") && context && this.worktree) available.push(...allowed(this.worktree.definitions()));
     if (status.internetEnabled) {
       const internet = status.webSearchAvailable ? [definitions.web_search, definitions.web_fetch] : [definitions.web_fetch];
@@ -226,6 +265,10 @@ export class ToolBroker {
       if (call.function.name === "repository_list") return this.access.listFiles({ path: String(call.function.arguments.path ?? "."), depth: Number(call.function.arguments.depth ?? 2), maxEntries: Number(call.function.arguments.max_entries ?? 300) });
       if (call.function.name === "repository_read") return this.access.readFile(String(call.function.arguments.path ?? ""));
       if (call.function.name === "repository_search") return this.access.searchFiles(String(call.function.arguments.query ?? ""), { path: String(call.function.arguments.path ?? "."), maxResults: Number(call.function.arguments.max_results ?? 50) });
+      if (call.function.name === "repository_memory_search") {
+        if (!this.memory) throw new Error("Repository memory is not configured.");
+        return this.memory.search(this.access.repositoryRootPath(), String(call.function.arguments.query ?? ""), Number(call.function.arguments.max_results ?? 20), (path) => this.access?.allowsRepositoryFile(path) === true);
+      }
 
       const language = this.languageIntelligence();
       if (call.function.name === "repository_language_status") return { providers: language.status() };
@@ -239,6 +282,9 @@ export class ToolBroker {
       if (call.function.name === "repository_implementations") return { locations: await language.implementations(path, line, column) };
       if (call.function.name === "repository_symbol_info") return { info: await language.quickInfo(path, line, column) };
       if (call.function.name === "repository_diagnostics") return { diagnostics: await language.diagnostics(path.trim() || undefined) };
+      if (call.function.name === "repository_file_graph") return { graph: await language.fileGraph(path) };
+      if (call.function.name === "repository_call_hierarchy") return { hierarchy: await language.callHierarchy(path, line, column) };
+      if (call.function.name === "repository_change_impact") return { impact: await language.changeImpact(path, call.function.arguments.line === undefined ? undefined : line, call.function.arguments.column === undefined ? undefined : column) };
       throw new Error(`Unknown repository tool: ${call.function.name}`);
     }
     if (call.function.name.startsWith("worktree_") || call.function.name.startsWith("git_") || call.function.name.startsWith("verification_") || call.function.name.startsWith("browser_")) {
@@ -254,6 +300,11 @@ export class ToolBroker {
 
   languageStatus() {
     return this.languageIntelligence().status();
+  }
+
+  async refreshMemory() {
+    if (!this.access || !this.memory) throw new Error("Repository memory is not configured.");
+    return this.memory.refresh(this.access, this.languageIntelligence());
   }
 
   private languageIntelligence(): LanguageIntelligenceService {

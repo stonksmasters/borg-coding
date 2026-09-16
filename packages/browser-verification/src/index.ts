@@ -307,16 +307,18 @@ async function waitForLoopback(url: string, timeoutSeconds: number, child: Child
 
 async function stopProcess(child: ChildProcess) {
   if (child.exitCode !== null) return;
+  const closed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
   if (process.platform === "win32" && child.pid) {
-    await new Promise<void>((resolveStop) => execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true }, () => resolveStop()));
-    return;
+    const killedTree = await new Promise<boolean>((resolveStop) => execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true }, (error) => resolveStop(!error)));
+    if (!killedTree && child.exitCode === null) child.kill("SIGTERM");
+  } else {
+    child.kill("SIGTERM");
   }
-  child.kill("SIGTERM");
-  await Promise.race([
-    new Promise<void>((resolveExit) => child.once("exit", () => resolveExit())),
-    delay(1_500),
-  ]);
+  const stopped = await Promise.race([closed.then(() => true), delay(1_500).then(() => false)]);
+  if (stopped) return;
   if (child.exitCode === null) child.kill("SIGKILL");
+  const forced = await Promise.race([closed.then(() => true), delay(1_500).then(() => false)]);
+  if (!forced) throw new Error("Development server did not stop after termination request.");
 }
 
 export class BrowserVerification {
@@ -378,7 +380,7 @@ export class BrowserVerification {
       await this.stopServer(context.taskId);
       throw error;
     }
-    this.updateReport(context.taskId, context);
+    this.updateReport(context.taskId);
     return this.serverEvidence(server);
   }
 
@@ -473,7 +475,7 @@ export class BrowserVerification {
     await session.page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await session.page.waitForTimeout(250);
     session.dom = await this.inspectDom(session.page, "body", 80);
-    this.updateReport(context.taskId, context);
+    this.updateReport(context.taskId);
     return { url: session.page.url(), title: await session.page.title(), viewport, dom: session.dom, console: session.console, network: session.network };
   }
 
@@ -482,7 +484,7 @@ export class BrowserVerification {
     const selector = String(input.selector ?? "body").trim() || "body";
     if (selector.length > 500) throw new Error("DOM selector is too long.");
     session.dom = await this.inspectDom(session.page, selector, numberInRange(input.max_elements, 80, 1, 200));
-    this.updateReport(context.taskId, context);
+    this.updateReport(context.taskId);
     return { url: session.page.url(), selector, elements: session.dom };
   }
 
@@ -503,7 +505,7 @@ export class BrowserVerification {
     const waitMs = numberInRange(input.wait_ms, 250, 0, 5_000);
     if (waitMs) await session.page.waitForTimeout(waitMs);
     session.dom = await this.inspectDom(session.page, "body", 80);
-    this.updateReport(context.taskId, context);
+    this.updateReport(context.taskId);
     return {
       action, selector, url: session.page.url(), dom: session.dom,
       consoleWarningsAndErrors: session.console.length, failedOrBlockedRequests: session.network.length,
@@ -516,7 +518,7 @@ export class BrowserVerification {
     session.dom = await this.inspectDom(session.page, selector, 120);
     session.accessibility = input.accessibility === false ? null : await this.auditAccessibility(session.page);
     const screenshot = await this.screenshot(session, context, input.name, input.full_page !== false);
-    this.updateReport(context.taskId, context);
+    this.updateReport(context.taskId);
     return { screenshot, report: this.latest(context.taskId) };
   }
 
@@ -558,7 +560,7 @@ export class BrowserVerification {
     }
     session.dom = await this.inspectDom(session.page, "body", 120);
     session.accessibility = session.responsive.at(-1)?.accessibility ?? null;
-    this.updateReport(context.taskId, context);
+    this.updateReport(context.taskId);
     return { url, viewports: session.responsive, console: session.console, network: session.network };
   }
 
@@ -645,7 +647,7 @@ export class BrowserVerification {
     return session;
   }
 
-  private updateReport(taskId: string, context: BrowserTaskContext) {
+  private updateReport(taskId: string) {
     const session = this.sessions.get(taskId);
     const server = this.servers.get(taskId);
     const dom = session?.dom ?? [];

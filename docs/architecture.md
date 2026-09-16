@@ -15,7 +15,7 @@ BORG Code is a single local-first application with one root npm dependency graph
 9. **Visual regression (`packages/visual-regression/src/`)** — repository-defined named profiles, deterministic PNG comparison, ignored regions, bounded change budgets, diff artifacts, and operator-approved baselines.
 10. **Vision review (`packages/vision-review/src/`)** — optional provider-neutral screenshot review with local Ollama as the first adapter, strict provenance checks, structured findings, and explicit unavailable/failed/inconclusive outcomes.
 11. **Runtime adapters (`packages/runtimes/src/`)** — local model/runtime boundaries, including OpenCode compatibility.
-12. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, finding, role-assignment, and handoff history.
+12. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, finding, role-assignment, and handoff history. Repository memory is stored separately in app-owned SQLite state at `.borg/repository-memory.db` and keyed by the approved repository's canonical path.
 13. **Desktop host (`apps/desktop/`)** — Windows launcher, tray lifecycle, and WebView2 shell around the same local application.
 
 ## Task flow

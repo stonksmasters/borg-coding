@@ -1,6 +1,6 @@
 # BORG Code
 
-A local engineering operating system. The current Alpha 0.3 slice includes the task domain, event persistence, safe repository inspection, approval-gated isolated worktree mutation, bounded commands, deterministic verification, bounded repair, fresh-context review findings, explicit delivery, local API, desktop launcher, and operator workspace.
+A local engineering operating system. The current Alpha 0.3 slice includes the task domain, event persistence, safe repository inspection, TypeScript/JavaScript code graph and change-impact tools, persistent repository memory, approval-gated isolated worktree mutation, bounded commands, deterministic verification, bounded repair, fresh-context review findings, explicit delivery, local API, desktop launcher, and operator workspace.
 
 ## Run the current slice
 
@@ -10,9 +10,9 @@ npm run dev
 npm run server:dev
 ```
 
-The workspace runs at `http://localhost:5173`; the local task API runs at `http://127.0.0.1:4311` and stores data in `.borg/borg.db`.
+Run the two servers in separate terminals. The workspace runs at `http://localhost:5173`; the local task API runs at `http://127.0.0.1:4311` and stores task data in `.borg/borg.db` and repository memory in `.borg/repository-memory.db`. Approve a repository in the workspace before using repository tools. Agent tasks require the configured local Ollama model.
 
-Use `npm test`, `npm run check`, and `npm run build` to verify the foundation.
+Use `npm test`, `npm run check`, `npm run lint`, and `npm run build` to verify the foundation.
 
 ## Windows desktop app
 

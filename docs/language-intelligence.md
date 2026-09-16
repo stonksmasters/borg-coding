@@ -17,6 +17,9 @@ Available read-only tools are:
 - `repository_implementations`
 - `repository_symbol_info`
 - `repository_diagnostics`
+- `repository_file_graph`
+- `repository_call_hierarchy`
+- `repository_change_impact`
 
 These tools are available in PLAN, EDIT, and AGENT modes when a repository has been explicitly approved. ASK mode does not expose repository content.
 
@@ -25,6 +28,8 @@ These tools are available in PLAN, EDIT, and AGENT modes when a repository has b
 The initial provider uses the TypeScript Language Service directly. It supports TypeScript, TSX, JavaScript, JSX, MJS, CJS, MTS, and CTS projects and reads the repository's `tsconfig.json` or `jsconfig.json` when available.
 
 Capabilities include workspace symbol search, per-file outlines, go-to-definition, references, implementations, quick symbol information, and syntactic/semantic/suggestion diagnostics.
+
+For TypeScript and JavaScript, `repository_file_graph` reports direct imports and importers. `repository_call_hierarchy` reports incoming and outgoing calls with source locations. `repository_change_impact` reports direct and transitive importers and, when given a symbol position, references to that symbol. The impact result is a bounded static estimate: it does not infer runtime behavior, dynamic imports, or test coverage. Large results declare truncation. These three graph tools currently reject non-TypeScript/JavaScript files explicitly; the existing Python, Rust, Go, and C# navigation tools remain available.
 
 The provider contract remains language-neutral so Python, Rust, Go, C#, and other language backends can be added later without changing the ToolBroker contract.
 

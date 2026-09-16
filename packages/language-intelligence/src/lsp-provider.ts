@@ -14,19 +14,6 @@ import type {
 
 type LspPosition = { line: number; character: number };
 type LspRange = { start: LspPosition; end: LspPosition };
-type LspLocation = { uri: string; range: LspRange };
-type LspLocationLink = { targetUri: string; targetRange?: LspRange; targetSelectionRange: LspRange };
-type LspSymbol = {
-  name?: unknown;
-  kind?: unknown;
-  containerName?: unknown;
-  location?: unknown;
-  uri?: unknown;
-  range?: unknown;
-  selectionRange?: unknown;
-  children?: unknown;
-};
-
 export type LanguageServerId = "python" | "rust" | "go" | "csharp";
 
 export interface LanguageServerDefinition {

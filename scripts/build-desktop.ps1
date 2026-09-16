@@ -3,6 +3,11 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $project = Join-Path $repositoryRoot "apps\desktop\Borg.Desktop.csproj"
 $output = Join-Path $repositoryRoot "artifacts\desktop"
+$runningDesktop = Get-Process -Name "BORG Code" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq (Join-Path $output "BORG Code.exe") }
+if ($runningDesktop) {
+    throw "BORG Code is running from the desktop output. Exit it from the system tray before rebuilding."
+}
 $env:DOTNET_CLI_HOME = Join-Path $repositoryRoot ".dotnet-home"
 $env:NUGET_PACKAGES = Join-Path $repositoryRoot ".nuget-packages"
 $env:APPDATA = Join-Path $repositoryRoot ".dotnet-home\AppData\Roaming"

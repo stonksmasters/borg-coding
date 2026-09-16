@@ -16,6 +16,7 @@ import {
 import { assertTransition } from "../../../packages/core/src/state-machine.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
+import { RepositoryMemory, type MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
 import { GitWorktreeManager } from "../../../packages/repository/src/git-worktree-manager.ts";
 import { WorktreeDelivery } from "../../../packages/repository/src/worktree-delivery.ts";
 import { ToolBroker, type PermissionMode } from "../../../packages/tools/src/tool-broker.ts";
@@ -41,8 +42,9 @@ const databasePath = resolve(process.env.BORG_DATABASE_PATH ?? ".borg/borg.db");
 mkdirSync(dirname(databasePath), { recursive: true });
 const tasks = new SqliteTaskRepository(databasePath);
 const access = new AccessController(resolve(".borg/access.json"));
+const memory = new RepositoryMemory(resolve(".borg/repository-memory.db"));
 const worktreeRoot = resolve(".borg/worktrees");
-const tools = new ToolBroker(resolve(".borg/tools.json"), access, { worktreeRoot, findApproval: (taskId) => tasks.findApproval(taskId) });
+const tools = new ToolBroker(resolve(".borg/tools.json"), access, { worktreeRoot, findApproval: (taskId) => tasks.findApproval(taskId) }, memory);
 const worktrees = new GitWorktreeManager(worktreeRoot);
 const delivery = new WorktreeDelivery(worktreeRoot, resolve(".borg/deliveries"));
 const port = Number(process.env.BORG_PORT ?? 4311);
@@ -82,6 +84,11 @@ function writeEvent(response: ServerResponse, event: Record<string, unknown>) {
 
 function appendTaskEvent(taskId: string, type: string, payload: Record<string, unknown>) {
   tasks.appendEvent({ id: randomUUID(), taskId, type, payload, occurredAt: new Date().toISOString() });
+}
+
+function recordMemoryNote(root: string, note: MemoryNote) {
+  try { memory.recordNote(root, note); }
+  catch (error) { appendTaskEvent(note.taskId, "REPOSITORY_MEMORY_FAILED", { message: error instanceof Error ? error.message : String(error) }); }
 }
 
 function transitionTask(task: Task, state: TaskState, emit?: (event: Record<string, unknown>) => void): Task {
@@ -386,6 +393,12 @@ createServer((request, response) => {
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
         tasks.replaceFindings(taskId, [...(visionReview?.findings ?? []), ...review.findings]);
+        const reviewedRepository = access.load().repositoryPath;
+        if (reviewedRepository) for (const finding of review.findings) recordMemoryNote(reviewedRepository, {
+          id: `finding:${finding.id}`, kind: "finding", text: `${finding.severity}: ${finding.title} — ${finding.description}`,
+          taskId, path: finding.file && access.allowsRepositoryFile(finding.file) ? finding.file : null,
+          line: finding.line ?? null, createdAt: new Date().toISOString(),
+        });
         appendTaskEvent(taskId, "REVIEW_COMPLETED", { review, status, worktreePath: approval.worktreePath, model: reviewerModel, role: "reviewer", attempt: task.attempts });
         emit({ type: "review.completed", review });
         if (review.verdict === "repair") {
@@ -490,6 +503,8 @@ createServer((request, response) => {
         const rejected = { ...approval, status: "REJECTED" as const, decidedAt: new Date().toISOString() };
         tasks.saveApproval(rejected);
         appendTaskEvent(task.id, "APPROVAL_REJECTED", { approvalId: approval.id });
+        const repositoryPath = access.load().repositoryPath;
+        if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: "Implementation plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
         task = transitionTask(task, "CANCELLED");
         return send(response, 200, { task, approval: rejected });
       }
@@ -500,6 +515,7 @@ createServer((request, response) => {
       const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: worktree.path, baseCommit: worktree.baseCommit };
       tasks.saveApproval(approved);
       appendTaskEvent(task.id, "APPROVAL_APPROVED", { approvalId: approval.id, worktreePath: worktree.path, baseCommit: worktree.baseCommit });
+      recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: `Implementation plan approved at base commit ${worktree.baseCommit}.`, taskId: task.id, path: null, line: null, createdAt: approved.decidedAt! });
       task = transitionTask(task, "IMPLEMENTING");
       return send(response, 200, { task, approval: approved, worktree: worktrees.describe(worktree) });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
@@ -544,7 +560,7 @@ createServer((request, response) => {
       "access-control-allow-methods": "POST, OPTIONS",
       "access-control-allow-headers": "content-type",
     });
-    void readJson(request).then((input) => {
+    void readJson(request).then(async (input) => {
       const requestedMode = String(input.mode ?? "ask").toLowerCase();
       const mode: PermissionMode = (["ask", "plan", "edit", "agent"] as const).includes(requestedMode as PermissionMode) ? requestedMode as PermissionMode : "ask";
       const requestText = String(input.request ?? "");
@@ -576,7 +592,18 @@ createServer((request, response) => {
       emit({ type: "specialist.packs.selected", packs: selectedPacks });
       task = transitionTask(task, "DISCOVERING", emit);
 
-      const repositoryContext = access.buildContext();
+      let repositoryContext = mode === "ask" ? "No repository context is available in ASK mode." : access.buildContext();
+      const approvedRepository = access.load().repositoryPath;
+      if (mode !== "ask" && approvedRepository) {
+        try {
+          const refresh = await tools.refreshMemory();
+          appendTaskEvent(task.id, "REPOSITORY_MEMORY_REFRESHED", refresh);
+          const recalled = memory.context(approvedRepository, requestText, (path) => access.allowsRepositoryFile(path));
+          if (recalled) repositoryContext += `\n\nRepository memory (historical evidence; verify current files):\n${recalled}`;
+        } catch (error) {
+          appendTaskEvent(task.id, "REPOSITORY_MEMORY_FAILED", { message: error instanceof Error ? error.message : String(error) });
+        }
+      }
       const architectModel = teamPolicies.modelFor(teamPolicy, "architect", model, route.primary);
       const architectAssignment = beginRole(task, "architect", route.primary, architectModel, packs, emit);
       const architectInstructions = specialistSystemInstructions(packs, "architect");

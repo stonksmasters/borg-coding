@@ -70,6 +70,6 @@ test("managed development servers stay bounded to the approved worktree", async 
     assert.equal(stopped.stopped, true);
   } finally {
     await runtime.execute("browser_server_stop", {}, context);
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

@@ -8,7 +8,6 @@ import type { BrowserEvidenceReport, ScreenshotEvidence } from "../../browser-ve
 const MAX_IMAGE_BYTES = 12_000_000;
 const MAX_PROMPT_CHARACTERS = 50_000;
 const DEFAULT_MODEL = "qwen3-vl:8b";
-const visionStatuses = ["disabled", "pass", "repair", "inconclusive", "unavailable", "failed"] as const;
 const blockingSeverities = ["medium", "high", "critical"] as const;
 
 const VisionPolicySchema = z.object({
@@ -61,7 +60,7 @@ export interface VisionReviewRequest {
 
 export interface VisionReviewResult {
   taskId: string;
-  status: typeof visionStatuses[number];
+  status: "disabled" | "pass" | "repair" | "inconclusive" | "unavailable" | "failed";
   summary: string;
   findings: Finding[];
   provider: "ollama";

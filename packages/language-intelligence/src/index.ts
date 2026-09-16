@@ -33,6 +33,29 @@ export interface QuickInfoResult extends CodeLocation {
   documentation: string;
 }
 
+export interface FileGraphResult {
+  path: string;
+  imports: string[];
+  importedBy: string[];
+  truncated: boolean;
+}
+
+export interface CallHierarchyResult {
+  symbol: SymbolResult | null;
+  incoming: { symbol: SymbolResult; callSites: CodeLocation[] }[];
+  outgoing: { symbol: SymbolResult; callSites: CodeLocation[] }[];
+  truncated: boolean;
+}
+
+export interface ChangeImpactResult {
+  path: string;
+  symbol: CodeLocation | null;
+  references: CodeLocation[];
+  directDependents: string[];
+  transitiveDependents: string[];
+  truncated: boolean;
+}
+
 export interface LanguageIntelligenceProvider {
   readonly id: string;
   supports(path: string): boolean;
@@ -50,6 +73,9 @@ export interface LanguageIntelligenceOptions {
 }
 
 export interface LanguageIntelligenceService extends LanguageIntelligenceProvider {
+  fileGraph(path: string): Promise<FileGraphResult>;
+  callHierarchy(path: string, line: number, column: number): Promise<CallHierarchyResult>;
+  changeImpact(path: string, line?: number, column?: number): Promise<ChangeImpactResult>;
   status(): LanguageProviderStatus[];
   close(): Promise<void>;
 }
@@ -164,6 +190,74 @@ export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvi
 
   async implementations(path: string, line: number, column: number): Promise<CodeLocation[]> {
     return this.positionQuery(path, line, column, (fileName, offset) => this.service.getImplementationAtPosition(fileName, offset));
+  }
+
+  async fileGraph(path: string): Promise<FileGraphResult> {
+    this.refreshFiles();
+    const target = this.absolute(path);
+    const graph = this.dependencyGraph();
+    const imports = graph.get(target) ?? new Set<string>();
+    const importedBy = [...graph].filter(([, edges]) => edges.has(target)).map(([file]) => file);
+    return { path: this.displayPath(target), imports: [...imports].map((file) => this.displayPath(file)).sort(), importedBy: importedBy.map((file) => this.displayPath(file)).sort(), truncated: this.fileNames.length > 500 };
+  }
+
+  async callHierarchy(path: string, line: number, column: number): Promise<CallHierarchyResult> {
+    this.refreshFiles();
+    const file = this.absolute(path);
+    const offset = this.offset(file, line, column);
+    const prepared = this.service.prepareCallHierarchy(file, offset);
+    const item = Array.isArray(prepared) ? prepared[0] : prepared;
+    if (!item || !this.isWorkspaceFile(item.file)) return { symbol: null, incoming: [], outgoing: [], truncated: false };
+    const symbol = (value: ts.CallHierarchyItem): SymbolResult => ({ name: value.name, kind: value.kind, container: value.containerName || undefined, ...this.location(value.file, value.selectionSpan) });
+    const incoming = this.service.provideCallHierarchyIncomingCalls(item.file, item.selectionSpan.start)
+      .filter((call) => this.isWorkspaceFile(call.from.file));
+    const outgoing = this.service.provideCallHierarchyOutgoingCalls(item.file, item.selectionSpan.start)
+      .filter((call) => this.isWorkspaceFile(call.to.file));
+    return {
+      symbol: symbol(item),
+      incoming: incoming.slice(0, 100).map((call) => ({ symbol: symbol(call.from), callSites: call.fromSpans.slice(0, 20).map((span) => this.location(call.from.file, span)) })),
+      outgoing: outgoing.slice(0, 100).map((call) => ({ symbol: symbol(call.to), callSites: call.fromSpans.slice(0, 20).map((span) => this.location(item.file, span)) })),
+      truncated: incoming.length > 100 || outgoing.length > 100 || incoming.some((call) => call.fromSpans.length > 20) || outgoing.some((call) => call.fromSpans.length > 20),
+    };
+  }
+
+  async changeImpact(path: string, line?: number, column?: number): Promise<ChangeImpactResult> {
+    this.refreshFiles();
+    const target = this.absolute(path);
+    if ((line === undefined) !== (column === undefined)) throw new Error("line and column must be supplied together");
+    const references = line === undefined ? [] : await this.references(path, line, column!);
+    const definition = line === undefined ? null : (await this.definitions(path, line, column!))[0] ?? null;
+    const graph = this.dependencyGraph();
+    const reverse = new Map<string, string[]>();
+    for (const [file, imports] of graph) for (const imported of imports) reverse.set(imported, [...(reverse.get(imported) ?? []), file]);
+    const direct = (reverse.get(target) ?? []).sort();
+    const seen = new Set<string>([target, ...direct]);
+    const queue = [...direct];
+    while (queue.length && seen.size <= 200) {
+      for (const file of reverse.get(queue.shift()!) ?? []) if (!seen.has(file)) { seen.add(file); queue.push(file); }
+    }
+    const transitive = [...seen].filter((file) => file !== target && !direct.includes(file)).map((file) => this.displayPath(file)).sort();
+    return {
+      path: this.displayPath(target), symbol: definition, references: references.slice(0, 200),
+      directDependents: direct.map((file) => this.displayPath(file)), transitiveDependents: transitive.slice(0, 200),
+      truncated: this.fileNames.length > 500 || references.length > 200 || seen.size > 200,
+    };
+  }
+
+  private dependencyGraph(): Map<string, Set<string>> {
+    const graph = new Map<string, Set<string>>();
+    for (const file of this.fileNames.slice(0, 500)) {
+      const source = this.sourceFile(file);
+      const imports = new Set<string>();
+      for (const statement of source.statements) {
+        const specifier = (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) ? statement.moduleSpecifier : undefined;
+        if (!specifier || !ts.isStringLiteral(specifier)) continue;
+        const resolved = ts.resolveModuleName(specifier.text, file, this.compilerOptions, ts.sys).resolvedModule?.resolvedFileName;
+        if (resolved && this.isWorkspaceFile(resolved)) imports.add(resolve(resolved));
+      }
+      graph.set(file, imports);
+    }
+    return graph;
   }
 
   async quickInfo(path: string, line: number, column: number): Promise<QuickInfoResult | null> {
@@ -386,6 +480,17 @@ export class PolyglotLanguageIntelligence implements LanguageIntelligenceService
 
   async implementations(path: string, line: number, column: number): Promise<CodeLocation[]> {
     return this.forPath(path).implementations(path, line, column);
+  }
+
+  async fileGraph(path: string): Promise<FileGraphResult> { return this.graphProvider(path).fileGraph(path); }
+
+  async callHierarchy(path: string, line: number, column: number): Promise<CallHierarchyResult> { return this.graphProvider(path).callHierarchy(path, line, column); }
+
+  async changeImpact(path: string, line?: number, column?: number): Promise<ChangeImpactResult> { return this.graphProvider(path).changeImpact(path, line, column); }
+
+  private graphProvider(path: string): TypeScriptLanguageIntelligence {
+    if (!this.typescript.supports(path)) throw new Error(`Code graph is currently supported for TypeScript and JavaScript files: ${path}`);
+    return this.typescript;
   }
 
   async quickInfo(path: string, line: number, column: number): Promise<QuickInfoResult | null> {
