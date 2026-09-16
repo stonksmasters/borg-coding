@@ -11,8 +11,7 @@ import {
 } from "../packages/language-intelligence/src/lsp-provider.ts";
 
 const fakeServer = fileURLToPath(new URL("./fixtures/fake-lsp-server.mjs", import.meta.url));
-const python = languageServerDefinitions.find((provider) => provider.id === "python");
-if (!python) throw new Error("Python language server definition is missing.");
+const python = languageServerDefinitions.find((provider) => provider.id === "python")!;
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "borg-polyglot-"));
