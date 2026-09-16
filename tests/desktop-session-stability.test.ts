@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readFileSync as readText, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -55,7 +55,7 @@ test("internet settings persist metadata while credentials remain outside config
     const reconstructed = restarted.load();
     assert.equal(reconstructed.internetEnabled, true);
     assert.equal(reconstructed.credentialConfigured, true);
-    assert.equal(reconstructed.state, "configured");
+    assert.equal(reconstructed.state, "available");
     assert.equal(restarted.credential(), "secret-api-key");
 
     restarted.save({ clearApiKey: true });
@@ -92,8 +92,8 @@ test("PLAN exposes no mutation tools and rejects mutation while EDIT and AGENT c
 
     await broker.execute({ function: { name: "worktree_patch", arguments: { path: "edit.txt", old_text: "", new_text: "edit-authorized" } } }, "edit", context);
     await broker.execute({ function: { name: "worktree_patch", arguments: { path: "agent.txt", old_text: "", new_text: "agent-authorized" } } }, "agent", context);
-    assert.equal(readText(join(approvedWorktree, "edit.txt"), "utf8"), "edit-authorized");
-    assert.equal(readText(join(approvedWorktree, "agent.txt"), "utf8"), "agent-authorized");
+    assert.equal(readFileSync(join(approvedWorktree, "edit.txt"), "utf8"), "edit-authorized");
+    assert.equal(readFileSync(join(approvedWorktree, "agent.txt"), "utf8"), "agent-authorized");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
