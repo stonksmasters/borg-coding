@@ -34,8 +34,8 @@
 
 ## Alpha 0.3 — software engineering team
 
-- [ ] explicit architect / implementer / reviewer / verifier discipline routing
-- [ ] frontend, backend, database, security, QA, DevOps, and infrastructure specialist roles
+- [x] explicit architect / implementer / reviewer / verifier discipline routing
+- [x] frontend, backend, database, security, QA, DevOps, and infrastructure specialist roles
 - [ ] Python / Rust / Go / C# language-server providers
 - [ ] richer code graph and call-hierarchy context
 - [ ] persistent repository memory beyond the bounded structural map

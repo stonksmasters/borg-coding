@@ -16,7 +16,9 @@
     "test": "node --experimental-strip-types --experimental-sqlite --test tests/*.test.ts",
     "server:dev": "node --experimental-strip-types --experimental-sqlite apps/server/src/index.ts",
     "desktop:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-desktop.ps1",
-    "desktop:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1"
+    "desktop:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1",
+    "desktop:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-desktop.ps1",
+    "desktop:sync": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-desktop.ps1 -Apply"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

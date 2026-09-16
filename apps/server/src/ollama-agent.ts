@@ -1,3 +1,4 @@
+import type { EngineeringRole } from "../../../packages/core/src/contracts.ts";
 import type { PermissionMode, ToolBroker, ToolCall } from "../../../packages/tools/src/tool-broker.ts";
 import type { TaskToolContext } from "../../../packages/tools/src/worktree-tools.ts";
 
@@ -15,6 +16,7 @@ interface AgentOptions {
   tools: ToolBroker;
   mode: PermissionMode;
   taskContext?: TaskToolContext;
+  role?: EngineeringRole;
   phase?: "plan" | "implementation";
   limits?: Partial<AgentLimits>;
   emit(event: Record<string, unknown>): void;
@@ -42,7 +44,7 @@ function agentLimits(overrides?: Partial<AgentLimits>): AgentLimits {
 }
 
 async function runTurn(options: AgentOptions, allowTools = true): Promise<OllamaMessage> {
-  const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode, options.taskContext) : [];
+  const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode, options.taskContext, options.role) : [];
   const response = await fetch(`${options.ollamaUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -80,8 +82,8 @@ async function runTurn(options: AgentOptions, allowTools = true): Promise<Ollama
 
 export async function runOllamaAgent(options: AgentOptions) {
   const limits = agentLimits(options.limits);
-  const toolDefinitions = options.tools.toolDefinitions(options.mode, options.taskContext);
-  options.emit({ type: "runtime.connected", runtime: "ollama", model: options.model });
+  const toolDefinitions = options.tools.toolDefinitions(options.mode, options.taskContext, options.role);
+  options.emit({ type: "runtime.connected", runtime: "ollama", model: options.model, role: options.role ?? null });
   if (toolDefinitions.some((tool) => tool.function.name.startsWith("repository_"))) options.emit({ type: "stage.updated", stage: "Discovery", status: "active" });
   else if (toolDefinitions.length) options.emit({ type: "stage.updated", stage: "Plan", status: "active" });
 
@@ -119,7 +121,7 @@ export async function runOllamaAgent(options: AgentOptions) {
         continue;
       }
       try {
-        const output = await options.tools.execute(call, options.mode, options.taskContext);
+        const output = await options.tools.execute(call, options.mode, options.taskContext, options.role);
         options.emit({ type: "tool.completed", tool: call.function.name, output });
         const serialized = JSON.stringify(output);
         const remaining = Math.max(0, limits.toolOutputCharacters - toolOutputCharacters);

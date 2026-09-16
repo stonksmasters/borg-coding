@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createApproval, createTask } from "../packages/core/src/contracts.ts";
+import { createApproval, createHandoff, createRoleAssignment, createTask } from "../packages/core/src/contracts.ts";
 import { SqliteTaskRepository } from "../packages/persistence/src/sqlite-task-repository.ts";
 
 test("tasks round-trip through SQLite", () => {
@@ -30,5 +30,42 @@ test("approval decisions and worktree metadata round-trip through SQLite", () =>
   assert.deepEqual(repository.listFindings(task.id), [finding]);
   repository.replaceFindings(task.id, []);
   assert.deepEqual(repository.listFindings(task.id), []);
+  repository.close();
+});
+
+
+test("role assignments and handoffs round-trip through SQLite", () => {
+  const repository = new SqliteTaskRepository(":memory:");
+  const task = createTask({ id: "task-team", projectId: "project-1", request: "Implement and verify the API" });
+  repository.saveTask(task);
+
+  const assignment = createRoleAssignment({
+    id: "assignment-1",
+    taskId: task.id,
+    role: "implementer",
+    discipline: "backend",
+    model: "local-model",
+    capabilities: ["worktree_patch"],
+  });
+  repository.saveRoleAssignment(assignment);
+
+  const handoff = createHandoff({
+    id: "handoff-1",
+    taskId: task.id,
+    fromRole: "implementer",
+    toRole: "verifier",
+    objective: task.request,
+    constraints: ["Remain inside the approved worktree."],
+    repositoryContext: ["apps/server/src/index.ts"],
+    completedWork: ["Implemented the endpoint."],
+    changedFiles: ["apps/server/src/index.ts"],
+    evidence: ["Relevant tests passed."],
+    openRisks: [],
+    requiredNextAction: "Run independent deterministic verification.",
+  });
+  repository.saveHandoff(handoff);
+
+  assert.deepEqual(repository.listRoleAssignments(task.id), [assignment]);
+  assert.deepEqual(repository.listHandoffs(task.id), [handoff]);
   repository.close();
 });

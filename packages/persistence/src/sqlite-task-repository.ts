@@ -1,5 +1,18 @@
 import { DatabaseSync } from "node:sqlite";
-import { ApprovalSchema, FindingSchema, TaskEventSchema, TaskSchema, type Approval, type Finding, type Task, type TaskEvent } from "../../core/src/contracts.ts";
+import {
+  ApprovalSchema,
+  FindingSchema,
+  HandoffSchema,
+  RoleAssignmentSchema,
+  TaskEventSchema,
+  TaskSchema,
+  type Approval,
+  type Finding,
+  type Handoff,
+  type RoleAssignment,
+  type Task,
+  type TaskEvent,
+} from "../../core/src/contracts.ts";
 
 export class SqliteTaskRepository {
   private readonly database: DatabaseSync;
@@ -28,9 +41,21 @@ export class SqliteTaskRepository {
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         severity TEXT NOT NULL, data TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS role_assignments (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        role TEXT NOT NULL, status TEXT NOT NULL, attempt INTEGER NOT NULL, data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS handoffs (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        from_role TEXT NOT NULL, to_role TEXT NOT NULL, data TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_tasks_project_updated ON tasks(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_task_events_task_sequence ON task_events(task_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id);
+      CREATE INDEX IF NOT EXISTS idx_role_assignments_task_sequence ON role_assignments(task_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_handoffs_task_sequence ON handoffs(task_id, sequence);
       PRAGMA optimize;
     `);
   }
@@ -97,6 +122,32 @@ export class SqliteTaskRepository {
   listFindings(taskId: string): Finding[] {
     const rows = this.database.prepare("SELECT data FROM findings WHERE task_id = ? ORDER BY rowid").all(taskId) as { data: string }[];
     return rows.map((row) => FindingSchema.parse(JSON.parse(row.data)));
+  }
+
+
+  saveRoleAssignment(assignment: RoleAssignment): void {
+    const value = RoleAssignmentSchema.parse(assignment);
+    this.database.prepare(`
+      INSERT INTO role_assignments (id, task_id, role, status, attempt, data)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, data=excluded.data
+    `).run(value.id, value.taskId, value.role, value.status, value.attempt, JSON.stringify(value));
+  }
+
+  listRoleAssignments(taskId: string): RoleAssignment[] {
+    const rows = this.database.prepare("SELECT data FROM role_assignments WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => RoleAssignmentSchema.parse(JSON.parse(row.data)));
+  }
+
+  saveHandoff(handoff: Handoff): void {
+    const value = HandoffSchema.parse(handoff);
+    this.database.prepare("INSERT INTO handoffs (id, task_id, from_role, to_role, data) VALUES (?, ?, ?, ?, ?)")
+      .run(value.id, value.taskId, value.fromRole, value.toRole, JSON.stringify(value));
+  }
+
+  listHandoffs(taskId: string): Handoff[] {
+    const rows = this.database.prepare("SELECT data FROM handoffs WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => HandoffSchema.parse(JSON.parse(row.data)));
   }
 
   close(): void { this.database.close(); }

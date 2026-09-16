@@ -2,6 +2,8 @@ import { lookup } from "node:dns/promises";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { createLanguageIntelligence, type LanguageIntelligenceProvider } from "../../language-intelligence/src/index.ts";
+import type { EngineeringRole } from "../../core/src/contracts.ts";
+import { roleAllowsTool } from "../../orchestration/src/index.ts";
 import type { AccessController } from "../../repository/src/access-controller.ts";
 import { WorktreeTools, type TaskToolContext, type WorktreeToolOptions } from "./worktree-tools.ts";
 
@@ -189,16 +191,22 @@ export class ToolBroker {
     return { ...policy, webFetchAvailable: policy.internetEnabled, webSearchAvailable: policy.internetEnabled && Boolean(this.ollamaApiKey), apiKeyInMemory: Boolean(this.ollamaApiKey) };
   }
 
-  toolDefinitions(mode: PermissionMode = "ask", context?: TaskToolContext) {
+  toolDefinitions(mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole) {
     const status = this.status();
     const available = [];
-    if (mode !== "ask" && this.access?.load().repositoryPath) available.push(...repositoryDefinitions);
-    if ((mode === "edit" || mode === "agent") && context && this.worktree) available.push(...this.worktree.definitions());
-    if (status.internetEnabled) available.push(...(status.webSearchAvailable ? [definitions.web_search, definitions.web_fetch] : [definitions.web_fetch]));
+    const allowed = <T extends { function: { name: string } }>(items: readonly T[]): T[] =>
+      role ? items.filter((item) => roleAllowsTool(role, item.function.name)) : [...items];
+    if (mode !== "ask" && this.access?.load().repositoryPath) available.push(...allowed(repositoryDefinitions));
+    if ((mode === "edit" || mode === "agent") && context && this.worktree) available.push(...allowed(this.worktree.definitions()));
+    if (status.internetEnabled) {
+      const internet = status.webSearchAvailable ? [definitions.web_search, definitions.web_fetch] : [definitions.web_fetch];
+      available.push(...allowed(internet));
+    }
     return available;
   }
 
-  async execute(call: ToolCall, mode: PermissionMode = "ask", context?: TaskToolContext): Promise<unknown> {
+  async execute(call: ToolCall, mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole): Promise<unknown> {
+    if (role && !roleAllowsTool(role, call.function.name)) throw new Error(`The ${role} role cannot invoke ${call.function.name}.`);
     if (call.function.name.startsWith("repository_")) {
       if (mode === "ask") throw new Error("Repository tools are unavailable in ASK mode.");
       if (!this.access) throw new Error("Repository tools are not configured.");
