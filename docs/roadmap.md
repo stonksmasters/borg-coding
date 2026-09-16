@@ -37,7 +37,7 @@
 - [x] explicit architect / implementer / reviewer / verifier discipline routing
 - [x] frontend, backend, database, security, QA, DevOps, and infrastructure discipline classification
 - [x] versioned specialist capability packs with tool, evidence, verification, risk, failure, and escalation policy
-- [ ] Python / Rust / Go / C# language-server providers
+- [x] Python / Rust / Go / C# language-server providers
 - [ ] richer code graph and call-hierarchy context
 - [ ] persistent repository memory beyond the bounded structural map
 - [ ] named checkpoints and task continuation history
