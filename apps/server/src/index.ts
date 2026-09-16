@@ -508,7 +508,7 @@ createServer((request, response) => {
       const requestText = String(input.request ?? "");
       const teamPolicy = teamPolicies.load(access.load().repositoryPath);
       const route = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
-      let task = {
+      let task: Task = {
         ...createTask({ id: randomUUID(), projectId: String(input.projectId ?? "local"), request: requestText }),
         disciplines: route.disciplines,
       };
