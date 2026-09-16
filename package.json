@@ -1,6 +1,6 @@
 {
   "name": "borg-code",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -18,7 +18,9 @@
     "db:generate": "drizzle-kit generate",
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --experimental-sqlite --test tests/*.test.ts",
-    "server:dev": "node --experimental-strip-types --experimental-sqlite apps/server/src/index.ts"
+    "server:dev": "node --experimental-strip-types --experimental-sqlite apps/server/src/index.ts",
+    "desktop:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-desktop.ps1",
+    "desktop:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

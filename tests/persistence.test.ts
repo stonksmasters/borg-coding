@@ -25,5 +25,10 @@ test("approval decisions and worktree metadata round-trip through SQLite", () =>
   const approved = { ...requested, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: "C:\\worktrees\\task-approval", baseCommit: "a".repeat(40) };
   repository.saveApproval(approved);
   assert.deepEqual(repository.findApproval(task.id), approved);
+  const finding = { id: "finding-1", taskId: task.id, discipline: "security", severity: "high" as const, category: "authorization", title: "Missing check", description: "A required ownership check is absent." };
+  repository.replaceFindings(task.id, [finding]);
+  assert.deepEqual(repository.listFindings(task.id), [finding]);
+  repository.replaceFindings(task.id, []);
+  assert.deepEqual(repository.listFindings(task.id), []);
   repository.close();
 });

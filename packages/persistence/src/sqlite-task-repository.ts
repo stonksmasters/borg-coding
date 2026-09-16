@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { ApprovalSchema, TaskEventSchema, TaskSchema, type Approval, type Task, type TaskEvent } from "../../core/src/contracts.ts";
+import { ApprovalSchema, FindingSchema, TaskEventSchema, TaskSchema, type Approval, type Finding, type Task, type TaskEvent } from "../../core/src/contracts.ts";
 
 export class SqliteTaskRepository {
   private readonly database: DatabaseSync;
@@ -24,8 +24,13 @@ export class SqliteTaskRepository {
         status TEXT NOT NULL, requested_at TEXT NOT NULL, decided_at TEXT,
         worktree_path TEXT, base_commit TEXT, data TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS findings (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        severity TEXT NOT NULL, data TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_tasks_project_updated ON tasks(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_task_events_task_sequence ON task_events(task_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id);
       PRAGMA optimize;
     `);
   }
@@ -73,6 +78,25 @@ export class SqliteTaskRepository {
   findApproval(taskId: string): Approval | null {
     const row = this.database.prepare("SELECT data FROM approvals WHERE task_id = ?").get(taskId) as { data: string } | undefined;
     return row ? ApprovalSchema.parse(JSON.parse(row.data)) : null;
+  }
+
+  replaceFindings(taskId: string, findings: Finding[]): void {
+    const values = findings.map((finding) => FindingSchema.parse(finding));
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare("DELETE FROM findings WHERE task_id = ?").run(taskId);
+      const insert = this.database.prepare("INSERT INTO findings (id, task_id, severity, data) VALUES (?, ?, ?, ?)");
+      for (const finding of values) insert.run(finding.id, finding.taskId, finding.severity, JSON.stringify(finding));
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listFindings(taskId: string): Finding[] {
+    const rows = this.database.prepare("SELECT data FROM findings WHERE task_id = ? ORDER BY rowid").all(taskId) as { data: string }[];
+    return rows.map((row) => FindingSchema.parse(JSON.parse(row.data)));
   }
 
   close(): void { this.database.close(); }

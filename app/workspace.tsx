@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Bot, Check, ChevronRight, Circle, CircleStop, Clock3, FileText, FolderGit2, Globe2, History, KeyRound, Play, Settings2, ShieldCheck, User, Wrench } from "lucide-react";
+import { AlertCircle, Bot, Check, ChevronRight, Circle, CircleStop, Clock3, Download, FileText, FolderGit2, GitCommit, Globe2, History, KeyRound, Play, Settings2, ShieldCheck, User, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,6 +15,7 @@ type Message = { id: string; role: "user" | "assistant" | "system" | "tool"; tex
 type AccessConfig = { repositoryPath: string | null; documents: string[]; repositoryName: string | null; documentNames: string[]; updatedAt: string };
 type ToolConfig = { internetEnabled: boolean; webFetchAvailable: boolean; webSearchAvailable: boolean; apiKeyInMemory: boolean; updatedAt: string };
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
+type Finding = { severity: string; title: string; description: string; file?: string; line?: number };
 type StreamEvent = {
   type: string;
   task?: { id: string; request: string; state: string };
@@ -24,8 +25,14 @@ type StreamEvent = {
   state?: string;
   tool?: string;
   input?: Record<string, unknown>;
-  output?: { query?: string; url?: string; results?: { title: string; url: string }[] };
+  output?: Record<string, unknown> & { query?: string; url?: string; results?: { title: string; url: string }[]; passed?: boolean; path?: string };
   approval?: Approval;
+  worktreePath?: string;
+  status?: { stdout?: string };
+  diff?: { stdout?: string };
+  review?: { verdict: "pass" | "repair"; summary: string; findings: Finding[] };
+  attempt?: number;
+  maximum?: number;
 };
 
 declare global {
@@ -43,10 +50,10 @@ declare global {
   }
 }
 
-const emptyStages: Stage[] = ["Discovery", "Plan", "Implementation", "Verification", "Review"].map((name) => ({ name, status: "pending" }));
+const emptyStages: Stage[] = ["Discovery", "Plan", "Implementation", "Verification", "Review", "Delivery"].map((name) => ({ name, status: "pending" }));
 
 function stagesForState(state: string): Stage[] {
-  const activeByState: Record<string, number> = { DISCOVERING: 0, PLANNING: 1, IMPLEMENTING: 2, VERIFYING: 3, REVIEWING: 4 };
+  const activeByState: Record<string, number> = { DISCOVERING: 0, PLANNING: 1, IMPLEMENTING: 2, VERIFYING: 3, REVIEWING: 4, DELIVERY_READY: 5, DELIVERING: 5 };
   const active = activeByState[state];
   if (state === "COMPLETE") return emptyStages.map((stage) => ({ ...stage, status: "complete" }));
   if (state === "AWAITING_APPROVAL") return emptyStages.map((stage, index) => ({ ...stage, status: index < 2 ? "complete" : "pending" }));
@@ -79,6 +86,9 @@ export function BorgWorkspace() {
   const [approval, setApproval] = useState<Approval | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [approvalError, setApprovalError] = useState("");
+  const [deliveryReady, setDeliveryReady] = useState(false);
+  const [deliveryBusy, setDeliveryBusy] = useState(false);
+  const [deliveryError, setDeliveryError] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [stages, setStages] = useState<Stage[]>(emptyStages);
   const abortRef = useRef<AbortController | null>(null);
@@ -118,11 +128,11 @@ export function BorgWorkspace() {
       if (!response.ok) return;
       const result = await response.json() as { tasks?: { id: string; request: string; state: string }[] };
       const latest = result.tasks?.[0];
-      if (!latest || latest.state !== "AWAITING_APPROVAL") return;
+      if (!latest || !["AWAITING_APPROVAL", "DELIVERY_READY"].includes(latest.state)) return;
       const detailResponse = await fetch(`http://127.0.0.1:4311/api/tasks/${encodeURIComponent(latest.id)}/approval`);
       if (!detailResponse.ok) return;
       const detail = await detailResponse.json() as { approval?: Approval; events?: { type: string; payload: Record<string, unknown> }[] };
-      if (!detail.approval || detail.approval.status !== "REQUESTED") return;
+      if (!detail.approval) return;
       const responseEvent = detail.events?.findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED");
       const answer = typeof responseEvent?.payload.answer === "string" ? responseEvent.payload.answer : "The saved plan is ready for approval.";
       setActiveTaskId(latest.id);
@@ -130,7 +140,8 @@ export function BorgWorkspace() {
       setTaskState(latest.state);
       setStages(stagesForState(latest.state));
       setApproval(detail.approval);
-      setMessages([{ id: crypto.randomUUID(), role: "assistant", text: answer }, { id: crypto.randomUUID(), role: "system", text: "This approval was restored from the durable task history." }]);
+      setDeliveryReady(latest.state === "DELIVERY_READY");
+      setMessages([{ id: crypto.randomUUID(), role: "assistant", text: answer }, { id: crypto.randomUUID(), role: "system", text: latest.state === "DELIVERY_READY" ? "This verified task is ready for delivery." : "This approval was restored from the durable task history." }]);
     }).catch(() => undefined);
   }, []);
 
@@ -147,6 +158,7 @@ export function BorgWorkspace() {
     } else if (event.type === "task.state" && event.state) {
       setTaskState(event.state);
       setStages(stagesForState(event.state));
+      setDeliveryReady(event.state === "DELIVERY_READY");
     } else if (event.type === "message.delta" && event.text) {
       setMessages((current) => {
         const last = current.at(-1);
@@ -161,7 +173,7 @@ export function BorgWorkspace() {
       const status = "status" in event ? String(event.status) as StageStatus : "pending";
       setStages((current) => current.map((stage) => stage.name === stageName ? { ...stage, status } : stage));
     } else if (event.type === "stream.completed") {
-      setTaskState((current) => current === "AWAITING_APPROVAL" ? current : "RESPONSE COMPLETE");
+      setTaskState((current) => ["AWAITING_APPROVAL", "DELIVERY_READY", "COMPLETE"].includes(current) ? current : "RESPONSE COMPLETE");
     } else if (event.type === "approval.requested" && event.approval) {
       setApproval(event.approval);
       setTaskState("AWAITING_APPROVAL");
@@ -171,6 +183,19 @@ export function BorgWorkspace() {
       setTaskState("WAITING FOR RUNTIME");
     } else if (event.type === "runtime.notice") {
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: event.message ?? "BORG is completing the task from the evidence collected so far." }]);
+    } else if (event.type === "repair.scheduled") {
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Repair attempt ${event.attempt ?? ""} of ${event.maximum ?? 2}: ${event.message ?? "BORG is correcting the evidenced failure."}` }]);
+    } else if (event.type === "review.completed" && event.review) {
+      const review = event.review;
+      const findings = review.findings.length ? `\n\n${review.findings.map((finding) => `${finding.severity.toUpperCase()}: ${finding.title}${finding.file ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})` : ""}\n${finding.description}`).join("\n\n")}` : "\n\nNo findings.";
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Fresh review: ${review.summary}${findings}` }]);
+    } else if (event.type === "delivery.ready") {
+      setDeliveryReady(true);
+      setTaskState("DELIVERY_READY");
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: event.message ?? "Verified changes are ready for delivery." }]);
+    } else if (event.type === "stream.blocked") {
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: event.message ?? "The task needs attention." }]);
+      setTaskState("BLOCKED");
     } else if (event.type === "runtime.failed" || event.type === "stream.failed") {
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: event.message ?? "The live stream stopped unexpectedly." }]);
       setTaskState("FAILED");
@@ -180,14 +205,28 @@ export function BorgWorkspace() {
         : event.tool === "repository_list" ? `Listing repository files in ${String(event.input?.path ?? ".")}`
         : event.tool === "repository_read" ? `Reading repository file ${String(event.input?.path ?? "")}`
         : event.tool === "repository_search" ? `Searching repository for “${String(event.input?.query ?? "") }”`
+        : event.tool === "worktree_read" ? `Reading worktree file ${String(event.input?.path ?? "")}`
+        : event.tool === "worktree_patch" ? `Patching worktree file ${String(event.input?.path ?? "")}`
+        : event.tool === "worktree_command" ? `Running bounded command ${String(event.input?.command ?? "")}`
+        : event.tool === "git_status" ? "Inspecting worktree Git status"
+        : event.tool === "git_diff" ? "Reviewing the worktree diff"
+        : event.tool === "verification_run" ? `Running ${String(event.input?.profile ?? "quick")} verification`
         : `Running ${event.tool ?? "tool"}`;
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "tool", text: detail }]);
     } else if (event.type === "tool.completed") {
       const results = event.output?.results;
       const detail = results?.length ? `Sources found:\n${results.map((result) => `${result.title}\n${result.url}`).join("\n\n")}`
         : event.tool?.startsWith("repository_") ? `Repository inspection completed: ${event.tool.replace("repository_", "")}.`
+        : event.tool === "worktree_patch" ? `Patched ${String(event.output?.path ?? "the approved worktree")}.`
+        : event.tool === "verification_run" ? `Verification ${event.output?.passed ? "passed" : "failed"}.`
+        : event.tool?.startsWith("git_") ? `Git inspection completed: ${event.tool.replace("git_", "")}.`
+        : event.tool?.startsWith("worktree_") ? `Worktree tool completed: ${event.tool.replace("worktree_", "")}.`
         : `Finished reading ${event.output?.url ?? "the requested page"}.`;
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "tool", text: detail }]);
+    } else if (event.type === "implementation.summary") {
+      const status = event.status?.stdout?.trim() || "Clean worktree";
+      const diff = event.diff?.stdout?.trim() || "No diff produced";
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Implementation complete in ${event.worktreePath ?? "the approved worktree"}.\n\nGit status:\n${status}\n\nDiff:\n${diff}` }]);
     } else if (event.type === "tool.failed") {
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `${event.tool ?? "Tool"} failed: ${event.message ?? "Unknown error"}` }]);
     }
@@ -234,10 +273,61 @@ export function BorgWorkspace() {
       setApproval(result.approval);
       setTaskState(result.task.state);
       if (decision === "approve") {
-        setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Approved. An isolated worktree is ready at ${result.worktree?.path ?? result.approval?.worktreePath}. Write tools remain disabled until the next safety slice.` }]);
+        setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Approved. BORG is implementing inside the isolated worktree at ${result.worktree?.path ?? result.approval?.worktreePath}.` }]);
+        await runApprovedTask(activeTaskId);
       } else setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: "Plan rejected. No worktree was created and the task was cancelled." }]);
     } catch (error) { setApprovalError(error instanceof Error ? error.message : "Unable to record approval"); }
     finally { setApprovalBusy(false); }
+  }
+
+  async function runApprovedTask(taskId: string) {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setStreaming(true);
+    try {
+      const response = await fetch(`http://127.0.0.1:4311/api/tasks/${encodeURIComponent(taskId)}/execute`, { method: "POST", signal: controller.signal });
+      if (!response.ok || !response.body) {
+        const failure = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(failure.error ?? "The approved implementation stream did not start.");
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) if (line.trim()) applyEvent(JSON.parse(line) as StreamEvent);
+        if (done) break;
+      }
+      if (buffer.trim()) applyEvent(JSON.parse(buffer) as StreamEvent);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: error instanceof Error ? error.message : "Approved implementation failed." }]);
+        setTaskState("FAILED");
+      }
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }
+
+  async function deliverTask(method: "export" | "commit") {
+    if (!activeTaskId || !deliveryReady || deliveryBusy) return;
+    setDeliveryBusy(true);
+    setDeliveryError("");
+    try {
+      const response = await fetch(`http://127.0.0.1:4311/api/tasks/${encodeURIComponent(activeTaskId)}/delivery`, { method: "POST", body: JSON.stringify({ method }) });
+      const result = await response.json() as { task?: { state: string }; delivery?: { path?: string; commit?: string }; error?: string };
+      if (!response.ok || !result.task || !result.delivery) throw new Error(result.error ?? "Delivery failed");
+      setTaskState(result.task.state);
+      setStages(stagesForState(result.task.state));
+      setDeliveryReady(false);
+      const detail = method === "export" ? `Patch exported to ${result.delivery.path}.` : `Committed in the isolated worktree as ${result.delivery.commit}.`;
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `${detail} Your primary checkout was not changed.` }]);
+    } catch (error) { setDeliveryError(error instanceof Error ? error.message : "Delivery failed"); }
+    finally { setDeliveryBusy(false); }
   }
 
   const runTask = useCallback(async (prompt: string) => {
@@ -250,6 +340,8 @@ export function BorgWorkspace() {
     setActiveTaskId(null);
     setTaskState("CREATING");
     setApproval(null);
+    setDeliveryReady(false);
+    setDeliveryError("");
     setApprovalError("");
     setStages(emptyStages.map((stage) => ({ ...stage })));
     setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", text: cleanPrompt }]);
@@ -346,7 +438,7 @@ export function BorgWorkspace() {
       <SidebarInset className="min-w-0 bg-[#0d1117] text-slate-100">
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400 hover:bg-white/8 hover:text-white" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeTitle}</span></div></div>
-          <div className="flex items-center gap-2"><Select value={mode} onValueChange={setMode}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit (read-only preview)</SelectItem><SelectItem value="agent">Agent (read-only preview)</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${modelName} · Ollama` : "Runtime not connected"}</div></div>
+          <div className="flex items-center gap-2"><Select value={mode} onValueChange={setMode}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${modelName} · Ollama` : "Runtime not connected"}</div></div>
         </header>
 
         <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_310px]">
@@ -355,7 +447,7 @@ export function BorgWorkspace() {
               <div className="mx-auto max-w-3xl">
                 <div className="mb-7 flex items-start justify-between gap-5"><div><p className="mb-2 font-mono text-xs uppercase tracking-[0.18em] text-[#a7ff4f]">{activeTaskId ? `Task ${activeTaskId.slice(0, 8).toUpperCase()}` : "No active task"}</p><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{activeTitle}</h1></div><span className="rounded-full border border-white/10 bg-white/4 px-3 py-1 text-xs font-medium text-slate-400">{taskState}</span></div>
 
-                <div className="grid grid-cols-5 gap-2 border-y border-white/8 py-5">
+                <div className="grid grid-cols-6 gap-2 border-y border-white/8 py-5">
                   {stages.map((stage, index) => <div key={stage.name} className="min-w-0"><div className="mb-2 flex items-center"><span className={`grid size-6 place-items-center rounded-full border ${stage.status === "complete" ? "border-[#a7ff4f]/40 bg-[#a7ff4f]/12 text-[#a7ff4f]" : stage.status === "active" ? "border-amber-300/40 bg-amber-300/10 text-amber-200" : stage.status === "failed" ? "border-red-400/40 bg-red-400/10 text-red-300" : "border-white/12 text-slate-600"}`}>{stage.status === "complete" ? <Check className="size-3.5" /> : stage.status === "active" ? <Clock3 className="size-3.5" /> : <Circle className="size-2.5" />}</span>{index < stages.length - 1 && <span className={`h-px flex-1 ${stage.status === "complete" ? "bg-[#a7ff4f]/25" : "bg-white/8"}`} />}</div><p className="truncate text-xs text-slate-400">{stage.name}</p></div>)}
                 </div>
 
@@ -367,8 +459,10 @@ export function BorgWorkspace() {
             </div>
 
             <div className="border-t border-white/8 bg-[#0a0d12]/90 p-4 sm:px-8">
-              {approval?.status === "REQUESTED" && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3"><div><p className="text-sm font-medium text-amber-100">Plan approval required</p><p className="mt-1 text-xs text-slate-400">Approval creates a detached Git worktree. It does not enable file changes or commands yet.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideApproval("reject")} className="border-white/10 bg-transparent text-slate-300 hover:bg-white/5 hover:text-white">Reject</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideApproval("approve")} className="bg-[#a7ff4f] text-[#071007] hover:bg-[#b5ff6f]"><Check className="size-4" />{approvalBusy ? "Preparing…" : "Approve plan"}</Button></div></div>}
+              {approval?.status === "REQUESTED" && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3"><div><p className="text-sm font-medium text-amber-100">Plan approval required</p><p className="mt-1 text-xs text-slate-400">Approval creates an isolated Git worktree, enables bounded mutation tools for this task, and runs deterministic verification.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideApproval("reject")} className="border-white/10 bg-transparent text-slate-300 hover:bg-white/5 hover:text-white">Reject</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideApproval("approve")} className="bg-[#a7ff4f] text-[#071007] hover:bg-[#b5ff6f]"><Check className="size-4" />{approvalBusy ? "Preparing…" : "Approve plan"}</Button></div></div>}
+              {deliveryReady && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Verified changes ready</p><p className="mt-1 text-xs text-slate-400">Export a portable patch or create a commit in the isolated worktree. Neither option changes your main checkout.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={deliveryBusy} onClick={() => void deliverTask("export")} className="border-white/10 bg-transparent text-slate-300 hover:bg-white/5 hover:text-white"><Download className="size-4" />Export patch</Button><Button type="button" disabled={deliveryBusy} onClick={() => void deliverTask("commit")} className="bg-[#a7ff4f] text-[#071007] hover:bg-[#b5ff6f]"><GitCommit className="size-4" />{deliveryBusy ? "Delivering…" : "Commit changes"}</Button></div></div>}
               {approvalError && <p className="mx-auto mb-3 max-w-3xl rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{approvalError}</p>}
+              {deliveryError && <p className="mx-auto mb-3 max-w-3xl rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{deliveryError}</p>}
               <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); const value = request; setRequest(""); void runTask(value); }}><Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={streaming} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder="Ask BORG to inspect, plan, or change this repository…" aria-label="Task request" /><Button type={streaming ? "button" : "submit"} onClick={() => { if (streaming) { abortRef.current?.abort(); setStreaming(false); setTaskState("CANCELLED"); } }} className={`h-11 gap-2 px-5 ${streaming ? "bg-white/8 text-slate-200 hover:bg-white/12" : "bg-[#a7ff4f] text-[#071007] hover:bg-[#b5ff6f]"}`}>{streaming ? <CircleStop className="size-4" /> : <Play className="size-4" />}{actionLabel}</Button></form>
             </div>
           </section>
@@ -376,7 +470,7 @@ export function BorgWorkspace() {
           <aside className="hidden border-l border-white/8 bg-[#0a0d12] xl:block">
             <div className="border-b border-white/8 p-5"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Runtime</p><div className="mt-4 flex items-center gap-3"><div className={`grid size-9 place-items-center rounded-lg border ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8" : "border-white/8 bg-white/4"}`}><Bot className={`size-4 ${runtimeConnected ? "text-[#a7ff4f]" : "text-slate-500"}`} /></div><div><p className="text-sm font-medium">Ollama direct</p><p className={`text-xs ${runtimeConnected ? "text-[#a7ff4f]/80" : "text-amber-200/80"}`}>{runtimeConnected ? modelName : "Not connected"}</p></div></div></div>
             <div className="space-y-6 p-5">
-              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Access scope</p><button onClick={() => setAccessOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Repository</dt><dd className="truncate text-right text-slate-300">{accessConfig?.repositoryName ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Documents</dt><dd className="text-slate-300">{accessConfig?.documents.length ?? 0}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Permission</dt><dd className="text-slate-300">Read only</dd></div><div className="flex justify-between"><dt className="text-slate-500">Task state</dt><dd className="text-slate-300">{taskState}</dd></div></dl></div>
+              <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Access scope</p><button onClick={() => setAccessOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-500">Repository</dt><dd className="truncate text-right text-slate-300">{accessConfig?.repositoryName ?? "None"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Documents</dt><dd className="text-slate-300">{accessConfig?.documents.length ?? 0}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Permission</dt><dd className="text-slate-300">Approval gated</dd></div><div className="flex justify-between"><dt className="text-slate-500">Task state</dt><dd className="text-slate-300">{taskState}</dd></div></dl></div>
               <div><div className="mb-3 flex items-center justify-between"><p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Tools</p><button onClick={() => setToolsOpen(true)} className="text-xs text-[#a7ff4f] hover:underline">Change</button></div><dl className="space-y-3 text-sm"><div className="flex justify-between"><dt className="text-slate-500">Internet</dt><dd className={toolConfig?.internetEnabled ? "text-[#a7ff4f]" : "text-slate-500"}>{toolConfig?.internetEnabled ? "Allowed" : "Disabled"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Page fetch</dt><dd className="text-slate-300">{toolConfig?.webFetchAvailable ? "Available" : "Off"}</dd></div><div className="flex justify-between"><dt className="text-slate-500">Web search</dt><dd className="text-slate-300">{toolConfig?.webSearchAvailable ? "Available" : "Needs key"}</dd></div></dl></div>
               <div><p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Protection</p><div className="rounded-lg border border-white/8 bg-white/[0.025] p-3 text-sm leading-5 text-slate-400">Only the approved repository map, key project files, and listed documents are sent to Ollama. Secret-like files are excluded.</div></div>
             </div>

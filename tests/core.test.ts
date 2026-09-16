@@ -13,4 +13,8 @@ test("state machine permits the engineering path and rejects skips", () => {
   assert.equal(canTransition("CREATED", "CLASSIFYING"), true);
   assert.equal(canTransition("CREATED", "COMPLETE"), false);
   assert.throws(() => assertTransition("CREATED", "COMPLETE"), /Invalid task transition/);
+  assert.equal(canTransition("VERIFYING", "IMPLEMENTING"), true);
+  assert.equal(canTransition("REVIEWING", "DELIVERY_READY"), true);
+  assert.equal(canTransition("DELIVERY_READY", "DELIVERING"), true);
+  assert.equal(canTransition("DELIVERING", "COMPLETE"), true);
 });

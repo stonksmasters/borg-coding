@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const taskStates = ["CREATED", "CLASSIFYING", "DISCOVERING", "PLANNING", "AWAITING_APPROVAL", "IMPLEMENTING", "VERIFYING", "REVIEWING", "COMPLETE", "BLOCKED", "FAILED", "CANCELLED"] as const;
+export const taskStates = ["CREATED", "CLASSIFYING", "DISCOVERING", "PLANNING", "AWAITING_APPROVAL", "IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERY_READY", "DELIVERING", "COMPLETE", "BLOCKED", "FAILED", "CANCELLED"] as const;
 export const riskLevels = ["R0", "R1", "R2", "R3", "R4"] as const;
 export const severityLevels = ["info", "low", "medium", "high", "critical"] as const;
 export const approvalStatuses = ["REQUESTED", "APPROVED", "REJECTED"] as const;

@@ -1,0 +1,40 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import test from "node:test";
+import { GitWorktreeManager } from "../packages/repository/src/git-worktree-manager.ts";
+import { WorktreeDelivery } from "../packages/repository/src/worktree-delivery.ts";
+
+test("delivery exports a complete patch and can commit without changing the primary checkout", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-delivery-"));
+  const repository = join(root, "repository");
+  const worktrees = join(root, "worktrees");
+  const deliveries = join(root, "deliveries");
+  mkdirSync(repository);
+  execFileSync("git", ["init", repository]);
+  execFileSync("git", ["-C", repository, "config", "user.email", "test@example.com"]);
+  execFileSync("git", ["-C", repository, "config", "user.name", "Test"]);
+  writeFileSync(join(repository, "README.md"), "base\n");
+  execFileSync("git", ["-C", repository, "add", "."]);
+  execFileSync("git", ["-C", repository, "commit", "-m", "base"]);
+  const first = await new GitWorktreeManager(worktrees).create(repository, "task-export");
+  writeFileSync(join(first.path, "README.md"), "changed\n");
+  writeFileSync(join(first.path, "new.txt"), "new\n");
+  const delivery = new WorktreeDelivery(worktrees, deliveries);
+  const exported = await delivery.deliver("task-export", first.path, "export") as { path: string };
+  const patch = readFileSync(exported.path, "utf8");
+  assert.match(patch, /changed/);
+  assert.match(patch, /new\.txt/);
+  assert.equal(readFileSync(join(repository, "README.md"), "utf8"), "base\n");
+
+  const second = await new GitWorktreeManager(worktrees).create(repository, "task-commit");
+  writeFileSync(join(second.path, "README.md"), "committed\n");
+  const committed = await delivery.deliver("task-commit", second.path, "commit", "Verified change") as { commit: string };
+  assert.match(committed.commit, /^[0-9a-f]{40}$/);
+  assert.equal(readFileSync(join(repository, "README.md"), "utf8"), "base\n");
+  execFileSync("git", ["-C", repository, "worktree", "remove", "--force", first.path]);
+  execFileSync("git", ["-C", repository, "worktree", "remove", "--force", second.path]);
+  rmSync(root, { recursive: true, force: true });
+});

@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import type { AccessController } from "../../repository/src/access-controller.ts";
+import { WorktreeTools, type TaskToolContext, type WorktreeToolOptions } from "./worktree-tools.ts";
 
 interface ToolPolicy { internetEnabled: boolean; updatedAt: string; }
 export interface ToolCall { function: { name: string; arguments: Record<string, unknown> }; }
@@ -84,11 +85,13 @@ function htmlToText(html: string): string {
 export class ToolBroker {
   private readonly policyPath: string;
   private readonly access: AccessController | undefined;
+  private readonly worktree: WorktreeTools | undefined;
   private ollamaApiKey: string | undefined;
 
-  constructor(policyPath: string, access?: AccessController) {
+  constructor(policyPath: string, access?: AccessController, worktreeOptions?: WorktreeToolOptions) {
     this.policyPath = policyPath;
     this.access = access;
+    this.worktree = worktreeOptions ? new WorktreeTools(worktreeOptions) : undefined;
     this.ollamaApiKey = process.env.OLLAMA_API_KEY;
   }
 
@@ -114,21 +117,27 @@ export class ToolBroker {
     return { ...policy, webFetchAvailable: policy.internetEnabled, webSearchAvailable: policy.internetEnabled && Boolean(this.ollamaApiKey), apiKeyInMemory: Boolean(this.ollamaApiKey) };
   }
 
-  toolDefinitions(mode: PermissionMode = "ask") {
+  toolDefinitions(mode: PermissionMode = "ask", context?: TaskToolContext) {
     const status = this.status();
     const available = [];
     if (mode !== "ask" && this.access?.load().repositoryPath) available.push(definitions.repository_list, definitions.repository_read, definitions.repository_search);
+    if ((mode === "edit" || mode === "agent") && context && this.worktree) available.push(...this.worktree.definitions());
     if (status.internetEnabled) available.push(...(status.webSearchAvailable ? [definitions.web_search, definitions.web_fetch] : [definitions.web_fetch]));
     return available;
   }
 
-  async execute(call: ToolCall, mode: PermissionMode = "ask"): Promise<unknown> {
+  async execute(call: ToolCall, mode: PermissionMode = "ask", context?: TaskToolContext): Promise<unknown> {
     if (call.function.name.startsWith("repository_")) {
       if (mode === "ask") throw new Error("Repository tools are unavailable in ASK mode.");
       if (!this.access) throw new Error("Repository tools are not configured.");
       if (call.function.name === "repository_list") return this.access.listFiles({ path: String(call.function.arguments.path ?? "."), depth: Number(call.function.arguments.depth ?? 2), maxEntries: Number(call.function.arguments.max_entries ?? 300) });
       if (call.function.name === "repository_read") return this.access.readFile(String(call.function.arguments.path ?? ""));
       if (call.function.name === "repository_search") return this.access.searchFiles(String(call.function.arguments.query ?? ""), { path: String(call.function.arguments.path ?? "."), maxResults: Number(call.function.arguments.max_results ?? 50) });
+    }
+    if (call.function.name.startsWith("worktree_") || call.function.name.startsWith("git_") || call.function.name.startsWith("verification_")) {
+      if (mode !== "edit" && mode !== "agent") throw new Error("Worktree tools require EDIT or AGENT mode.");
+      if (!this.worktree) throw new Error("Worktree tools are not configured.");
+      return this.worktree.execute(call.function.name, call.function.arguments, context);
     }
     if (!this.status().internetEnabled) throw new Error("Internet tools are disabled by the user.");
     if (call.function.name === "web_search") return this.webSearch(String(call.function.arguments.query ?? ""), Number(call.function.arguments.max_results ?? 5));

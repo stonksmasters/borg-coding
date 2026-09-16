@@ -24,11 +24,12 @@ test("tool budget forces a final synthesis instead of failing the task", async (
   try {
     const result = await runOllamaAgent({
       ollamaUrl: "http://127.0.0.1:11434", model: "test", mode: "plan", tools: fakeTools,
+      limits: { toolRounds: 3 },
       messages: [{ role: "user", content: "Inspect the repository" }], emit: (event) => events.push(event),
     });
     assert.equal(result.usedTools, true);
     assert.match(result.answer, /Final plan/);
-    assert.equal(requests, 11);
+    assert.equal(requests, 4);
     assert.ok(events.some((event) => event.type === "runtime.notice"));
   } finally { globalThis.fetch = originalFetch; }
 });

@@ -1,6 +1,6 @@
 # BORG Code
 
-A local engineering operating system. The current Alpha 0.1 foundation includes the task domain, event persistence, runtime abstraction, safe repository inspection, local API, and first operator workspace.
+A local engineering operating system. The current Alpha 0.3 slice includes the task domain, event persistence, safe repository inspection, approval-gated isolated worktree mutation, bounded commands, deterministic verification, bounded repair, fresh-context review findings, explicit delivery, local API, desktop launcher, and operator workspace.
 
 ## Run the current slice
 
@@ -13,6 +13,20 @@ npm run server:dev
 The workspace runs at `http://localhost:5173`; the local task API runs at `http://127.0.0.1:4311` and stores data in `.borg/borg.db`.
 
 Use `npm test`, `npm run check`, and `npm run build` to verify the foundation.
+
+## Windows desktop app
+
+Build and install the native BORG Code launcher with:
+
+```text
+npm run desktop:install
+```
+
+This creates a **BORG Code** shortcut on the Windows desktop and enables launch at Windows sign-in. The desktop app starts Ollama, the local task API, and the Vinext workspace, then embeds the workspace in a native WebView2 window. Closing the window keeps BORG running in the system tray; use the tray menu to reopen it, toggle Windows startup, or exit and stop processes started by the launcher.
+
+The launcher expects the existing Ollama installation and `qwen3-coder:30b`. Its logs are stored under `.borg/desktop/`, and the durable local build lives under `artifacts/desktop/` so web builds cannot erase it. Run `npm run desktop:build` when you only want to rebuild the executable without changing shortcuts or startup registration.
+
+Long tasks default to 30 model/tool rounds, 60 tool calls, 240,000 characters of collected tool evidence, 15-minute commands and verification steps, and a 10-minute fresh review. Advanced users can adjust the model budgets with `BORG_MAX_TOOL_ROUNDS`, `BORG_MAX_TOOL_CALLS`, `BORG_MAX_TOOL_OUTPUT_CHARACTERS`, `BORG_MAX_IDENTICAL_CALLS`, and `BORG_REVIEW_TIMEOUT_MS`; hard ceilings remain in place to stop runaway work.
 
 See `docs/alpha-0.1.md` for the implemented boundary and next slice.
 

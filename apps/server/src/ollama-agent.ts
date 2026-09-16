@@ -1,4 +1,5 @@
 import type { PermissionMode, ToolBroker, ToolCall } from "../../../packages/tools/src/tool-broker.ts";
+import type { TaskToolContext } from "../../../packages/tools/src/worktree-tools.ts";
 
 interface OllamaMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -13,16 +14,35 @@ interface AgentOptions {
   messages: OllamaMessage[];
   tools: ToolBroker;
   mode: PermissionMode;
+  taskContext?: TaskToolContext;
+  phase?: "plan" | "implementation";
+  limits?: Partial<AgentLimits>;
   emit(event: Record<string, unknown>): void;
 }
 
-const MAX_TOOL_ROUNDS = 10;
-const MAX_TOOL_CALLS = 20;
-const MAX_TOOL_OUTPUT_CHARACTERS = 120_000;
-const MAX_IDENTICAL_CALLS = 2;
+interface AgentLimits {
+  toolRounds: number;
+  toolCalls: number;
+  toolOutputCharacters: number;
+  identicalCalls: number;
+}
+
+function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.floor(parsed))) : fallback;
+}
+
+function agentLimits(overrides?: Partial<AgentLimits>): AgentLimits {
+  return {
+    toolRounds: boundedInteger(overrides?.toolRounds ?? process.env.BORG_MAX_TOOL_ROUNDS, 30, 1, 60),
+    toolCalls: boundedInteger(overrides?.toolCalls ?? process.env.BORG_MAX_TOOL_CALLS, 60, 1, 120),
+    toolOutputCharacters: boundedInteger(overrides?.toolOutputCharacters ?? process.env.BORG_MAX_TOOL_OUTPUT_CHARACTERS, 240_000, 10_000, 500_000),
+    identicalCalls: boundedInteger(overrides?.identicalCalls ?? process.env.BORG_MAX_IDENTICAL_CALLS, 3, 1, 5),
+  };
+}
 
 async function runTurn(options: AgentOptions, allowTools = true): Promise<OllamaMessage> {
-  const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode) : [];
+  const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode, options.taskContext) : [];
   const response = await fetch(`${options.ollamaUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -47,7 +67,7 @@ async function runTurn(options: AgentOptions, allowTools = true): Promise<Ollama
       if (chunk.error) throw new Error(chunk.error);
       const text = chunk.message?.content ?? "";
       if (text) {
-        if (!responseStageStarted) { options.emit({ type: "stage.updated", stage: "Plan", status: "active" }); responseStageStarted = true; }
+        if (!responseStageStarted) { options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "active" }); responseStageStarted = true; }
         content += text;
         options.emit({ type: "message.delta", text });
       }
@@ -59,7 +79,8 @@ async function runTurn(options: AgentOptions, allowTools = true): Promise<Ollama
 }
 
 export async function runOllamaAgent(options: AgentOptions) {
-  const toolDefinitions = options.tools.toolDefinitions(options.mode);
+  const limits = agentLimits(options.limits);
+  const toolDefinitions = options.tools.toolDefinitions(options.mode, options.taskContext);
   options.emit({ type: "runtime.connected", runtime: "ollama", model: options.model });
   if (toolDefinitions.some((tool) => tool.function.name.startsWith("repository_"))) options.emit({ type: "stage.updated", stage: "Discovery", status: "active" });
   else if (toolDefinitions.length) options.emit({ type: "stage.updated", stage: "Plan", status: "active" });
@@ -70,20 +91,20 @@ export async function runOllamaAgent(options: AgentOptions) {
   let toolOutputCharacters = 0;
   let budgetReason = "tool-round limit";
   const repeatedCalls = new Map<string, number>();
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; round < limits.toolRounds; round += 1) {
     const assistant = await runTurn(options);
     options.messages.push(assistant);
     answer += assistant.content;
     const calls = assistant.tool_calls ?? [];
     if (!calls.length) {
-      if (toolDefinitions.length) options.emit({ type: "stage.updated", stage: "Plan", status: "complete" });
+      if (toolDefinitions.length) options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "complete" });
       return { answer, usedTools };
     }
 
     usedTools = true;
     for (const call of calls) {
-      if (toolCallCount >= MAX_TOOL_CALLS || toolOutputCharacters >= MAX_TOOL_OUTPUT_CHARACTERS) {
-        budgetReason = toolCallCount >= MAX_TOOL_CALLS ? "tool-call limit" : "tool-output limit";
+      if (toolCallCount >= limits.toolCalls || toolOutputCharacters >= limits.toolOutputCharacters) {
+        budgetReason = toolCallCount >= limits.toolCalls ? "tool-call limit" : "tool-output limit";
         break;
       }
       toolCallCount += 1;
@@ -91,17 +112,17 @@ export async function runOllamaAgent(options: AgentOptions) {
       const repeats = (repeatedCalls.get(signature) ?? 0) + 1;
       repeatedCalls.set(signature, repeats);
       options.emit({ type: "tool.started", tool: call.function.name, input: call.function.arguments });
-      if (repeats > MAX_IDENTICAL_CALLS) {
+      if (repeats > limits.identicalCalls) {
         const message = "Blocked repeated identical tool call. Use the results already provided.";
         options.emit({ type: "tool.failed", tool: call.function.name, message });
         options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message }) });
         continue;
       }
       try {
-        const output = await options.tools.execute(call, options.mode);
+        const output = await options.tools.execute(call, options.mode, options.taskContext);
         options.emit({ type: "tool.completed", tool: call.function.name, output });
         const serialized = JSON.stringify(output);
-        const remaining = Math.max(0, MAX_TOOL_OUTPUT_CHARACTERS - toolOutputCharacters);
+        const remaining = Math.max(0, limits.toolOutputCharacters - toolOutputCharacters);
         const content = serialized.slice(0, Math.min(30_000, remaining));
         toolOutputCharacters += content.length;
         options.messages.push({ role: "tool", tool_name: call.function.name, content });
@@ -111,17 +132,17 @@ export async function runOllamaAgent(options: AgentOptions) {
         options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message }) });
       }
     }
-    if (calls.some((call) => call.function.name.startsWith("repository_"))) {
+    if (options.phase !== "implementation" && calls.some((call) => call.function.name.startsWith("repository_"))) {
       options.emit({ type: "stage.updated", stage: "Discovery", status: "complete" });
       options.emit({ type: "stage.updated", stage: "Plan", status: "active" });
     }
-    if (toolCallCount >= MAX_TOOL_CALLS || toolOutputCharacters >= MAX_TOOL_OUTPUT_CHARACTERS) break;
+    if (toolCallCount >= limits.toolCalls || toolOutputCharacters >= limits.toolOutputCharacters) break;
   }
 
-  options.emit({ type: "runtime.notice", message: `Discovery reached its ${budgetReason}; BORG is completing the plan from collected evidence.` });
-  options.messages.push({ role: "system", content: "The bounded discovery budget is exhausted. Do not request more tools. Give the best complete answer or plan possible from the evidence already collected, and clearly identify any remaining uncertainty." });
+  options.emit({ type: "runtime.notice", message: `${options.phase === "implementation" ? "Implementation" : "Discovery"} reached its ${budgetReason}; BORG is completing from collected evidence.` });
+  options.messages.push({ role: "system", content: "The bounded tool budget is exhausted. Do not request more tools. Give the best complete answer possible from the evidence already collected, and clearly identify any remaining uncertainty." });
   const finalAssistant = await runTurn(options, false);
   answer += finalAssistant.content;
-  options.emit({ type: "stage.updated", stage: "Plan", status: "complete" });
+  options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "complete" });
   return { answer, usedTools, budgetExhausted: true };
 }
