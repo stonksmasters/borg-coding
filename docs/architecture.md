@@ -7,7 +7,7 @@ BORG Code is a single local-first application with one root npm dependency graph
 1. **Workspace UI (`app/`)** — operator task thread, repository access, permission mode, approvals, implementation progress, review findings, and delivery controls.
 2. **Local agent server (`apps/server/src/`)** — owns task orchestration, Ollama interaction, state transitions, approval handling, deterministic verification, repair loops, fresh-context review, and delivery endpoints.
 3. **Core domain (`packages/core/src/`)** — runtime-validated task/finding/event/role/handoff contracts and legal task-state transitions.
-4. **Orchestration (`packages/orchestration/src/`)** — deterministic discipline routing, bounded repository team policy, per-role model selection, and role capability enforcement.
+4. **Orchestration (`packages/orchestration/src/`)** — deterministic discipline routing, versioned specialist capability packs, bounded repository team policy, per-role/per-discipline model selection, risk floors, evidence gates, and role-plus-specialist capability enforcement.
 5. **Repository boundary (`packages/repository/src/`)** — approved repository access, isolated Git worktrees, and non-destructive delivery.
 6. **Tool broker (`packages/tools/src/`)** — permissioned repository inspection, TypeScript/JavaScript structural navigation, bounded worktree mutation/commands, Git inspection, verification, and optional public-web tools.
 7. **Language intelligence (`packages/language-intelligence/src/`)** — provider-neutral symbol navigation. The TypeScript Language Service is the first provider and is filtered through the same approved-repository access policy as normal reads.
@@ -26,7 +26,7 @@ The canonical mutation flow is:
 
 Verification or independent review may schedule a bounded repair loop back to `IMPLEMENTING`. Exhausted repair attempts become `BLOCKED`; failed runtime operations become `FAILED`.
 
-The responsibility flow is `Architect → Implementer → Verifier → Reviewer`. Assignments and evidence-rich handoffs are persisted independently of chat output. The server-side tool broker intersects the permission mode with the active role: only the Implementer may mutate, the Verifier cannot patch or run arbitrary commands, and the Reviewer receives a fresh evidence context without tools.
+The responsibility flow is `Architect → Implementer → Verifier → Reviewer`. Assignments and evidence-rich handoffs are persisted independently of chat output. The server-side tool broker intersects the permission mode with the active role: only the Implementer may mutate, the Verifier cannot patch or run arbitrary commands, and the Reviewer receives a fresh evidence context without tools. Specialist packs add a second intersecting policy boundary: they may further restrict tools, select quick or full deterministic verification, require objective evidence such as a passing browser report, and provide failure taxonomies to fresh review. A specialist pack can never grant a capability denied by the active engineering role.
 
 All code mutation happens in an approved task-scoped detached worktree under `.borg/worktrees`. Delivery exports a patch or creates a commit in that isolated worktree; it never silently mutates the user's primary checkout.
 

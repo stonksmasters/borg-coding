@@ -46,6 +46,7 @@ test("role assignments and handoffs round-trip through SQLite", () => {
     discipline: "backend",
     model: "local-model",
     capabilities: ["worktree_patch"],
+    specialistPacks: [{ id: "backend.services", version: 1, discipline: "backend" }],
   });
   repository.saveRoleAssignment(assignment);
 

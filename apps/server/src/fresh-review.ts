@@ -35,7 +35,7 @@ export function parseFreshReview(taskId: string, value: string): FreshReview {
 
 export async function runFreshReview(options: {
   ollamaUrl: string; model: string; taskId: string; request: string;
-  diff: string; verification: unknown;
+  diff: string; verification: unknown; specialistInstructions?: string;
 }): Promise<FreshReview> {
   const response = await fetch(`${options.ollamaUrl}/api/chat`, {
     method: "POST",
@@ -43,7 +43,7 @@ export async function runFreshReview(options: {
     body: JSON.stringify({
       model: options.model, stream: false, format: "json",
       messages: [
-        { role: "system", content: "You are BORG's fresh-context code reviewer. You did not implement this change. Review only the supplied request, verified diff, and verification evidence. Return strict JSON with verdict ('pass' or 'repair'), summary, and findings. Each finding must contain discipline, severity (info, low, medium, high, or critical), category, title, description, and optional file, line, evidence, remediation. Use repair only for high or critical correctness, security, data-loss, or requirement failures. Do not invent evidence." },
+        { role: "system", content: `You are BORG's fresh-context code reviewer. You did not implement this change. Review only the supplied request, verified diff, and verification evidence. Return strict JSON with verdict ('pass' or 'repair'), summary, and findings. Each finding must contain discipline, severity (info, low, medium, high, or critical), category, title, description, and optional file, line, evidence, remediation. Use repair only for high or critical correctness, security, data-loss, or requirement failures. Do not invent evidence.\n\nActive specialist capability packs:\n${options.specialistInstructions ?? "General review policy applies."}` },
         { role: "user", content: `Original request:\n${options.request}\n\nVerification evidence:\n${JSON.stringify(options.verification).slice(0, 40_000)}\n\nVerified Git diff:\n${options.diff.slice(0, 100_000)}` },
       ],
     }),

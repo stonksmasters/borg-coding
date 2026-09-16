@@ -1,4 +1,4 @@
-import type { EngineeringRole } from "../../../packages/core/src/contracts.ts";
+import type { EngineeringDiscipline, EngineeringRole } from "../../../packages/core/src/contracts.ts";
 import type { PermissionMode, ToolBroker, ToolCall } from "../../../packages/tools/src/tool-broker.ts";
 import type { TaskToolContext } from "../../../packages/tools/src/worktree-tools.ts";
 
@@ -17,6 +17,7 @@ interface AgentOptions {
   mode: PermissionMode;
   taskContext?: TaskToolContext;
   role?: EngineeringRole;
+  disciplines?: readonly EngineeringDiscipline[];
   phase?: "plan" | "implementation";
   limits?: Partial<AgentLimits>;
   emit(event: Record<string, unknown>): void;
@@ -44,7 +45,7 @@ function agentLimits(overrides?: Partial<AgentLimits>): AgentLimits {
 }
 
 async function runTurn(options: AgentOptions, allowTools = true): Promise<OllamaMessage> {
-  const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode, options.taskContext, options.role) : [];
+  const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode, options.taskContext, options.role, options.disciplines) : [];
   const response = await fetch(`${options.ollamaUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -121,7 +122,7 @@ export async function runOllamaAgent(options: AgentOptions) {
         continue;
       }
       try {
-        const output = await options.tools.execute(call, options.mode, options.taskContext, options.role);
+        const output = await options.tools.execute(call, options.mode, options.taskContext, options.role, options.disciplines);
         options.emit({ type: "tool.completed", tool: call.function.name, output });
         const serialized = JSON.stringify(output);
         const remaining = Math.max(0, limits.toolOutputCharacters - toolOutputCharacters);

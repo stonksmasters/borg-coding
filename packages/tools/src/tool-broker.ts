@@ -2,8 +2,8 @@ import { lookup } from "node:dns/promises";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { createLanguageIntelligence, type LanguageIntelligenceProvider } from "../../language-intelligence/src/index.ts";
-import type { EngineeringRole } from "../../core/src/contracts.ts";
-import { roleAllowsTool } from "../../orchestration/src/index.ts";
+import type { EngineeringDiscipline, EngineeringRole } from "../../core/src/contracts.ts";
+import { roleAllowsTool, specialistAllowsTool } from "../../orchestration/src/index.ts";
 import type { AccessController } from "../../repository/src/access-controller.ts";
 import { WorktreeTools, type TaskToolContext, type WorktreeToolOptions } from "./worktree-tools.ts";
 
@@ -191,11 +191,14 @@ export class ToolBroker {
     return { ...policy, webFetchAvailable: policy.internetEnabled, webSearchAvailable: policy.internetEnabled && Boolean(this.ollamaApiKey), apiKeyInMemory: Boolean(this.ollamaApiKey) };
   }
 
-  toolDefinitions(mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole) {
+  toolDefinitions(mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole, disciplines?: readonly EngineeringDiscipline[]) {
     const status = this.status();
     const available = [];
     const allowed = <T extends { function: { name: string } }>(items: readonly T[]): T[] =>
-      role ? items.filter((item) => roleAllowsTool(role, item.function.name)) : [...items];
+      items.filter((item) =>
+        (!role || roleAllowsTool(role, item.function.name))
+        && (!disciplines?.length || specialistAllowsTool(disciplines, item.function.name))
+      );
     if (mode !== "ask" && this.access?.load().repositoryPath) available.push(...allowed(repositoryDefinitions));
     if ((mode === "edit" || mode === "agent") && context && this.worktree) available.push(...allowed(this.worktree.definitions()));
     if (status.internetEnabled) {
@@ -205,8 +208,9 @@ export class ToolBroker {
     return available;
   }
 
-  async execute(call: ToolCall, mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole): Promise<unknown> {
+  async execute(call: ToolCall, mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole, disciplines?: readonly EngineeringDiscipline[]): Promise<unknown> {
     if (role && !roleAllowsTool(role, call.function.name)) throw new Error(`The ${role} role cannot invoke ${call.function.name}.`);
+    if (disciplines?.length && !specialistAllowsTool(disciplines, call.function.name)) throw new Error(`The active specialist packs cannot invoke ${call.function.name}.`);
     if (call.function.name.startsWith("repository_")) {
       if (mode === "ask") throw new Error("Repository tools are unavailable in ASK mode.");
       if (!this.access) throw new Error("Repository tools are not configured.");
