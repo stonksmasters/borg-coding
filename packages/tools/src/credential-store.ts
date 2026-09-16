@@ -7,7 +7,11 @@ export interface CredentialStore {
 }
 
 export class DesktopCredentialStore implements CredentialStore {
-  constructor(private readonly executable = process.env.BORG_DESKTOP_EXE) {}
+  private readonly executable: string | undefined;
+
+  constructor(executable = process.env.BORG_DESKTOP_EXE) {
+    this.executable = executable;
+  }
 
   get(target: string): string | null {
     if (!this.executable) return process.env.OLLAMA_API_KEY?.trim() || null;
