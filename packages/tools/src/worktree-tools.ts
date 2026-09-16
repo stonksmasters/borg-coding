@@ -111,8 +111,13 @@ function bounded(value: string, maximum = MAX_OUTPUT_BYTES): string {
 }
 
 function npmInvocation(args: string[]): { executable: string; args: string[] } {
-  const npmCli = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  if (!existsSync(npmCli)) throw new Error("The npm CLI could not be located beside Node.js.");
+  const candidates = [
+    process.env.npm_execpath,
+    resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+    resolve(dirname(dirname(process.execPath)), "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const npmCli = candidates.find((candidate) => existsSync(candidate));
+  if (!npmCli) throw new Error("The npm CLI could not be located for the current Node.js installation.");
   return { executable: process.execPath, args: [npmCli, ...args] };
 }
 

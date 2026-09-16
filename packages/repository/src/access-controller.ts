@@ -57,6 +57,19 @@ export class AccessController {
     return { ...policy, repositoryName: policy.repositoryPath ? basename(policy.repositoryPath) : null, documentNames: policy.documents.map((path) => basename(path)) };
   }
 
+  repositoryRootPath(): string {
+    return this.repositoryRoot();
+  }
+
+  allowsRepositoryFile(relativePath: string): boolean {
+    try {
+      const file = this.approvedPath(relativePath, true);
+      return textExtensions.has(extname(file.absolute).toLowerCase()) || importantNames.has(basename(file.absolute).toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
   private repositoryRoot(): string {
     const repositoryPath = this.load().repositoryPath;
     if (!repositoryPath) throw new Error("No repository has been approved.");
