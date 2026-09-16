@@ -41,3 +41,27 @@ test("permission modes gate approved repository tools", async () => {
     assert.match(result.content, /Tool-visible/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("specialist packs filter and enforce role-eligible tools", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-specialist-tools-"));
+  try {
+    const broker = new ToolBroker(join(root, "tools.json"), undefined, {
+      worktreeRoot: root,
+      findApproval: () => null,
+    });
+    const context = { taskId: "task-specialist" };
+    const backendTools = broker.toolDefinitions("agent", context, "implementer", ["backend"]);
+    const frontendTools = broker.toolDefinitions("agent", context, "implementer", ["frontend"]);
+
+    assert.equal(backendTools.some((tool) => tool.function.name === "worktree_patch"), true);
+    assert.equal(backendTools.some((tool) => tool.function.name === "browser_capture"), false);
+    assert.equal(frontendTools.some((tool) => tool.function.name === "browser_capture"), true);
+    await assert.rejects(
+      () => broker.execute({ function: { name: "browser_open", arguments: { url: "http://127.0.0.1:3000" } } }, "agent", context, "implementer", ["backend"]),
+      /active specialist packs cannot invoke browser_open/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
