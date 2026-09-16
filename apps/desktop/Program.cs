@@ -342,7 +342,7 @@ internal sealed class BorgHost : IAsyncDisposable
             "api",
             "http://127.0.0.1:4311/health",
             "node.exe",
-            "--import ./apps/server/src/desktop-lifecycle-hook.ts --experimental-strip-types --experimental-sqlite apps/server/src/index.ts",
+            "--experimental-strip-types --import ./apps/server/src/desktop-lifecycle-hook.ts --experimental-sqlite apps/server/src/index.ts",
             TimeSpan.FromSeconds(25));
 
         StatusChanged?.Invoke("Starting the persistent session gateway…");
@@ -350,7 +350,7 @@ internal sealed class BorgHost : IAsyncDisposable
             "gateway",
             "http://127.0.0.1:4312/health",
             "node.exe",
-            "--import ./apps/server/src/desktop-lifecycle-hook.ts --experimental-strip-types --experimental-sqlite apps/server/src/desktop-gateway.ts",
+            "--experimental-strip-types --import ./apps/server/src/desktop-lifecycle-hook.ts --experimental-sqlite apps/server/src/desktop-gateway.ts",
             TimeSpan.FromSeconds(25));
 
         StatusChanged?.Invoke("Starting the BORG workspace…");
@@ -358,7 +358,7 @@ internal sealed class BorgHost : IAsyncDisposable
             "web",
             "http://localhost:5173/",
             "node.exe",
-            "--import ./apps/server/src/desktop-lifecycle-hook.ts node_modules/vinext/dist/cli.js dev --port 5173",
+            "--experimental-strip-types --import ./apps/server/src/desktop-lifecycle-hook.ts node_modules/vinext/dist/cli.js dev --port 5173",
             TimeSpan.FromSeconds(75));
 
         LogLifecycle("Desktop services are ready.");
