@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BrowserVerification } from "../../browser-verification/src/index.ts";
+import { VisualRegressionService } from "../../visual-regression/src/index.ts";
 
 export interface RecordedApproval {
   taskId: string;
@@ -16,6 +17,7 @@ export interface WorktreeToolOptions {
   worktreeRoot: string;
   findApproval(taskId: string): RecordedApproval | null;
   browser?: BrowserVerification;
+  visualRegression?: VisualRegressionService;
 }
 
 interface CommandResult {
@@ -149,10 +151,12 @@ export class WorktreeTools {
   private readonly worktreeRoot: string;
   private readonly options: WorktreeToolOptions;
   private readonly browser: BrowserVerification;
+  private readonly visualRegression: VisualRegressionService;
   constructor(options: WorktreeToolOptions) {
     this.options = options;
     this.worktreeRoot = resolve(options.worktreeRoot);
     this.browser = options.browser ?? new BrowserVerification();
+    this.visualRegression = options.visualRegression ?? new VisualRegressionService();
   }
 
   definitions() { return [...Object.values(worktreeToolDefinitions), ...this.browser.definitions()]; }
@@ -199,7 +203,7 @@ export class WorktreeTools {
       if (input.path) args.push("--", safeRelativePath(input.path));
       return this.git(root, args);
     }
-    if (name === "verification_profiles") return { profiles: this.profiles(root) };
+    if (name === "verification_profiles") return { profiles: this.profiles(root), visualProfiles: this.visualRegression.profiles(root) };
     if (name.startsWith("browser_")) return this.browser.execute(name, input, { taskId: context!.taskId, worktreePath: root });
     if (name === "verification_run") return this.verify(root, String(input.profile ?? "quick"), context!);
     throw new Error(`Unknown worktree tool: ${name}`);
@@ -292,6 +296,14 @@ export class WorktreeTools {
       browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
     const commandPassed = results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut);
-    return { profile: profileId, passed: commandPassed && (browserEvidence?.passed ?? true), commandPassed, results, browserEvidence };
+    const visualRegression = this.visualRegression.compare(root, browserEvidence, profileId);
+    return {
+      profile: profileId,
+      passed: commandPassed && (browserEvidence?.passed ?? true) && visualRegression.passed,
+      commandPassed,
+      results,
+      browserEvidence,
+      visualRegression,
+    };
   }
 }
