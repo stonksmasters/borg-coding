@@ -118,6 +118,7 @@ createServer((request, response) => {
     const approval = tasks.findApproval(taskId);
     if (!task || !approval) return send(response, 404, { error: "Approved task not found" });
     if (task.state !== "IMPLEMENTING" || approval.status !== "APPROVED" || !approval.worktreePath || !approval.baseCommit) return send(response, 409, { error: "Task is not ready for approved implementation." });
+    const approvedWorktreePath = approval.worktreePath;
     response.writeHead(200, {
       "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-cache, no-transform",
       "access-control-allow-origin": "http://localhost:5173", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type",
@@ -171,7 +172,7 @@ createServer((request, response) => {
           visionReview = await vision.review({
             taskId,
             request: task.request,
-            worktreePath: approval.worktreePath,
+            worktreePath: approvedWorktreePath,
             browserEvidence: verification.browserEvidence,
           });
           const visionEvent = visionReview.status === "unavailable" ? "VISION_REVIEW_UNAVAILABLE"
