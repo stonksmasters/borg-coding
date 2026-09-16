@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "declaration": true, "composite": true },
+  "references": [
+    { "path": "../core" },
+    { "path": "../language-intelligence" },
+    { "path": "../repository" }
+  ],
+  "include": ["src/**/*.ts"]
+}
