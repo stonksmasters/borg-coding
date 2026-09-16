@@ -208,8 +208,9 @@ export function BorgWorkspace() {
       setStages(stagesForState(event.state));
       setDeliveryReady(event.state === "DELIVERY_READY");
     } else if (event.type === "discipline.routed" && event.route) {
-      setDisciplineRoute(event.route);
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Routed to ${event.route.primary} with ${event.route.disciplines.join(", ")} coverage.` }]);
+      const route = event.route;
+      setDisciplineRoute(route);
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "system", text: `Routed to ${route.primary} with ${route.disciplines.join(", ")} coverage.` }]);
     } else if (event.type === "role.started" && event.assignment) {
       setActiveRole(event.assignment);
     } else if (event.type === "role.completed" && event.assignment) {
