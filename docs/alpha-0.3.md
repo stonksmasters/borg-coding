@@ -8,6 +8,8 @@
 - Tool permissions are enforced by the server-side broker. Architects inspect, Implementers mutate approved worktrees, Verifiers collect independent evidence without patch/command access, and Reviewers receive evidence without tool access.
 - The workspace shows the active role and discipline and restores assignment/handoff history from SQLite.
 - Optional repository policy in `.localcode/team.json` selects a default discipline and local Ollama model per role.
+- Versioned specialist capability packs now make disciplines operational: instructions, tool eligibility, required evidence, verification depth, risk floors, failure taxonomies, and escalation rules are composed per task.
+- Specialist pack references are persisted on every role assignment and exposed in the workspace. Frontend changes require passing browser evidence; database, security, QA, DevOps, and infrastructure work require the full deterministic profile.
 
 ## Team policy
 
@@ -20,6 +22,10 @@
     "implementer": { "model": "qwen3-coder:30b" },
     "verifier": { "model": "qwen3-coder:30b" },
     "reviewer": { "model": "qwen3-coder:30b" }
+  },
+  "disciplines": {
+    "security": { "model": "security-specialist-local" },
+    "frontend": { "model": null }
   }
 }
 ```
@@ -37,6 +43,14 @@ The policy file must resolve inside the approved repository, be a regular file, 
 7. Review findings either request bounded repair or unlock explicit delivery.
 
 Each transition emits live workspace events and durable SQLite records. A process restart can therefore restore who was active and the most recent required next action.
+
+## Specialist capability packs
+
+The built-in v1 registry contains `general.core`, `frontend.web`, `backend.services`, `database.persistence`, `security.assurance`, `qa.verification`, `devops.delivery`, and `infrastructure.platform`.
+
+Packs are composable policies, not personalities. The router activates only the disciplines supported by request and repository signals. Role permissions and specialist permissions are intersected in the ToolBroker, so a pack cannot grant a tool forbidden to the active role. Multiple packs combine their evidence requirements, choose the strongest required verification profile, and raise the task to the highest minimum risk level.
+
+Frontend browser evidence is an objective gate: a routed frontend task cannot pass verification without a captured passing browser report. Other packs add deterministic requirements and reviewer failure taxonomies without pretending that model confidence is evidence.
 
 ## Canonical desktop checkout
 
@@ -65,4 +79,4 @@ Proceed with `git pull --ff-only origin main` only when the remote is the canoni
 
 ## Remaining Alpha 0.3 work
 
-This slice establishes accountable team boundaries; it does not yet add Python/Rust/Go/C# language servers, richer code graphs, long-lived repository memory, named checkpoints, security dependency analysis, or parallel specialist task decomposition.
+The routing and specialist-capability foundation is complete. Alpha 0.3 still needs Python/Rust/Go/C# language servers, richer code graphs, long-lived repository memory, named checkpoints, security dependency analysis, and parallel specialist task decomposition.
