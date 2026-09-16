@@ -211,6 +211,10 @@ export class LspLanguageIntelligence implements LanguageIntelligenceProvider {
     return this.definition.extensions.includes(extname(path).toLowerCase());
   }
 
+  hasWorkspaceFiles(): boolean {
+    return this.discoverFiles().length > 0;
+  }
+
   async symbols(query: string, limit = 30): Promise<SymbolResult[]> {
     this.assertAvailable();
     const value = query.trim();
