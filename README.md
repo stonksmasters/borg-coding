@@ -26,9 +26,11 @@ This creates a **BORG Code** shortcut on the Windows desktop and enables launch 
 
 The launcher expects the existing Ollama installation and `qwen3-coder:30b`. Its logs are stored under `.borg/desktop/`, and the durable local build lives under `artifacts/desktop/` so web builds cannot erase it. Run `npm run desktop:build` when you only want to rebuild the executable without changing shortcuts or startup registration.
 
+If the desktop app looks different from the canonical repository, run `npm run desktop:status` from that checkout. It verifies the configured remote and reports the exact local/canonical commits, branch, dirty state, and ahead/behind counts. After preserving any local work and exiting BORG from the tray, `npm run desktop:sync` performs only a fast-forward pull, locked dependency install, rebuild, and shortcut refresh. It refuses dirty, ahead, diverged, non-main, or wrong-repository checkouts and never resets or deletes local work.
+
 Long tasks default to 30 model/tool rounds, 60 tool calls, 240,000 characters of collected tool evidence, 15-minute commands and verification steps, and a 10-minute fresh review. Advanced users can adjust the model budgets with `BORG_MAX_TOOL_ROUNDS`, `BORG_MAX_TOOL_CALLS`, `BORG_MAX_TOOL_OUTPUT_CHARACTERS`, `BORG_MAX_IDENTICAL_CALLS`, and `BORG_REVIEW_TIMEOUT_MS`; hard ceilings remain in place to stop runaway work.
 
-See `docs/alpha-0.1.md` for the implemented boundary and next slice.
+See `docs/alpha-0.3.md` for the current team-routing boundary and guarded desktop synchronization workflow.
 
 ## Underlying web runtime
 
