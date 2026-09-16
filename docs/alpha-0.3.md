@@ -51,6 +51,18 @@ npm run desktop:sync
 
 `desktop:sync` only performs a fast-forward pull, locked dependency install, desktop rebuild, and shortcut refresh. It never resets, deletes, stashes, or rewrites local work. Exit BORG Code from the tray before rebuilding, or invoke `scripts/sync-desktop.ps1 -Apply -StopRunningApp` to stop it explicitly.
 
+If the stale checkout predates the sync script, bootstrap it without rewriting history:
+
+```powershell
+Set-Location "$HOME\Documents\Codex\borg-code"
+git remote get-url origin
+git status --short --branch
+git fetch origin main
+git rev-list --left-right --count HEAD...origin/main
+```
+
+Proceed with `git pull --ff-only origin main` only when the remote is the canonical repository, the branch is `main`, the worktree is clean, and the left/ahead count is zero. Then run `npm run desktop:sync`. Otherwise preserve the checkout and reconcile its local work explicitly.
+
 ## Remaining Alpha 0.3 work
 
 This slice establishes accountable team boundaries; it does not yet add Python/Rust/Go/C# language servers, richer code graphs, long-lived repository memory, named checkpoints, security dependency analysis, or parallel specialist task decomposition.
