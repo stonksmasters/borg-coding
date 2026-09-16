@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   renameSync,
   statSync,
   writeFileSync,
@@ -454,10 +455,7 @@ export class VisualRegressionService {
       copyFileSync(candidate.absolute, temporary);
       renameSync(temporary, target);
     } finally {
-      if (existsSync(temporary)) {
-        const { rmSync } = require("node:fs");
-        rmSync(temporary, { force: true });
-      }
+      if (existsSync(temporary)) rmSync(temporary, { force: true });
     }
     return {
       path: relative(worktree, target).replaceAll("\\", "/"),
