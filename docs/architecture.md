@@ -8,14 +8,14 @@ BORG Code is a single local-first application with one root npm dependency graph
 2. **Local agent server (`apps/server/src/`)** — owns task orchestration, Ollama interaction, state transitions, approval handling, deterministic verification, repair loops, fresh-context review, and delivery endpoints.
 3. **Core domain (`packages/core/src/`)** — runtime-validated task/finding/event/role/handoff contracts and legal task-state transitions.
 4. **Orchestration (`packages/orchestration/src/`)** — deterministic discipline routing, bounded repository team policy, per-role model selection, and role capability enforcement.
-6. **Repository boundary (`packages/repository/src/`)** — approved repository access, isolated Git worktrees, and non-destructive delivery.
-5. **Tool broker (`packages/tools/src/`)** — permissioned repository inspection, TypeScript/JavaScript structural navigation, bounded worktree mutation/commands, Git inspection, verification, and optional public-web tools.
+5. **Repository boundary (`packages/repository/src/`)** — approved repository access, isolated Git worktrees, and non-destructive delivery.
+6. **Tool broker (`packages/tools/src/`)** — permissioned repository inspection, TypeScript/JavaScript structural navigation, bounded worktree mutation/commands, Git inspection, verification, and optional public-web tools.
 7. **Language intelligence (`packages/language-intelligence/src/`)** — provider-neutral symbol navigation. The TypeScript Language Service is the first provider and is filtered through the same approved-repository access policy as normal reads.
 8. **Browser verification (`packages/browser-verification/src/`)** — task-isolated, loopback-only Chromium and development-server lifecycle with DOM, interaction, console, network, screenshot, responsive, and accessibility evidence.
 9. **Visual regression (`packages/visual-regression/src/`)** — repository-defined named profiles, deterministic PNG comparison, ignored regions, bounded change budgets, diff artifacts, and operator-approved baselines.
 10. **Vision review (`packages/vision-review/src/`)** — optional provider-neutral screenshot review with local Ollama as the first adapter, strict provenance checks, structured findings, and explicit unavailable/failed/inconclusive outcomes.
 11. **Runtime adapters (`packages/runtimes/src/`)** — local model/runtime boundaries, including OpenCode compatibility.
-12. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, and finding history.
+12. **Persistence (`packages/persistence/src/`)** — SQLite task, event, approval, finding, role-assignment, and handoff history.
 13. **Desktop host (`apps/desktop/`)** — Windows launcher, tray lifecycle, and WebView2 shell around the same local application.
 
 ## Task flow
