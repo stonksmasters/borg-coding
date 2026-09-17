@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Check, ChevronRight, CircleStop, FileText, FolderGit2, Globe2, KeyRound, MessageSquare, Pencil, Play, Plus, Settings2, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
+import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -27,6 +27,8 @@ type ToolConfig = {
 };
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
 type Escalation = { id: string; sessionId: string; taskId: string; fromMode: "plan"; requestedMode: "edit"; reason: string; planText: string; createdAt: string };
+type TaskCheckpoint = { id: string; taskId: string; sessionId: string | null; name: string; kind: string; taskState: string; mode: PermissionMode; repositoryPath: string | null; worktreePath: string | null; baseCommit: string | null; contextSummary: string; completedSteps: string[]; remainingSteps: string[]; createdAt: string };
+type TaskContinuation = { id: string; checkpointId: string; status: "ready" | "recovery_required" | "completed" | "failed"; restoredMode: PermissionMode; previousState: string; resultingState: string; repositoryState: string; resumeAction: string; detail: string; startedAt: string };
 type StreamEvent = {
   type: string;
   task?: { id: string; request: string; state: string };
@@ -86,6 +88,12 @@ export function BorgWorkspaceV2() {
   const [toolsError, setToolsError] = useState("");
   const [savingTools, setSavingTools] = useState(false);
   const [sessionError, setSessionError] = useState("");
+  const [checkpointOpen, setCheckpointOpen] = useState(false);
+  const [checkpointName, setCheckpointName] = useState("");
+  const [checkpoints, setCheckpoints] = useState<TaskCheckpoint[]>([]);
+  const [continuations, setContinuations] = useState<TaskContinuation[]>([]);
+  const [checkpointBusy, setCheckpointBusy] = useState(false);
+  const [checkpointError, setCheckpointError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const liveAssistantId = useRef<string | null>(null);
@@ -147,6 +155,23 @@ export function BorgWorkspaceV2() {
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming]);
+
+  const refreshCheckpoints = useCallback(async (taskId: string) => {
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/checkpoints`);
+    const result = await response.json() as { checkpoints?: TaskCheckpoint[]; continuations?: TaskContinuation[]; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "Unable to load checkpoints.");
+    setCheckpoints(result.checkpoints ?? []);
+    setContinuations(result.continuations ?? []);
+  }, []);
+
+  useEffect(() => {
+    if (!activeTaskId) {
+      setCheckpoints([]);
+      setContinuations([]);
+      return;
+    }
+    void refreshCheckpoints(activeTaskId).catch((error) => setCheckpointError(error instanceof Error ? error.message : "Unable to load checkpoints."));
+  }, [activeTaskId, refreshCheckpoints]);
 
   async function createSession() {
     setSessionError("");
@@ -317,6 +342,64 @@ export function BorgWorkspaceV2() {
     finally { setDeliveryBusy(false); }
   }
 
+
+  async function createCheckpoint() {
+    if (!activeTaskId || !activeSession || checkpointBusy) return;
+    setCheckpointBusy(true);
+    setCheckpointError("");
+    try {
+      const contextSummary = messages.slice(-6).map((message) => `${message.role}: ${message.text.slice(0, 500)}`).join("\n");
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/checkpoints`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: checkpointName.trim() || undefined, sessionId: activeSession.id, mode: activeMode, contextSummary }),
+      });
+      const result = await response.json() as { checkpoint?: TaskCheckpoint; error?: string };
+      if (!response.ok || !result.checkpoint) throw new Error(result.error ?? "Unable to create checkpoint.");
+      setCheckpointName("");
+      await refreshCheckpoints(activeTaskId);
+    } catch (error) {
+      setCheckpointError(error instanceof Error ? error.message : "Unable to create checkpoint.");
+    } finally {
+      setCheckpointBusy(false);
+    }
+  }
+
+  async function resumeCheckpoint(checkpoint: TaskCheckpoint) {
+    if (!activeTaskId || !activeSession || checkpointBusy) return;
+    setCheckpointBusy(true);
+    setCheckpointError("");
+    try {
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/continuations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ checkpointId: checkpoint.id, reason: "Resume from desktop checkpoint timeline." }),
+      });
+      const result = await response.json() as { continuation?: TaskContinuation; error?: string };
+      if (!result.continuation) throw new Error(result.error ?? "Unable to continue from checkpoint.");
+      const continuation = result.continuation;
+      const sessionResponse = await fetch(`${API}/api/sessions/${encodeURIComponent(activeSession.id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ activeMode: continuation.restoredMode }),
+      });
+      const sessionResult = await sessionResponse.json() as { session?: ChatSession };
+      if (sessionResult.session) setActiveSession(sessionResult.session);
+      setTaskState(continuation.resultingState);
+      setMessages((current) => [...current, transientMessage(
+        "system",
+        continuation.detail,
+        continuation.status === "recovery_required" ? "warning" : "status",
+      )]);
+      await refreshCheckpoints(activeTaskId);
+      if (!response.ok && continuation.status !== "recovery_required") throw new Error(result.error ?? continuation.detail);
+    } catch (error) {
+      setCheckpointError(error instanceof Error ? error.message : "Unable to continue from checkpoint.");
+    } finally {
+      setCheckpointBusy(false);
+    }
+  }
+
   async function saveAccess() {
     setSavingAccess(true);
     setAccessError("");
@@ -373,6 +456,30 @@ export function BorgWorkspaceV2() {
       </DialogContent>
     </Dialog>
 
+
+    <Dialog open={checkpointOpen} onOpenChange={setCheckpointOpen}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto border-white/10 bg-[#11161e] text-slate-100 sm:max-w-2xl">
+        <DialogHeader><DialogTitle>Task checkpoints</DialogTitle><DialogDescription>Immutable lifecycle snapshots. Resuming validates the recorded approval and worktree before changing task state.</DialogDescription></DialogHeader>
+        {!activeTaskId ? <p className="rounded-md border border-white/10 bg-white/3 p-4 text-sm text-slate-400">Start a task before creating a checkpoint.</p> : <>
+          <div className="flex gap-2"><Input value={checkpointName} onChange={(event) => setCheckpointName(event.target.value)} placeholder="Checkpoint name (optional)" className="border-white/10 bg-white/4 text-slate-100" /><Button onClick={() => void createCheckpoint()} disabled={checkpointBusy}><BookmarkPlus className="size-4" />Save</Button></div>
+          {checkpointError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{checkpointError}</p>}
+          <div className="space-y-3">
+            {[...checkpoints].reverse().map((checkpoint) => {
+              const continuation = [...continuations].reverse().find((value) => value.checkpointId === checkpoint.id);
+              return <div key={checkpoint.id} className="rounded-lg border border-white/10 bg-white/[0.025] p-4">
+                <div className="flex items-start justify-between gap-4"><div><p className="font-medium text-slate-200">{checkpoint.name}</p><p className="mt-1 text-xs text-slate-500">{checkpoint.kind.replaceAll("_", " ")} · {checkpoint.taskState} · {checkpoint.mode.toUpperCase()} · {new Date(checkpoint.createdAt).toLocaleString()}</p></div><Button size="sm" variant="outline" disabled={checkpointBusy} onClick={() => void resumeCheckpoint(checkpoint)} className="border-white/10 bg-transparent text-slate-300"><RotateCcw className="size-3.5" />Resume</Button></div>
+                {checkpoint.contextSummary && <p className="mt-3 line-clamp-3 text-xs leading-5 text-slate-400">{checkpoint.contextSummary}</p>}
+                <div className="mt-3 grid grid-cols-2 gap-3 text-xs"><div><span className="text-slate-600">Completed</span><p className="mt-1 text-slate-400">{checkpoint.completedSteps.slice(-3).join(" → ") || "None"}</p></div><div><span className="text-slate-600">Remaining</span><p className="mt-1 text-slate-400">{checkpoint.remainingSteps.slice(0, 3).join(" → ") || "None"}</p></div></div>
+                {continuation && <div className={`mt-3 rounded-md border px-3 py-2 text-xs ${continuation.status === "recovery_required" ? "border-amber-300/20 bg-amber-300/5 text-amber-100" : "border-[#a7ff4f]/20 bg-[#a7ff4f]/5 text-[#d9ffb5]"}`}><span className="uppercase">{continuation.status.replaceAll("_", " ")}</span> · {continuation.repositoryState} · {continuation.resumeAction}<p className="mt-1 text-slate-400">{continuation.detail}</p></div>}
+              </div>;
+            })}
+            {!checkpoints.length && <div className="rounded-lg border border-dashed border-white/10 p-6 text-center text-sm text-slate-500">No checkpoints recorded for this task yet.</div>}
+          </div>
+        </>}
+        <DialogFooter><Button variant="outline" onClick={() => setCheckpointOpen(false)} className="border-white/10 bg-transparent text-slate-300">Close</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <Sidebar className="border-r border-white/8 bg-[#0a0d12]" collapsible="offcanvas">
       <SidebarHeader className="border-b border-white/8 px-4 py-4">
         <div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-lg bg-[#a7ff4f] text-[#071007]"><Bot className="size-5" /></div><div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG CODE</p><p className="text-xs text-slate-500">PERSISTENT WORKSTATION</p></div></div>
@@ -387,7 +494,7 @@ export function BorgWorkspaceV2() {
     </Sidebar>
 
     <SidebarInset className="min-w-0 bg-[#0d1117] text-slate-100">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeSession?.title ?? "New chat"}</span></div></div><div className="flex items-center gap-2"><Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${activeSession?.model ?? "qwen3-coder:30b"} · ${activeSession?.provider ?? "ollama"}` : "Runtime not connected"}</div></div></header>
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeSession?.title ?? "New chat"}</span></div></div><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Checkpoints</span></Button><Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${activeSession?.model ?? "qwen3-coder:30b"} · ${activeSession?.provider ?? "ollama"}` : "Runtime not connected"}</div></div></header>
 
       <section className="flex min-h-0 flex-1 flex-col">
         <div ref={transcriptRef} className="flex-1 overflow-y-auto px-5 py-7 sm:px-10 lg:px-14"><div className="mx-auto max-w-3xl">
@@ -405,3 +512,4 @@ export function BorgWorkspaceV2() {
     </SidebarInset>
   </SidebarProvider>;
 }
+

@@ -7,13 +7,18 @@ import {
   createHandoff,
   createRoleAssignment,
   createTask,
+  createTaskCheckpoint,
+  createTaskContinuation,
   type EngineeringDiscipline,
   type EngineeringRole,
   type RoleAssignment,
   type Task,
+  type TaskCheckpoint,
+  type TaskContinuation,
   type TaskState,
 } from "../../../packages/core/src/contracts.ts";
 import { assertTransition } from "../../../packages/core/src/state-machine.ts";
+import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { RepositoryMemory, type MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
@@ -91,11 +96,141 @@ function recordMemoryNote(root: string, note: MemoryNote) {
   catch (error) { appendTaskEvent(note.taskId, "REPOSITORY_MEMORY_FAILED", { message: error instanceof Error ? error.message : String(error) }); }
 }
 
+const checkpointStateOrder: TaskState[] = [
+  "CREATED", "CLASSIFYING", "DISCOVERING", "PLANNING", "AWAITING_APPROVAL",
+  "IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERY_READY", "DELIVERING", "COMPLETE",
+];
+
+function checkpointLabel(kind: TaskCheckpoint["kind"]): string {
+  return {
+    manual: "Manual checkpoint",
+    plan_complete: "Plan complete",
+    pre_edit: "Before approved edit",
+    implementation_complete: "Implementation complete",
+    verification_complete: "Verification complete",
+    pre_repair: "Before repair",
+    pre_delivery: "Ready for delivery",
+    interrupted: "Interrupted task recovery",
+  }[kind];
+}
+
+function recordedMode(taskId: string): PermissionMode {
+  const event = tasks.listEvents(taskId).findLast((value) => value.type === "APPROVAL_REQUESTED");
+  const value = String(event?.payload.mode ?? "");
+  if (value === "ask" || value === "plan" || value === "edit" || value === "agent") return value;
+  return tasks.findApproval(taskId)?.status === "APPROVED" ? "edit" : "plan";
+}
+
+function createCheckpointSnapshot(
+  task: Task,
+  kind: TaskCheckpoint["kind"],
+  input: Partial<Pick<TaskCheckpoint, "name" | "sessionId" | "mode" | "contextSummary">> = {},
+): TaskCheckpoint {
+  const events = tasks.listEvents(task.id);
+  const approval = tasks.findApproval(task.id);
+  const assignments = tasks.listRoleAssignments(task.id);
+  const activeAssignment = assignments.findLast((value) => value.status === "active") ?? assignments.at(-1) ?? null;
+  const plan = events.findLast((value) => value.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+  const stateIndex = checkpointStateOrder.indexOf(task.state);
+  const steps = checkpointStateOrder.filter((value) => !["PAUSED", "RECOVERY_REQUIRED"].includes(value));
+  const checkpoint = createTaskCheckpoint({
+    id: randomUUID(),
+    taskId: task.id,
+    sessionId: input.sessionId ?? null,
+    name: input.name?.trim().slice(0, 200) || checkpointLabel(kind),
+    kind,
+    taskState: task.state,
+    mode: input.mode ?? recordedMode(task.id),
+    repositoryPath: access.load().repositoryPath,
+    worktreePath: approval?.worktreePath ?? null,
+    baseCommit: approval?.baseCommit ?? null,
+    headCommit: approval?.baseCommit ?? null,
+    approvalId: approval?.id ?? null,
+    approvalStatus: approval?.status ?? null,
+    planText: typeof plan === "string" ? plan : "",
+    contextSummary: (input.contextSummary?.trim() || events.slice(-12).map((value) => value.type).join(" → ")).slice(0, 20_000),
+    completedSteps: stateIndex < 0 ? [] : steps.slice(0, stateIndex + 1),
+    remainingSteps: stateIndex < 0 ? steps : steps.slice(stateIndex + 1),
+    lastEventId: events.at(-1)?.id ?? null,
+    activeRole: activeAssignment?.role ?? null,
+    specialistPacks: activeAssignment?.specialistPacks ?? [],
+  });
+  tasks.saveCheckpoint(checkpoint);
+  appendTaskEvent(task.id, "TASK_CHECKPOINT_CREATED", { checkpointId: checkpoint.id, name: checkpoint.name, kind: checkpoint.kind, state: checkpoint.taskState });
+  return checkpoint;
+}
+
+async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, reason: string): Promise<TaskContinuation> {
+  if (checkpoint.taskId !== task.id) throw new Error("Checkpoint does not belong to this task.");
+  const previousState = task.state;
+  const approval = tasks.findApproval(task.id);
+  let repositoryState: TaskContinuation["repositoryState"] = "not_applicable";
+  let repositoryDetail = "";
+
+  if (checkpoint.worktreePath) {
+    const inspected = await worktrees.inspect(checkpoint.worktreePath, checkpoint.baseCommit);
+    repositoryState = inspected.state;
+    repositoryDetail = inspected.detail;
+  }
+  const { status, resultingState, resumeAction, detail } = evaluateContinuation(checkpoint, approval?.status ?? null, repositoryState, repositoryDetail);
+
+  const parent = tasks.listContinuations(task.id).at(-1) ?? null;
+  const restoredMode: PermissionMode = status === "recovery_required" ? "plan" : checkpoint.mode;
+  const continuation = createTaskContinuation({
+    id: randomUUID(),
+    taskId: task.id,
+    checkpointId: checkpoint.id,
+    parentContinuationId: parent?.id ?? null,
+    reason: reason.trim().slice(0, 1000) || "Resume from named checkpoint.",
+    status,
+    restoredMode,
+    previousState,
+    resultingState,
+    repositoryState,
+    resumeAction,
+    detail,
+    completed: true,
+  });
+  tasks.saveContinuation(continuation);
+  tasks.saveTask({ ...task, state: resultingState, updatedAt: new Date().toISOString() });
+  appendTaskEvent(task.id, status === "recovery_required" ? "TASK_RECOVERY_REQUIRED" : "TASK_CONTINUED", {
+    continuationId: continuation.id,
+    checkpointId: checkpoint.id,
+    previousState,
+    resultingState,
+    restoredMode,
+    repositoryState,
+    resumeAction,
+  });
+  return continuation;
+}
+
+function recoverInterruptedTasks(): void {
+  for (const task of tasks.listInterruptedTasks()) {
+    const checkpoint = createCheckpointSnapshot(task, "interrupted");
+    tasks.saveTask({ ...task, state: "RECOVERY_REQUIRED", updatedAt: new Date().toISOString() });
+    appendTaskEvent(task.id, "TASK_RECOVERY_REQUIRED", {
+      checkpointId: checkpoint.id,
+      previousState: task.state,
+      reason: "The server restarted while a mutation-capable lifecycle stage was active.",
+    });
+  }
+}
+
+
 function transitionTask(task: Task, state: TaskState, emit?: (event: Record<string, unknown>) => void): Task {
   assertTransition(task.state, state);
   const updated = { ...task, state, updatedAt: new Date().toISOString() };
   tasks.saveTask(updated);
   appendTaskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: state });
+  const automaticKind: Partial<Record<TaskState, TaskCheckpoint["kind"]>> = {
+    AWAITING_APPROVAL: "plan_complete",
+    VERIFYING: "implementation_complete",
+    REVIEWING: "verification_complete",
+    DELIVERY_READY: "pre_delivery",
+  };
+  const kind = automaticKind[state];
+  if (kind) createCheckpointSnapshot(updated, kind);
   emit?.({ type: "task.state", taskId: task.id, state });
   return updated;
 }
@@ -171,6 +306,7 @@ function recordHandoff(input: {
 }
 
 function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
+  createCheckpointSnapshot(task, "pre_repair");
   let updated = transitionTask(task, "IMPLEMENTING", emit);
   updated = { ...updated, attempts: updated.attempts + 1, updatedAt: new Date().toISOString() };
   tasks.saveTask(updated);
@@ -178,6 +314,8 @@ function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => vo
   emit({ type: "repair.scheduled", attempt: updated.attempts, maximum: maxRepairAttempts, message: reason });
   return updated;
 }
+
+recoverInterruptedTasks();
 
 createServer((request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, null);
@@ -473,6 +611,48 @@ createServer((request, response) => {
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to accept visual baselines" }));
     return;
   }
+
+  const checkpointRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/checkpoints$/);
+  if (checkpointRoute) {
+    const taskId = decodeURIComponent(checkpointRoute[1]);
+    const task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found" });
+    if (request.method === "GET") {
+      return send(response, 200, { checkpoints: tasks.listCheckpoints(taskId), continuations: tasks.listContinuations(taskId) });
+    }
+    if (request.method === "POST") {
+      void readJson(request).then((input) => {
+        const requestedMode = String(input.mode ?? recordedMode(taskId)) as PermissionMode;
+        if (!["ask", "plan", "edit", "agent"].includes(requestedMode)) return send(response, 400, { error: "Invalid checkpoint mode." });
+        const checkpoint = createCheckpointSnapshot(task, "manual", {
+          name: typeof input.name === "string" ? input.name : undefined,
+          sessionId: typeof input.sessionId === "string" ? input.sessionId : null,
+          mode: requestedMode,
+          contextSummary: typeof input.contextSummary === "string" ? input.contextSummary : undefined,
+        });
+        return send(response, 201, { checkpoint });
+      }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create checkpoint" }));
+      return;
+    }
+  }
+
+  const continuationRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/continuations$/);
+  if (continuationRoute) {
+    const taskId = decodeURIComponent(continuationRoute[1]);
+    const task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found" });
+    if (request.method === "GET") return send(response, 200, { continuations: tasks.listContinuations(taskId) });
+    if (request.method === "POST") {
+      void readJson(request).then(async (input) => {
+        const checkpoint = tasks.findCheckpoint(String(input.checkpointId ?? ""));
+        if (!checkpoint || checkpoint.taskId !== taskId) return send(response, 404, { error: "Checkpoint not found" });
+        const continuation = await continueFromCheckpoint(task, checkpoint, String(input.reason ?? "Resume from named checkpoint."));
+        return send(response, continuation.status === "recovery_required" ? 409 : 200, { continuation, checkpoint });
+      }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to continue task" }));
+      return;
+    }
+  }
+
   const approvalRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/approval$/);
   if (request.method === "GET" && approvalRoute) {
     const taskId = decodeURIComponent(approvalRoute[1]);
@@ -516,6 +696,7 @@ createServer((request, response) => {
       tasks.saveApproval(approved);
       appendTaskEvent(task.id, "APPROVAL_APPROVED", { approvalId: approval.id, worktreePath: worktree.path, baseCommit: worktree.baseCommit });
       recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: `Implementation plan approved at base commit ${worktree.baseCommit}.`, taskId: task.id, path: null, line: null, createdAt: approved.decidedAt! });
+      createCheckpointSnapshot(task, "pre_edit", { mode: recordedMode(task.id) });
       task = transitionTask(task, "IMPLEMENTING");
       return send(response, 200, { task, approval: approved, worktree: worktrees.describe(worktree) });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
@@ -636,8 +817,8 @@ createServer((request, response) => {
           }, emit);
           const approval = createApproval({ id: randomUUID(), taskId: task.id });
           tasks.saveApproval(approval);
-          task = transitionTask(task, "AWAITING_APPROVAL", emit);
           appendTaskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, mode });
+          task = transitionTask(task, "AWAITING_APPROVAL", emit);
           writeEvent(response, { type: "approval.requested", taskId: task.id, approval, message: "Review the plan, then approve or reject creation of an isolated Git worktree." });
         } else task = transitionTask(task, "COMPLETE", emit);
         writeEvent(response, { type: "stream.completed", taskId: task.id });
