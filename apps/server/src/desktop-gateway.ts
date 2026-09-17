@@ -116,6 +116,39 @@ function toolStatus() {
   };
 }
 
+async function loadSessionRuntime(session: ChatSession) {
+  const latestTaskId = chats.latestTaskId(session.id);
+  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, runtimeAvailable: true };
+  try {
+    const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(latestTaskId)}/approval`, { signal: AbortSignal.timeout(5_000) });
+    if (!upstream.ok) throw new Error(`Core task state returned ${upstream.status}.`);
+    const body = await upstream.json() as {
+      task?: { id: string; state: string };
+      approval?: { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null } | null;
+    };
+    let restoredSession = session;
+    let escalation = chats.findModeEscalation(latestTaskId);
+    const pending = body.task?.state === "AWAITING_APPROVAL" && body.approval?.status === "REQUESTED";
+    if (!pending && escalation) {
+      if (body.approval?.status === "APPROVED" && restoredSession.activeMode === "plan") {
+        restoredSession = chats.updateSession(restoredSession.id, { activeMode: "edit" }) ?? restoredSession;
+      }
+      chats.deleteModeEscalation(latestTaskId);
+      escalation = null;
+    }
+    return {
+      session: restoredSession,
+      latestTaskId,
+      task: body.task ?? null,
+      approval: body.approval ?? null,
+      escalation: pending ? escalation : null,
+      runtimeAvailable: true,
+    };
+  } catch {
+    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), runtimeAvailable: false };
+  }
+}
+
 async function proxyJson(request: IncomingMessage, response: ServerResponse) {
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : await readText(request);
   try {
@@ -193,15 +226,10 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
     appendMessage({ sessionId: session.id, role: "user", kind: "prose", text: prompt });
     if (session.title === "New chat") session = chats.updateSession(session.id, { title: compactTitle(prompt) }) ?? session;
 
-    // The core planner currently creates the resumable approval checkpoint only for EDIT/AGENT.
-    // PLAN is mapped to that planning capability internally so the same exact plan can be resumed,
-    // but the durable session remains PLAN and no task context/worktree exists, so mutation tools are
-    // unavailable until the explicit PLAN -> EDIT transition succeeds below.
-    const corePlanningMode: PermissionMode = session.activeMode === "plan" ? "edit" : session.activeMode;
     const upstream = await fetch(`${coreUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: corePlanningMode }),
+      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode }),
       signal: controller.signal,
     });
     if (!upstream.ok || !upstream.body) throw new Error(`Planning stream failed (${upstream.status}).`);
@@ -227,13 +255,23 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
           if (taskId) chats.bindTask(session.id, taskId);
         }
         if (event.type === "message.delta") assistantText += String(event.text ?? "");
+        if (event.type === "mode.escalation.requested") {
+          coreApproval = event.approval as Record<string, unknown> | null;
+          if (session.activeMode === "plan" && taskId && coreApproval) {
+            const escalation = createModeEscalationRequest({
+              id: randomUUID(),
+              sessionId: session.id,
+              taskId,
+              planText: typeof event.planText === "string" ? event.planText : assistantText.trim(),
+            });
+            chats.saveModeEscalation(escalation);
+            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "PLAN is complete. Switching to EDIT is required before any mutation can occur.", metadata: { escalation, approval: coreApproval } });
+            writeEvent(response, { type: "mode.escalation.requested", taskId, approval: coreApproval, escalation, message: "PLAN is read-only. Switch to Edit & Continue to execute the persisted plan." });
+          }
+          continue;
+        }
         if (event.type === "approval.requested") {
           coreApproval = event.approval as Record<string, unknown> | null;
-          if (session.activeMode === "plan" && taskId) {
-            const escalation = createModeEscalationRequest({ id: randomUUID(), sessionId: session.id, taskId, planText: assistantText.trim() });
-            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "PLAN is complete. Switching to EDIT is required before any mutation can occur.", metadata: { escalation, approval: coreApproval } });
-            writeEvent(response, { type: "mode.escalation.requested", taskId, approval: coreApproval, escalation, message: "PLAN is read-only. Switch to Edit & Continue to execute the proposed plan." });
-          }
           continue;
         }
         const toolText = describeToolEvent(event);
@@ -318,7 +356,10 @@ const server = createServer((request, response) => {
     if (request.method === "GET") {
       const session = chats.findSession(sessionId);
       if (!session) return send(response, 404, { error: "Session not found" });
-      return send(response, 200, { session, messages: chats.listMessages(sessionId), latestTaskId: chats.latestTaskId(sessionId) });
+      void loadSessionRuntime(session)
+        .then((runtime) => send(response, 200, { ...runtime, messages: chats.listMessages(sessionId) }))
+        .catch((error) => send(response, 502, { error: error instanceof Error ? error.message : "Unable to restore task runtime." }));
+      return;
     }
     if (request.method === "PATCH") {
       void readJson(request).then((input) => {
@@ -398,6 +439,7 @@ const server = createServer((request, response) => {
 
       const escalated = decision === "approve" && session.activeMode === "plan";
       const updatedSession = escalated ? chats.updateSession(session.id, { activeMode: "edit" }) ?? session : session;
+      chats.deleteModeEscalation(taskId);
       appendMessage({
         sessionId: session.id,
         taskId,
