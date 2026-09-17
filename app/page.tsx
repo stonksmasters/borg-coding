@@ -1,5 +1,5 @@
-import { BorgWorkspace } from "./workspace";
+import { BorgWorkspaceV2 } from "./workspace-v2";
 
 export default function Home() {
-  return <BorgWorkspace />;
+  return <BorgWorkspaceV2 />;
 }
