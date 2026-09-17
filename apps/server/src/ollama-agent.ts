@@ -19,6 +19,7 @@ interface AgentOptions {
   role?: EngineeringRole;
   disciplines?: readonly EngineeringDiscipline[];
   phase?: "plan" | "implementation";
+  streamText?: boolean;
   limits?: Partial<AgentLimits>;
   emit(event: Record<string, unknown>): void;
 }
@@ -70,9 +71,12 @@ async function runTurn(options: AgentOptions, allowTools = true): Promise<Ollama
       if (chunk.error) throw new Error(chunk.error);
       const text = chunk.message?.content ?? "";
       if (text) {
-        if (!responseStageStarted) { options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "active" }); responseStageStarted = true; }
+        if (!responseStageStarted) {
+          options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "active" });
+          responseStageStarted = true;
+        }
         content += text;
-        options.emit({ type: "message.delta", text });
+        if (options.streamText !== false) options.emit({ type: "message.delta", text });
       }
       if (chunk.message?.tool_calls?.length) toolCalls.push(...chunk.message.tool_calls);
     }
