@@ -12,6 +12,10 @@ export const checkpointKinds = ["manual", "plan_complete", "pre_edit", "implemen
 export const continuationStatuses = ["ready", "recovery_required", "completed", "failed"] as const;
 export const repositoryRecoveryStates = ["matched", "dirty", "diverged", "missing", "not_applicable"] as const;
 export const continuationActions = ["await_approval", "replan", "inspect_worktree", "deliver", "none"] as const;
+export const reviewFindingStates = ["open", "accepted", "fixed", "waived", "false_positive", "reopened", "superseded"] as const;
+export const reviewDecisionActions = ["accept", "mark_fixed", "waive", "false_positive", "reopen", "supersede"] as const;
+export const reviewDecisionActors = ["operator", "reviewer", "system"] as const;
+export const reviewRunStatuses = ["running", "completed", "failed"] as const;
 
 export const TaskSchema = z.object({
   id: z.string().min(1), projectId: z.string().min(1), request: z.string().min(1),
@@ -39,6 +43,36 @@ export const FindingSchema = z.object({
   confidence: z.number().min(0).max(1).optional(), selector: z.string().optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
+
+export const ReviewRunSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), checkpointId: z.string().min(1).nullable(),
+  continuationId: z.string().min(1).nullable(), attempt: z.number().int().nonnegative(),
+  status: z.enum(reviewRunStatuses), verdict: z.enum(["pass", "repair", "unknown"]), summary: z.string(),
+  startedAt: z.string().datetime(), completedAt: z.string().datetime().nullable(),
+});
+export type ReviewRun = z.infer<typeof ReviewRunSchema>;
+
+export const ReviewFindingRecordSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  firstSeenRunId: z.string().min(1), lastSeenRunId: z.string().min(1), state: z.enum(reviewFindingStates),
+  finding: FindingSchema, firstSeenAt: z.string().datetime(), lastSeenAt: z.string().datetime(),
+});
+export type ReviewFindingRecord = z.infer<typeof ReviewFindingRecordSchema>;
+
+export const ReviewFindingOccurrenceSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), runId: z.string().min(1), findingId: z.string().min(1),
+  finding: FindingSchema, observedAt: z.string().datetime(),
+});
+export type ReviewFindingOccurrence = z.infer<typeof ReviewFindingOccurrenceSchema>;
+
+export const ReviewDecisionSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), findingId: z.string().min(1),
+  runId: z.string().min(1).nullable(), checkpointId: z.string().min(1).nullable(), continuationId: z.string().min(1).nullable(),
+  action: z.enum(reviewDecisionActions), resultingState: z.enum(reviewFindingStates),
+  reason: z.string().max(4000), evidence: z.array(z.string().min(1)).max(50),
+  actorType: z.enum(reviewDecisionActors), actorId: z.string().min(1), createdAt: z.string().datetime(),
+});
+export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
 
 export const TaskEventSchema = z.object({ id: z.string().min(1), taskId: z.string().min(1), type: z.string().min(1), payload: z.record(z.string(), z.unknown()), occurredAt: z.string().datetime() });
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
@@ -177,3 +211,8 @@ export function createTaskContinuation(input: Omit<TaskContinuation, "startedAt"
   return TaskContinuationSchema.parse({ ...value, startedAt: now, completedAt: completed ? now : null });
 }
 
+export function createReviewRun(input: Omit<ReviewRun, "startedAt" | "completedAt"> & { completed?: boolean }): ReviewRun {
+  const now = new Date().toISOString();
+  const { completed, ...value } = input;
+  return ReviewRunSchema.parse({ ...value, startedAt: now, completedAt: completed ? now : null });
+}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
+import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -29,6 +29,8 @@ type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" |
 type Escalation = { id: string; sessionId: string; taskId: string; fromMode: "plan"; requestedMode: "edit"; reason: string; planText: string; createdAt: string };
 type TaskCheckpoint = { id: string; taskId: string; sessionId: string | null; name: string; kind: string; taskState: string; mode: PermissionMode; repositoryPath: string | null; worktreePath: string | null; baseCommit: string | null; contextSummary: string; completedSteps: string[]; remainingSteps: string[]; createdAt: string };
 type TaskContinuation = { id: string; checkpointId: string; status: "ready" | "recovery_required" | "completed" | "failed"; restoredMode: PermissionMode; previousState: string; resultingState: string; repositoryState: string; resumeAction: string; detail: string; startedAt: string };
+type ReviewFinding = { id: string; fingerprint: string; state: "open" | "accepted" | "fixed" | "waived" | "false_positive" | "reopened" | "superseded"; firstSeenRunId: string; lastSeenRunId: string; firstSeenAt: string; lastSeenAt: string; finding: { severity: "info" | "low" | "medium" | "high" | "critical"; discipline: string; category: string; title: string; description: string; file?: string; line?: number; evidence?: string; remediation?: string } };
+type ReviewDecision = { id: string; findingId: string; action: string; resultingState: ReviewFinding["state"]; reason: string; evidence: string[]; actorType: string; actorId: string; createdAt: string };
 type StreamEvent = {
   type: string;
   task?: { id: string; request: string; state: string };
@@ -94,6 +96,12 @@ export function BorgWorkspaceV2() {
   const [continuations, setContinuations] = useState<TaskContinuation[]>([]);
   const [checkpointBusy, setCheckpointBusy] = useState(false);
   const [checkpointError, setCheckpointError] = useState("");
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewFindings, setReviewFindings] = useState<ReviewFinding[]>([]);
+  const [reviewDecisions, setReviewDecisions] = useState<ReviewDecision[]>([]);
+  const [blockingFindingIds, setBlockingFindingIds] = useState<string[]>([]);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const liveAssistantId = useRef<string | null>(null);
@@ -164,14 +172,27 @@ export function BorgWorkspaceV2() {
     setContinuations(result.continuations ?? []);
   }, []);
 
+  const refreshReviewHistory = useCallback(async (taskId: string) => {
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/review-history`);
+    const result = await response.json() as { findings?: ReviewFinding[]; decisions?: ReviewDecision[]; blockingFindingIds?: string[]; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "Unable to load review history.");
+    setReviewFindings(result.findings ?? []);
+    setReviewDecisions(result.decisions ?? []);
+    setBlockingFindingIds(result.blockingFindingIds ?? []);
+  }, []);
+
   useEffect(() => {
     if (!activeTaskId) {
       setCheckpoints([]);
       setContinuations([]);
+      setReviewFindings([]);
+      setReviewDecisions([]);
+      setBlockingFindingIds([]);
       return;
     }
     void refreshCheckpoints(activeTaskId).catch((error) => setCheckpointError(error instanceof Error ? error.message : "Unable to load checkpoints."));
-  }, [activeTaskId, refreshCheckpoints]);
+    void refreshReviewHistory(activeTaskId).catch((error) => setReviewError(error instanceof Error ? error.message : "Unable to load review history."));
+  }, [activeTaskId, refreshCheckpoints, refreshReviewHistory]);
 
   async function createSession() {
     setSessionError("");
@@ -238,6 +259,8 @@ export function BorgWorkspaceV2() {
     } else if (event.type === "review.completed" && event.review?.summary) {
       const summary = event.review.summary;
       setMessages((current) => [...current, transientMessage("system", summary, "evidence")]);
+    } else if (event.type === "review.history.updated" && event.taskId) {
+      void refreshReviewHistory(event.taskId).catch((error) => setReviewError(error instanceof Error ? error.message : "Unable to load review history."));
     } else if (event.type === "delivery.ready") {
       setDeliveryReady(true);
       setTaskState("DELIVERY_READY");
@@ -365,6 +388,38 @@ export function BorgWorkspaceV2() {
     }
   }
 
+  async function recordReviewDecision(finding: ReviewFinding, action: "accept" | "mark_fixed" | "waive" | "false_positive" | "reopen") {
+    if (!activeTaskId || reviewBusy) return;
+    let reason = "";
+    let evidence: string[] = [];
+    if (action === "waive" || action === "false_positive") {
+      reason = window.prompt(action === "waive" ? "Why is this risk being waived?" : "Why is this a false positive?")?.trim() ?? "";
+      if (!reason) return;
+    }
+    if (action === "mark_fixed") {
+      const value = window.prompt("Paste verification evidence for this fix:")?.trim() ?? "";
+      if (!value) return;
+      evidence = [value];
+      reason = "Operator verified the finding is fixed.";
+    }
+    setReviewBusy(true);
+    setReviewError("");
+    try {
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/review-history`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ findingId: finding.id, action, reason, evidence }),
+      });
+      const result = await response.json() as { task?: { state: string }; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Unable to record review decision.");
+      if (result.task?.state) setTaskState(result.task.state);
+      await refreshReviewHistory(activeTaskId);
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "Unable to record review decision.");
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
   async function resumeCheckpoint(checkpoint: TaskCheckpoint) {
     if (!activeTaskId || !activeSession || checkpointBusy) return;
     setCheckpointBusy(true);
@@ -480,6 +535,41 @@ export function BorgWorkspaceV2() {
       </DialogContent>
     </Dialog>
 
+    <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
+      <DialogContent className="max-h-[88vh] overflow-y-auto border-white/10 bg-[#11161e] text-slate-100 sm:max-w-3xl">
+        <DialogHeader><DialogTitle>Review history</DialogTitle><DialogDescription>Durable findings and append-only operator decisions across repairs, checkpoints, and continuations.</DialogDescription></DialogHeader>
+        {reviewError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{reviewError}</p>}
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="rounded-full border border-white/10 px-2.5 py-1 text-slate-400">{reviewFindings.length} total</span>
+          <span className={`rounded-full border px-2.5 py-1 ${blockingFindingIds.length ? "border-red-400/30 bg-red-400/8 text-red-200" : "border-[#a7ff4f]/20 bg-[#a7ff4f]/5 text-[#d9ffb5]"}`}>{blockingFindingIds.length} blocking</span>
+          <span className="rounded-full border border-white/10 px-2.5 py-1 text-slate-400">{reviewDecisions.length} decisions</span>
+        </div>
+        <div className="space-y-3">
+          {[...reviewFindings].reverse().map((record) => {
+            const latestDecision = [...reviewDecisions].reverse().find((value) => value.findingId === record.id);
+            const active = record.state === "open" || record.state === "accepted" || record.state === "reopened";
+            const blocking = blockingFindingIds.includes(record.id);
+            return <div key={record.id} className={`rounded-lg border p-4 ${blocking ? "border-red-400/25 bg-red-400/[0.04]" : "border-white/10 bg-white/[0.025]"}`}>
+              <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className={`rounded px-1.5 py-0.5 font-mono text-[10px] uppercase ${record.finding.severity === "critical" || record.finding.severity === "high" ? "bg-red-400/10 text-red-200" : record.finding.severity === "medium" ? "bg-amber-300/10 text-amber-100" : "bg-white/5 text-slate-400"}`}>{record.finding.severity}</span><span className="text-[10px] uppercase tracking-wide text-slate-500">{record.finding.discipline} · {record.finding.category}</span><span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] uppercase text-slate-400">{record.state.replaceAll("_", " ")}</span></div><p className="mt-2 font-medium text-slate-200">{record.finding.title}</p>{record.finding.file && <p className="mt-1 font-mono text-xs text-[#a7ff4f]">{record.finding.file}{record.finding.line ? `:${record.finding.line}` : ""}</p>}</div><span className="text-[10px] text-slate-600">Seen {new Date(record.lastSeenAt).toLocaleString()}</span></div>
+              <p className="mt-3 text-sm leading-6 text-slate-400">{record.finding.description}</p>
+              {record.finding.evidence && <p className="mt-2 rounded-md border border-white/8 bg-black/15 px-3 py-2 text-xs leading-5 text-slate-400"><span className="text-slate-600">Evidence: </span>{record.finding.evidence}</p>}
+              {latestDecision && <p className="mt-2 text-xs text-slate-500">Latest decision: {latestDecision.action.replaceAll("_", " ")} by {latestDecision.actorId}{latestDecision.reason ? ` — ${latestDecision.reason}` : ""}</p>}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {active ? <>
+                  {record.state !== "accepted" && <Button size="sm" variant="outline" disabled={reviewBusy} onClick={() => void recordReviewDecision(record, "accept")} className="border-white/10 bg-transparent text-slate-300">Accept</Button>}
+                  <Button size="sm" variant="outline" disabled={reviewBusy} onClick={() => void recordReviewDecision(record, "mark_fixed")} className="border-white/10 bg-transparent text-slate-300">Mark fixed</Button>
+                  <Button size="sm" variant="outline" disabled={reviewBusy || record.finding.severity === "critical"} onClick={() => void recordReviewDecision(record, "waive")} className="border-white/10 bg-transparent text-slate-300">Waive</Button>
+                  <Button size="sm" variant="outline" disabled={reviewBusy} onClick={() => void recordReviewDecision(record, "false_positive")} className="border-white/10 bg-transparent text-slate-300">False positive</Button>
+                </> : <Button size="sm" variant="outline" disabled={reviewBusy} onClick={() => void recordReviewDecision(record, "reopen")} className="border-white/10 bg-transparent text-slate-300">Reopen</Button>}
+              </div>
+            </div>;
+          })}
+          {!reviewFindings.length && <div className="rounded-lg border border-dashed border-white/10 p-8 text-center text-sm text-slate-500">No review findings have been recorded for this task.</div>}
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setReviewOpen(false)} className="border-white/10 bg-transparent text-slate-300">Close</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <Sidebar className="border-r border-white/8 bg-[#0a0d12]" collapsible="offcanvas">
       <SidebarHeader className="border-b border-white/8 px-4 py-4">
         <div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-lg bg-[#a7ff4f] text-[#071007]"><Bot className="size-5" /></div><div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG CODE</p><p className="text-xs text-slate-500">PERSISTENT WORKSTATION</p></div></div>
@@ -494,7 +584,7 @@ export function BorgWorkspaceV2() {
     </Sidebar>
 
     <SidebarInset className="min-w-0 bg-[#0d1117] text-slate-100">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeSession?.title ?? "New chat"}</span></div></div><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Checkpoints</span></Button><Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${activeSession?.model ?? "qwen3-coder:30b"} · ${activeSession?.provider ?? "ollama"}` : "Runtime not connected"}</div></div></header>
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeSession?.title ?? "New chat"}</span></div></div><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setReviewOpen(true)} className={`border-white/10 bg-white/4 ${blockingFindingIds.length ? "text-red-200" : "text-slate-300"}`}><ShieldAlert className="size-3.5" /><span className="hidden sm:inline">Review{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</span></Button><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Checkpoints</span></Button><Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${activeSession?.model ?? "qwen3-coder:30b"} · ${activeSession?.provider ?? "ollama"}` : "Runtime not connected"}</div></div></header>
 
       <section className="flex min-h-0 flex-1 flex-col">
         <div ref={transcriptRef} className="flex-1 overflow-y-auto px-5 py-7 sm:px-10 lg:px-14"><div className="mx-auto max-w-3xl">
@@ -512,4 +602,3 @@ export function BorgWorkspaceV2() {
     </SidebarInset>
   </SidebarProvider>;
 }
-

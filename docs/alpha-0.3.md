@@ -77,7 +77,14 @@ git rev-list --left-right --count HEAD...origin/main
 
 Proceed with `git pull --ff-only origin main` only when the remote is the canonical repository, the branch is `main`, the worktree is clean, and the left/ahead count is zero. Then run `npm run desktop:sync`. Otherwise preserve the checkout and reconcile its local work explicitly.
 
+## Durable review decisions
+
+Review is now a timeline rather than a replaceable JSON snapshot. Every review pass records a run linked to the latest checkpoint and continuation, each observation is retained, and normalized fingerprints keep the same issue attached when line numbers or model-generated IDs drift.
+
+Operator decisions are append-only and attributable. Findings can be accepted, verified fixed, waived with a reason, rejected as false positives, reopened, or superseded. Critical findings cannot be waived, fixing requires evidence, and reviewer/system activity cannot silently overwrite protected operator decisions. A finding omitted by a later model response remains open unless a successful repair verification and fresh review provide resolution evidence.
+
+Unresolved high and critical findings block delivery. Continuations restore their IDs with the checkpoint context, while the desktop Review History panel exposes status, evidence, provenance, and decision controls.
+
 ## Remaining Alpha 0.3 work
 
-The routing, specialist-capability, polyglot language-server, cross-language graph, and persistent repository-memory foundations are complete. Alpha 0.3 now has named checkpoints and task continuation history. Remaining work is review-decision history across continuations, security dependency analysis, task decomposition across independent specialist contexts, and final integration hardening.
-
+The routing, specialist-capability, polyglot language-server, cross-language graph, persistent repository-memory, checkpoint/continuation, and durable review-decision foundations are complete. Remaining work is security dependency analysis, task decomposition across independent specialist contexts, and final integration hardening.
