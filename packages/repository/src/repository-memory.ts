@@ -7,7 +7,8 @@ import ts from "typescript";
 import type { LanguageIntelligenceService } from "../../language-intelligence/src/index.ts";
 import type { AccessController } from "./access-controller.ts";
 
-const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
+const typescriptExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
+const sourceExtensions = new Set([...typescriptExtensions, ".py", ".pyi", ".rs", ".go", ".cs"]);
 const maxFiles = 500;
 const maxBytes = 500_000;
 
@@ -84,16 +85,22 @@ export class RepositoryMemory {
       const content = readFileSync(resolve(root, path));
       const sha256 = createHash("sha256").update(content).digest("hex");
       if (existing.get(path) === sha256) continue;
-      const symbols = await language.fileSymbols(path);
-      const source = ts.createSourceFile(path, content.toString("utf8"), ts.ScriptTarget.Latest, true);
+      const provider = language.status().find((item) => item.extensions.includes(extname(path).toLowerCase()));
+      const symbols = provider?.available ? await language.fileSymbols(path) : [];
       const imports = new Set<string>();
-      for (const statement of source.statements) {
-        const specifier = (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) ? statement.moduleSpecifier : undefined;
-        if (!specifier || !ts.isStringLiteral(specifier)) continue;
-        const resolved = ts.resolveModuleName(specifier.text, resolve(root, path), compilerOptions, ts.sys).resolvedModule?.resolvedFileName;
-        if (!resolved) continue;
-        const target = relative(root, resolve(resolved)).replaceAll("\\", "/");
-        if (!target.startsWith("..") && access.allowsRepositoryFile(target)) imports.add(target);
+      if (typescriptExtensions.has(extname(path).toLowerCase())) {
+        const source = ts.createSourceFile(path, content.toString("utf8"), ts.ScriptTarget.Latest, true);
+        for (const statement of source.statements) {
+          const specifier = (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) ? statement.moduleSpecifier : undefined;
+          if (!specifier || !ts.isStringLiteral(specifier)) continue;
+          const resolved = ts.resolveModuleName(specifier.text, resolve(root, path), compilerOptions, ts.sys).resolvedModule?.resolvedFileName;
+          if (!resolved) continue;
+          const target = relative(root, resolve(resolved)).replaceAll("\\", "/");
+          if (!target.startsWith("..") && access.allowsRepositoryFile(target)) imports.add(target);
+        }
+      } else {
+        const graph = await language.fileGraph(path);
+        for (const target of graph.imports) if (access.allowsRepositoryFile(target)) imports.add(target);
       }
       this.database.exec("BEGIN IMMEDIATE");
       try {

@@ -23,15 +23,17 @@ Available read-only tools are:
 
 These tools are available in PLAN, EDIT, and AGENT modes when a repository has been explicitly approved. ASK mode does not expose repository content.
 
-## First provider: TypeScript / JavaScript
+## Providers and structural graph
 
-The initial provider uses the TypeScript Language Service directly. It supports TypeScript, TSX, JavaScript, JSX, MJS, CJS, MTS, and CTS projects and reads the repository's `tsconfig.json` or `jsconfig.json` when available.
+The built-in provider uses the TypeScript Language Service directly. It supports TypeScript, TSX, JavaScript, JSX, MJS, CJS, MTS, and CTS projects and reads the repository's `tsconfig.json` or `jsconfig.json` when available. Bounded LSP adapters provide the same navigation contract for Python, Rust, Go, and C#.
 
 Capabilities include workspace symbol search, per-file outlines, go-to-definition, references, implementations, quick symbol information, and syntactic/semantic/suggestion diagnostics.
 
-For TypeScript and JavaScript, `repository_file_graph` reports direct imports and importers. `repository_call_hierarchy` reports incoming and outgoing calls with source locations. `repository_change_impact` reports direct and transitive importers and, when given a symbol position, references to that symbol. The impact result is a bounded static estimate: it does not infer runtime behavior, dynamic imports, or test coverage. Large results declare truncation. These three graph tools currently reject non-TypeScript/JavaScript files explicitly; the existing Python, Rust, Go, and C# navigation tools remain available.
+For every supported language, `repository_file_graph` reports direct workspace dependencies and dependents. TypeScript/JavaScript uses compiler module resolution; Python, Rust, Go, and C# use bounded language-specific import/module/namespace resolution over approved workspace files. `repository_call_hierarchy` uses the provider's language-server call-hierarchy protocol and reports incoming and outgoing calls with source locations. `repository_change_impact` combines the reverse dependency graph with language-server definitions and references when a symbol position is supplied.
 
-The provider contract remains language-neutral so Python, Rust, Go, C#, and other language backends can be added later without changing the ToolBroker contract.
+Graph and impact results are static evidence, not guarantees of runtime behavior, dynamic loading, reflection, generated code, route reachability, or test coverage. Scans stop at 500 source files, dependent traversal stops at 200 files, symbol results are bounded, and the result declares truncation when a limit is reached. File dependency graphs remain available when an external language server is absent; symbol navigation and call hierarchy report the missing provider explicitly.
+
+The provider-neutral graph contract keeps the ToolBroker independent of compiler and language-server details, so additional languages can be added without changing agent tool schemas.
 
 ## Design rules
 

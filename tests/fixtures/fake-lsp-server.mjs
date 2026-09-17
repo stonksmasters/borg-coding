@@ -26,6 +26,7 @@ function handle(message) {
         referencesProvider: true,
         implementationProvider: true,
         hoverProvider: true,
+        callHierarchyProvider: true,
       },
     });
     return;
@@ -84,6 +85,43 @@ function handle(message) {
   }
   if (message.method === "textDocument/hover") {
     response(message.id, { contents: { kind: "markdown", value: "**Example** fake hover" }, range: range(0, 6, 13) });
+    return;
+  }
+  if (message.method === "textDocument/prepareCallHierarchy") {
+    response(message.id, [{
+      name: "Example",
+      kind: 12,
+      detail: "fixture",
+      uri: openedUri,
+      range: range(0, 0, 13),
+      selectionRange: range(0, 6, 13),
+    }]);
+    return;
+  }
+  if (message.method === "callHierarchy/incomingCalls") {
+    response(message.id, [{
+      from: {
+        name: "caller",
+        kind: 12,
+        uri: openedUri,
+        range: range(1, 0, 12),
+        selectionRange: range(1, 4, 10),
+      },
+      fromRanges: [range(1, 4, 10)],
+    }]);
+    return;
+  }
+  if (message.method === "callHierarchy/outgoingCalls") {
+    response(message.id, [{
+      to: {
+        name: "callee",
+        kind: 12,
+        uri: openedUri,
+        range: range(1, 0, 12),
+        selectionRange: range(1, 4, 10),
+      },
+      fromRanges: [range(0, 6, 13)],
+    }]);
     return;
   }
   response(message.id, null);

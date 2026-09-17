@@ -68,6 +68,12 @@ export interface LanguageIntelligenceProvider {
   quickInfo(path: string, line: number, column: number): Promise<QuickInfoResult | null>;
 }
 
+export interface GraphLanguageIntelligenceProvider extends LanguageIntelligenceProvider {
+  fileGraph(path: string): Promise<FileGraphResult>;
+  callHierarchy(path: string, line: number, column: number): Promise<CallHierarchyResult>;
+  changeImpact(path: string, line?: number, column?: number): Promise<ChangeImpactResult>;
+}
+
 export interface LanguageIntelligenceOptions {
   allowPath?: (relativePath: string) => boolean;
 }
@@ -95,7 +101,7 @@ function category(value: ts.DiagnosticCategory): DiagnosticResult["category"] {
   return "message";
 }
 
-export class TypeScriptLanguageIntelligence implements LanguageIntelligenceProvider {
+export class TypeScriptLanguageIntelligence implements GraphLanguageIntelligenceProvider {
   readonly id = "typescript";
   readonly root: string;
   private readonly service: ts.LanguageService;
@@ -488,9 +494,10 @@ export class PolyglotLanguageIntelligence implements LanguageIntelligenceService
 
   async changeImpact(path: string, line?: number, column?: number): Promise<ChangeImpactResult> { return this.graphProvider(path).changeImpact(path, line, column); }
 
-  private graphProvider(path: string): TypeScriptLanguageIntelligence {
-    if (!this.typescript.supports(path)) throw new Error(`Code graph is currently supported for TypeScript and JavaScript files: ${path}`);
-    return this.typescript;
+  private graphProvider(path: string): GraphLanguageIntelligenceProvider {
+    const provider = [this.typescript, ...this.lsp].find((candidate) => candidate.supports(path));
+    if (!provider) throw new Error(`Language intelligence does not support this file: ${path}`);
+    return provider;
   }
 
   async quickInfo(path: string, line: number, column: number): Promise<QuickInfoResult | null> {

@@ -104,6 +104,7 @@ export class LspClient {
           definition: { dynamicRegistration: false, linkSupport: true },
           references: { dynamicRegistration: false },
           implementation: { dynamicRegistration: false, linkSupport: true },
+          callHierarchy: { dynamicRegistration: false },
           hover: { dynamicRegistration: false, contentFormat: ["plaintext", "markdown"] },
           diagnostic: { dynamicRegistration: false },
           publishDiagnostics: { relatedInformation: true, versionSupport: true },

@@ -9,8 +9,8 @@ BORG Code is a single local-first application with one root npm dependency graph
 3. **Core domain (`packages/core/src/`)** — runtime-validated task/finding/event/role/handoff contracts and legal task-state transitions.
 4. **Orchestration (`packages/orchestration/src/`)** — deterministic discipline routing, versioned specialist capability packs, bounded repository team policy, per-role/per-discipline model selection, risk floors, evidence gates, and role-plus-specialist capability enforcement.
 5. **Repository boundary (`packages/repository/src/`)** — approved repository access, isolated Git worktrees, and non-destructive delivery.
-6. **Tool broker (`packages/tools/src/`)** — permissioned repository inspection, TypeScript/JavaScript structural navigation, bounded worktree mutation/commands, Git inspection, verification, and optional public-web tools.
-7. **Language intelligence (`packages/language-intelligence/src/`)** — provider-neutral symbol navigation. The built-in TypeScript Language Service and bounded local LSP adapters for Pyright, rust-analyzer, gopls, and csharp-ls are filtered through the same approved-repository access policy as normal reads.
+6. **Tool broker (`packages/tools/src/`)** — permissioned repository inspection, polyglot structural navigation and change impact, bounded worktree mutation/commands, Git inspection, verification, and optional public-web tools.
+7. **Language intelligence (`packages/language-intelligence/src/`)** — provider-neutral symbol navigation, dependency graph, call hierarchy, and change impact. The built-in TypeScript Language Service and bounded local LSP adapters for Pyright, rust-analyzer, gopls, and csharp-ls are filtered through the same approved-repository access policy as normal reads.
 8. **Browser verification (`packages/browser-verification/src/`)** — task-isolated, loopback-only Chromium and development-server lifecycle with DOM, interaction, console, network, screenshot, responsive, and accessibility evidence.
 9. **Visual regression (`packages/visual-regression/src/`)** — repository-defined named profiles, deterministic PNG comparison, ignored regions, bounded change budgets, diff artifacts, and operator-approved baselines.
 10. **Vision review (`packages/vision-review/src/`)** — optional provider-neutral screenshot review with local Ollama as the first adapter, strict provenance checks, structured findings, and explicit unavailable/failed/inconclusive outcomes.
@@ -41,7 +41,7 @@ Permission enforcement belongs in the server/tool layer, never only in the front
 
 ## Repository intelligence
 
-Literal search and structural navigation are complementary. For TypeScript/JavaScript, Python, Rust, Go, and C#, BORG can search symbols, inspect file outlines, resolve definitions/references/implementations, request quick information, and run diagnostics through one normalized contract. External servers are discovered locally and are never installed automatically. Repository configuration may enable or disable known providers but cannot inject commands. These tools are read-only, enforce bounded requests and result counts, and may only read or return paths accepted by `AccessController`.
+Literal search and structural navigation are complementary. For TypeScript/JavaScript, Python, Rust, Go, and C#, BORG can search symbols, inspect file outlines, resolve definitions/references/implementations, request quick information, run diagnostics, inspect workspace dependencies, follow call hierarchy, and estimate change impact through one normalized contract. External servers are discovered locally and are never installed automatically. Repository configuration may enable or disable known providers but cannot inject commands. These tools are read-only, enforce bounded requests and result counts, and may only read or return paths accepted by `AccessController`.
 
 ## Verification contract
 

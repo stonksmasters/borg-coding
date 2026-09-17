@@ -2,12 +2,16 @@ import { accessSync, constants, readFileSync, readdirSync, statSync } from "node
 import { delimiter, extname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { LspClient } from "./lsp-client.ts";
+import { WorkspaceDependencyGraph } from "./workspace-graph.ts";
 import type {
+  CallHierarchyResult,
+  ChangeImpactResult,
   CodeLocation,
   DiagnosticResult,
   FileSymbol,
   LanguageIntelligenceOptions,
-  LanguageIntelligenceProvider,
+  FileGraphResult,
+  GraphLanguageIntelligenceProvider,
   QuickInfoResult,
   SymbolResult,
 } from "./index.ts";
@@ -156,7 +160,7 @@ function textContent(value: unknown): string {
   return "";
 }
 
-export class LspLanguageIntelligence implements LanguageIntelligenceProvider {
+export class LspLanguageIntelligence implements GraphLanguageIntelligenceProvider {
   readonly id: string;
   private readonly root: string;
   private readonly definition: LanguageServerDefinition;
@@ -165,6 +169,7 @@ export class LspLanguageIntelligence implements LanguageIntelligenceProvider {
   private readonly args: readonly string[];
   private readonly enabled: boolean;
   private readonly available: boolean;
+  private readonly workspaceGraph: WorkspaceDependencyGraph;
   private client: LspClient | null = null;
 
   constructor(root: string, options: LspProviderOptions) {
@@ -176,6 +181,7 @@ export class LspLanguageIntelligence implements LanguageIntelligenceProvider {
     this.args = options.args ?? options.definition.args;
     this.enabled = options.enabled ?? true;
     this.available = this.enabled && executableExists(this.command);
+    this.workspaceGraph = new WorkspaceDependencyGraph(this.root, this.definition, options);
   }
 
   status(): LanguageProviderStatus {
@@ -256,6 +262,64 @@ export class LspLanguageIntelligence implements LanguageIntelligenceProvider {
 
   async implementations(path: string, line: number, column: number): Promise<CodeLocation[]> {
     return this.positionQuery("textDocument/implementation", path, line, column);
+  }
+
+  async fileGraph(path: string): Promise<FileGraphResult> {
+    return this.workspaceGraph.fileGraph(path);
+  }
+
+  async callHierarchy(path: string, line: number, column: number): Promise<CallHierarchyResult> {
+    const document = await this.open(path);
+    const raw = await this.getClient().request("textDocument/prepareCallHierarchy", {
+      textDocument: { uri: document.uri },
+      position: this.position(line, column),
+    });
+    const prepared = Array.isArray(raw) ? raw[0] : raw;
+    const symbol = this.callHierarchySymbol(prepared);
+    if (!symbol || !isRecord(prepared)) return { symbol: null, incoming: [], outgoing: [], truncated: false };
+    const [incomingRaw, outgoingRaw] = await Promise.all([
+      this.getClient().request("callHierarchy/incomingCalls", { item: prepared }),
+      this.getClient().request("callHierarchy/outgoingCalls", { item: prepared }),
+    ]);
+    const incomingValues = Array.isArray(incomingRaw) ? incomingRaw : [];
+    const outgoingValues = Array.isArray(outgoingRaw) ? outgoingRaw : [];
+    const incoming = incomingValues.slice(0, 100).flatMap((value) => {
+      if (!isRecord(value)) return [];
+      const from = this.callHierarchySymbol(value.from);
+      if (!from) return [];
+      const callSites = this.callSiteLocations(from.path, value.fromRanges).slice(0, 20);
+      return [{ symbol: from, callSites }];
+    });
+    const outgoing = outgoingValues.slice(0, 100).flatMap((value) => {
+      if (!isRecord(value)) return [];
+      const to = this.callHierarchySymbol(value.to);
+      if (!to) return [];
+      const callSites = this.callSiteLocations(document.path, value.fromRanges).slice(0, 20);
+      return [{ symbol: to, callSites }];
+    });
+    return {
+      symbol,
+      incoming,
+      outgoing,
+      truncated: incomingValues.length > 100 || outgoingValues.length > 100
+        || incomingValues.some((value) => isRecord(value) && Array.isArray(value.fromRanges) && value.fromRanges.length > 20)
+        || outgoingValues.some((value) => isRecord(value) && Array.isArray(value.fromRanges) && value.fromRanges.length > 20),
+    };
+  }
+
+  async changeImpact(path: string, line?: number, column?: number): Promise<ChangeImpactResult> {
+    if ((line === undefined) !== (column === undefined)) throw new Error("line and column must be supplied together");
+    const dependencyImpact = this.workspaceGraph.impact(path);
+    const references = line === undefined ? [] : await this.references(path, line, column!);
+    const definition = line === undefined ? null : (await this.definitions(path, line, column!))[0] ?? null;
+    return {
+      path: this.workspaceGraph.fileGraph(path).path,
+      symbol: definition,
+      references: references.slice(0, 200),
+      directDependents: dependencyImpact.directDependents,
+      transitiveDependents: dependencyImpact.transitiveDependents,
+      truncated: dependencyImpact.truncated || references.length > 200,
+    };
   }
 
   async quickInfo(path: string, line: number, column: number): Promise<QuickInfoResult | null> {
@@ -374,6 +438,31 @@ export class LspLanguageIntelligence implements LanguageIntelligenceProvider {
     const uri = typeof value.uri === "string" ? value.uri : typeof value.targetUri === "string" ? value.targetUri : null;
     const range = this.range(value.range) ?? this.range(value.targetSelectionRange) ?? this.range(value.targetRange);
     return uri && range ? this.location(uri, range) : null;
+  }
+
+  private callHierarchySymbol(value: unknown): SymbolResult | null {
+    if (!isRecord(value) || typeof value.name !== "string") return null;
+    const uri = typeof value.uri === "string" ? value.uri : null;
+    const range = this.range(value.selectionRange) ?? this.range(value.range);
+    const location = uri && range ? this.location(uri, range) : null;
+    if (!location) return null;
+    return {
+      name: value.name,
+      kind: symbolKind(value.kind),
+      ...(typeof value.detail === "string" && value.detail ? { container: value.detail } : {}),
+      ...location,
+    };
+  }
+
+  private callSiteLocations(path: string, value: unknown): CodeLocation[] {
+    if (!Array.isArray(value)) return [];
+    const absolute = this.absolute(path);
+    const uri = pathToFileURL(absolute).href;
+    return value.flatMap((item) => {
+      const range = this.range(item);
+      const location = range ? this.location(uri, range) : null;
+      return location ? [location] : [];
+    });
   }
 
   private symbolLocation(value: Record<string, unknown>): CodeLocation | null {

@@ -39,7 +39,7 @@
 - [x] versioned specialist capability packs with tool, evidence, verification, risk, failure, and escalation policy
 - [x] Python / Rust / Go / C# language-server providers
 - [x] TypeScript/JavaScript import graph, call hierarchy, and bounded change-impact context
-- [ ] cross-language graph and call-hierarchy support
+- [x] cross-language graph and call-hierarchy support
 - [x] persistent SQLite repository memory for symbols, imports, review findings, and approval decisions
 - [ ] named checkpoints and task continuation history
 - [ ] review-decision history across task continuations

@@ -15,6 +15,8 @@ test("repository memory persists, refreshes changed files, and keeps provenance"
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler" } }));
   writeFileSync(join(root, "model.ts"), "export function greet() { return 'hello'; }\n");
   writeFileSync(join(root, "use.ts"), "import { greet } from './model';\ngreet();\n");
+  writeFileSync(join(root, "py_model.py"), "def welcome():\n    return 'hello'\n");
+  writeFileSync(join(root, "py_use.py"), "from py_model import welcome\nwelcome()\n");
   writeFileSync(join(root, "secret-helper.ts"), "export const secretSymbol = 1;\n");
   const access = new AccessController(join(directory, "access.json"));
   access.save({ repositoryPath: root });
@@ -23,14 +25,15 @@ test("repository memory persists, refreshes changed files, and keeps provenance"
   let reopened: RepositoryMemory | null = null;
   const language = createLanguageIntelligence(root, { allowPath: (path) => access.allowsRepositoryFile(path) });
   try {
-    assert.deepEqual(await memory.refresh(access, language), { scanned: 2, updated: 2, removed: 0, truncated: false });
-    assert.deepEqual(await memory.refresh(access, language), { scanned: 2, updated: 0, removed: 0, truncated: false });
+    assert.deepEqual(await memory.refresh(access, language), { scanned: 4, updated: 4, removed: 0, truncated: false });
+    assert.deepEqual(await memory.refresh(access, language), { scanned: 4, updated: 0, removed: 0, truncated: false });
     const broker = new ToolBroker(join(directory, "tools.json"), access, undefined, memory);
     assert.ok(broker.toolDefinitions("plan").some((item) => item.function.name === "repository_memory_search"));
     assert.ok(!broker.toolDefinitions("ask").some((item) => item.function.name === "repository_memory_search"));
     const result = await broker.execute({ function: { name: "repository_memory_search", arguments: { query: "greet" } } }, "plan") as { symbols: { path: string; name: string }[] };
     assert.ok(result.symbols.some((item) => item.path === "model.ts" && item.name === "greet"));
     assert.ok(memory.search(root, "model.ts").imports.some((item) => item.target === "model.ts"));
+    assert.ok(memory.search(root, "py_model.py").imports.some((item) => item.source === "py_use.py" && item.target === "py_model.py"));
     assert.equal(memory.search(root, "secretSymbol").symbols.length, 0);
     assert.equal(memory.search(root, "greet", 20, () => false).symbols.length, 0);
     const otherRoot = join(directory, "other-repo");
