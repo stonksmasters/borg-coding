@@ -6,11 +6,14 @@ import {
   createApproval,
   createHandoff,
   createRoleAssignment,
+  createReviewRun,
   createTask,
   createTaskCheckpoint,
   createTaskContinuation,
   type EngineeringDiscipline,
   type EngineeringRole,
+  type Finding,
+  type ReviewDecision,
   type RoleAssignment,
   type Task,
   type TaskCheckpoint,
@@ -19,6 +22,7 @@ import {
 } from "../../../packages/core/src/contracts.ts";
 import { assertTransition } from "../../../packages/core/src/state-machine.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
+import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { RepositoryMemory, type MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
@@ -94,6 +98,43 @@ function appendTaskEvent(taskId: string, type: string, payload: Record<string, u
 function recordMemoryNote(root: string, note: MemoryNote) {
   try { memory.recordNote(root, note); }
   catch (error) { appendTaskEvent(note.taskId, "REPOSITORY_MEMORY_FAILED", { message: error instanceof Error ? error.message : String(error) }); }
+}
+
+function recordCompletedReview(
+  task: Task,
+  findings: Finding[],
+  verdict: "pass" | "repair" | "unknown",
+  summary: string,
+  resolutionEvidence: string[] = [],
+) {
+  const safeFindings = findings.map((finding) => finding.file && !access.allowsRepositoryFile(finding.file)
+    ? { ...finding, file: undefined, line: undefined }
+    : finding);
+  const checkpoint = tasks.listCheckpoints(task.id).at(-1) ?? null;
+  const continuation = tasks.listContinuations(task.id).at(-1) ?? null;
+  const run = createReviewRun({
+    id: randomUUID(), taskId: task.id, checkpointId: checkpoint?.id ?? null,
+    continuationId: continuation?.id ?? null, attempt: task.attempts,
+    status: "completed", verdict, summary, completed: true,
+  });
+  const reconciled = reconcileReviewRun({
+    run,
+    incoming: safeFindings,
+    existing: tasks.listReviewFindings(task.id),
+    resolutionEvidence,
+  });
+  tasks.saveReviewHistory({ run, ...reconciled });
+  // Compatibility projection for pre-history clients. The durable source of
+  // truth is review_finding_records plus append-only review_decisions.
+  tasks.replaceFindings(task.id, reconciled.records
+    .filter((record) => record.state === "open" || record.state === "accepted" || record.state === "reopened")
+    .map((record) => record.finding));
+  appendTaskEvent(task.id, "REVIEW_HISTORY_RECONCILED", {
+    runId: run.id,
+    findingIds: reconciled.records.map((record) => record.id),
+    automaticDecisionIds: reconciled.decisions.map((decision) => decision.id),
+  });
+  return { run, ...reconciled };
 }
 
 const checkpointStateOrder: TaskState[] = [
@@ -173,6 +214,7 @@ async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, re
     repositoryDetail = inspected.detail;
   }
   const { status, resultingState, resumeAction, detail } = evaluateContinuation(checkpoint, approval?.status ?? null, repositoryState, repositoryDetail);
+  const unresolvedReviewFindings = blockingReviewFindings(tasks.listReviewFindings(task.id));
 
   const parent = tasks.listContinuations(task.id).at(-1) ?? null;
   const restoredMode: PermissionMode = status === "recovery_required" ? "plan" : checkpoint.mode;
@@ -188,7 +230,7 @@ async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, re
     resultingState,
     repositoryState,
     resumeAction,
-    detail,
+    detail: unresolvedReviewFindings.length ? `${detail} ${unresolvedReviewFindings.length} unresolved high/critical review finding(s) remain attached to this continuation.` : detail,
     completed: true,
   });
   tasks.saveContinuation(continuation);
@@ -201,6 +243,7 @@ async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, re
     restoredMode,
     repositoryState,
     resumeAction,
+    unresolvedReviewFindingIds: unresolvedReviewFindings.map((value) => value.id),
   });
   return continuation;
 }
@@ -335,6 +378,8 @@ createServer((request, response) => {
       const approval = tasks.findApproval(taskId);
       if (!task || !approval?.worktreePath || approval.status !== "APPROVED") return send(response, 404, { error: "Verified task worktree not found." });
       if (task.state !== "DELIVERY_READY") return send(response, 409, { error: "Task is not ready for delivery." });
+      const blockingFindings = blockingReviewFindings(tasks.listReviewFindings(taskId));
+      if (blockingFindings.length) return send(response, 409, { error: "Unresolved high or critical review findings block delivery.", findingIds: blockingFindings.map((value) => value.id) });
       const method = String(input.method ?? "").toLowerCase();
       if (method !== "export" && method !== "commit") return send(response, 400, { error: "Delivery method must be export or commit." });
       task = transitionTask(task, "DELIVERING");
@@ -494,7 +539,8 @@ createServer((request, response) => {
               requiredNextAction: "Repair only the evidenced visual defect.",
             }, emit);
             activeRoleAssignment = null;
-            tasks.replaceFindings(taskId, visionReview.findings);
+            recordCompletedReview(task, visionReview.findings, "repair", "Local vision review found a blocking visual defect.");
+            emit({ type: "review.history.updated" });
             emit({ type: "stage.updated", stage: "Verification", status: "failed" });
             if (task.attempts >= maxRepairAttempts) {
               task = transitionTask(task, "BLOCKED", emit);
@@ -530,7 +576,16 @@ createServer((request, response) => {
         const review = await runFreshReview({ ollamaUrl, model: reviewerModel, taskId, request: task.request, diff: diff.stdout ?? "", verification, specialistInstructions: specialistInstructions.reviewer });
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
-        tasks.replaceFindings(taskId, [...(visionReview?.findings ?? []), ...review.findings]);
+        const reviewHistory = recordCompletedReview(
+          task,
+          [...(visionReview?.findings ?? []), ...review.findings],
+          review.verdict,
+          review.summary,
+          task.attempts > 0
+            ? [`Deterministic verification passed on repair attempt ${task.attempts}.`, `Fresh review run did not reproduce the prior finding.`]
+            : [],
+        );
+        emit({ type: "review.history.updated" });
         const reviewedRepository = access.load().repositoryPath;
         if (reviewedRepository) for (const finding of review.findings) recordMemoryNote(reviewedRepository, {
           id: `finding:${finding.id}`, kind: "finding", text: `${finding.severity}: ${finding.title} — ${finding.description}`,
@@ -560,6 +615,17 @@ createServer((request, response) => {
           repairEvidence = `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 60_000)}`;
           task = scheduleRepair(task, emit, "Fresh-context review found a blocking issue.");
           continue;
+        }
+
+        const unresolvedBlocking = blockingReviewFindings(reviewHistory.records);
+        if (unresolvedBlocking.length) {
+          emit({ type: "stage.updated", stage: "Review", status: "failed" });
+          appendTaskEvent(taskId, "DELIVERY_BLOCKED_BY_REVIEW_HISTORY", {
+            findingIds: unresolvedBlocking.map((record) => record.id),
+          });
+          emit({ type: "stream.blocked", message: `${unresolvedBlocking.length} unresolved high/critical review finding(s) block delivery. Resolve them in Review History.` });
+          response.end();
+          return;
         }
 
         emit({ type: "implementation.summary", status, diff, worktreePath: approval.worktreePath });
@@ -632,6 +698,46 @@ createServer((request, response) => {
         });
         return send(response, 201, { checkpoint });
       }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create checkpoint" }));
+      return;
+    }
+  }
+
+  const reviewHistoryRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/review-history$/);
+  if (reviewHistoryRoute) {
+    const taskId = decodeURIComponent(reviewHistoryRoute[1]);
+    let task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found" });
+    if (request.method === "GET") {
+      const findings = tasks.listReviewFindings(taskId);
+      return send(response, 200, {
+        runs: tasks.listReviewRuns(taskId), findings,
+        occurrences: tasks.listReviewOccurrences(taskId), decisions: tasks.listReviewDecisions(taskId),
+        blockingFindingIds: blockingReviewFindings(findings).map((value) => value.id),
+      });
+    }
+    if (request.method === "POST") {
+      void readJson(request).then((input) => {
+        const finding = tasks.findReviewFinding(String(input.findingId ?? ""));
+        if (!finding || finding.taskId !== taskId) return send(response, 404, { error: "Review finding not found" });
+        const action = String(input.action ?? "") as ReviewDecision["action"];
+        if (!["accept", "mark_fixed", "waive", "false_positive", "reopen", "supersede"].includes(action)) return send(response, 400, { error: "Invalid review decision." });
+        const evidence = Array.isArray(input.evidence) ? input.evidence.map(String).filter(Boolean).slice(0, 50) : [];
+        const latestRun = tasks.listReviewRuns(taskId).at(-1) ?? null;
+        const decision: ReviewDecision = {
+          id: randomUUID(), taskId, findingId: finding.id, runId: latestRun?.id ?? null,
+          checkpointId: tasks.listCheckpoints(taskId).at(-1)?.id ?? null,
+          continuationId: tasks.listContinuations(taskId).at(-1)?.id ?? null,
+          action, resultingState: stateForDecision(action), reason: String(input.reason ?? "").trim().slice(0, 4000),
+          evidence, actorType: "operator", actorId: "desktop-operator", createdAt: new Date().toISOString(),
+        };
+        const updated = applyReviewDecision(finding, decision);
+        tasks.saveReviewHistory({ records: [updated], decisions: [decision] });
+        appendTaskEvent(taskId, "REVIEW_DECISION_RECORDED", { decisionId: decision.id, findingId: finding.id, action, resultingState: updated.state });
+        const blocking = blockingReviewFindings(tasks.listReviewFindings(taskId));
+        if (blocking.length === 0 && task.state === "REVIEWING") task = transitionTask(task, "DELIVERY_READY");
+        else if (blocking.length > 0 && task.state === "DELIVERY_READY") task = transitionTask(task, "REVIEWING");
+        return send(response, 201, { task, finding: updated, decision, blockingFindingIds: blocking.map((value) => value.id) });
+      }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to record review decision" }));
       return;
     }
   }

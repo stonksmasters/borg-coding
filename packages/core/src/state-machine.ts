@@ -9,7 +9,7 @@ const transitions: Record<TaskState, readonly TaskState[]> = {
   IMPLEMENTING: ["VERIFYING", "BLOCKED", "FAILED", "CANCELLED", "PAUSED", "RECOVERY_REQUIRED"],
   VERIFYING: ["IMPLEMENTING", "REVIEWING", "BLOCKED", "FAILED", "CANCELLED", "PAUSED", "RECOVERY_REQUIRED"],
   REVIEWING: ["IMPLEMENTING", "DELIVERY_READY", "BLOCKED", "FAILED", "CANCELLED", "PAUSED", "RECOVERY_REQUIRED"],
-  DELIVERY_READY: ["DELIVERING", "CANCELLED", "PAUSED", "RECOVERY_REQUIRED"],
+  DELIVERY_READY: ["REVIEWING", "DELIVERING", "CANCELLED", "PAUSED", "RECOVERY_REQUIRED"],
   DELIVERING: ["COMPLETE", "DELIVERY_READY", "FAILED", "CANCELLED", "PAUSED", "RECOVERY_REQUIRED"],
   PAUSED: ["CLASSIFYING", "DISCOVERING", "PLANNING", "AWAITING_APPROVAL", "IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERY_READY", "DELIVERING", "RECOVERY_REQUIRED", "CANCELLED"],
   RECOVERY_REQUIRED: ["PAUSED", "CANCELLED"],
@@ -18,4 +18,3 @@ const transitions: Record<TaskState, readonly TaskState[]> = {
 
 export function canTransition(from: TaskState, to: TaskState): boolean { return transitions[from].includes(to); }
 export function assertTransition(from: TaskState, to: TaskState): void { if (!canTransition(from, to)) throw new Error(`Invalid task transition: ${from} -> ${to}`); }
-
