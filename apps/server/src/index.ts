@@ -705,8 +705,8 @@ createServer((request, response) => {
   const reviewHistoryRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/review-history$/);
   if (reviewHistoryRoute) {
     const taskId = decodeURIComponent(reviewHistoryRoute[1]);
-    let task = tasks.findTask(taskId);
-    if (!task) return send(response, 404, { error: "Task not found" });
+    const existingTask = tasks.findTask(taskId);
+    if (!existingTask) return send(response, 404, { error: "Task not found" });
     if (request.method === "GET") {
       const findings = tasks.listReviewFindings(taskId);
       return send(response, 200, {
@@ -717,6 +717,7 @@ createServer((request, response) => {
     }
     if (request.method === "POST") {
       void readJson(request).then((input) => {
+        let resultingTask = existingTask;
         const finding = tasks.findReviewFinding(String(input.findingId ?? ""));
         if (!finding || finding.taskId !== taskId) return send(response, 404, { error: "Review finding not found" });
         const action = String(input.action ?? "") as ReviewDecision["action"];
@@ -734,9 +735,9 @@ createServer((request, response) => {
         tasks.saveReviewHistory({ records: [updated], decisions: [decision] });
         appendTaskEvent(taskId, "REVIEW_DECISION_RECORDED", { decisionId: decision.id, findingId: finding.id, action, resultingState: updated.state });
         const blocking = blockingReviewFindings(tasks.listReviewFindings(taskId));
-        if (blocking.length === 0 && task.state === "REVIEWING") task = transitionTask(task, "DELIVERY_READY");
-        else if (blocking.length > 0 && task.state === "DELIVERY_READY") task = transitionTask(task, "REVIEWING");
-        return send(response, 201, { task, finding: updated, decision, blockingFindingIds: blocking.map((value) => value.id) });
+        if (blocking.length === 0 && resultingTask.state === "REVIEWING") resultingTask = transitionTask(resultingTask, "DELIVERY_READY");
+        else if (blocking.length > 0 && resultingTask.state === "DELIVERY_READY") resultingTask = transitionTask(resultingTask, "REVIEWING");
+        return send(response, 201, { task: resultingTask, finding: updated, decision, blockingFindingIds: blocking.map((value) => value.id) });
       }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to record review decision" }));
       return;
     }
