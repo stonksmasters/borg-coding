@@ -1,6 +1,6 @@
 # BORG Code
 
-A local engineering operating system. The current Alpha 0.3 slice includes the task domain, event persistence, safe repository inspection, polyglot code graphs, call hierarchy and change-impact tools, persistent repository memory, approval-gated isolated worktree mutation, bounded commands, deterministic verification, bounded repair, fresh-context review findings, explicit delivery, local API, desktop launcher, and operator workspace.
+A local engineering operating system. The current Alpha 0.3 slice includes the task domain, event persistence, safe repository inspection, polyglot code graphs, call hierarchy and change-impact tools, persistent repository memory, named checkpoints and safe task continuation, approval-gated isolated worktree mutation, bounded commands, deterministic verification, bounded repair, fresh-context review findings, explicit delivery, local API, desktop launcher, and operator workspace.
 
 ## Run the current slice
 
@@ -147,3 +147,4 @@ Like the Sites package, `npm run build` runs `vinext build` directly; it does no
 
 - [vinext Documentation](https://github.com/cloudflare/vinext)
 - [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+

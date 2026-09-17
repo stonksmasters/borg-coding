@@ -4,6 +4,8 @@ import {
   FindingSchema,
   HandoffSchema,
   RoleAssignmentSchema,
+  TaskCheckpointSchema,
+  TaskContinuationSchema,
   TaskEventSchema,
   TaskSchema,
   type Approval,
@@ -11,6 +13,8 @@ import {
   type Handoff,
   type RoleAssignment,
   type Task,
+  type TaskCheckpoint,
+  type TaskContinuation,
   type TaskEvent,
 } from "../../core/src/contracts.ts";
 
@@ -51,11 +55,25 @@ export class SqliteTaskRepository {
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         from_role TEXT NOT NULL, to_role TEXT NOT NULL, data TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS task_checkpoints (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, kind TEXT NOT NULL, task_state TEXT NOT NULL,
+        mode TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS task_continuations (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        checkpoint_id TEXT NOT NULL REFERENCES task_checkpoints(id) ON DELETE RESTRICT,
+        status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, data TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_tasks_project_updated ON tasks(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_task_events_task_sequence ON task_events(task_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id);
       CREATE INDEX IF NOT EXISTS idx_role_assignments_task_sequence ON role_assignments(task_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_handoffs_task_sequence ON handoffs(task_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_task_checkpoints_task_sequence ON task_checkpoints(task_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_task_continuations_task_sequence ON task_continuations(task_id, sequence);
       PRAGMA optimize;
     `);
   }
@@ -150,5 +168,46 @@ export class SqliteTaskRepository {
     return rows.map((row) => HandoffSchema.parse(JSON.parse(row.data)));
   }
 
+
+  saveCheckpoint(checkpoint: TaskCheckpoint): void {
+    const value = TaskCheckpointSchema.parse(checkpoint);
+    this.database.prepare(`
+      INSERT INTO task_checkpoints (id, task_id, name, kind, task_state, mode, created_at, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(value.id, value.taskId, value.name, value.kind, value.taskState, value.mode, value.createdAt, JSON.stringify(value));
+  }
+
+  findCheckpoint(id: string): TaskCheckpoint | null {
+    const row = this.database.prepare("SELECT data FROM task_checkpoints WHERE id = ?").get(id) as { data: string } | undefined;
+    return row ? TaskCheckpointSchema.parse(JSON.parse(row.data)) : null;
+  }
+
+  listCheckpoints(taskId: string): TaskCheckpoint[] {
+    const rows = this.database.prepare("SELECT data FROM task_checkpoints WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => TaskCheckpointSchema.parse(JSON.parse(row.data)));
+  }
+
+  saveContinuation(continuation: TaskContinuation): void {
+    const value = TaskContinuationSchema.parse(continuation);
+    this.database.prepare(`
+      INSERT INTO task_continuations (id, task_id, checkpoint_id, status, started_at, completed_at, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, completed_at=excluded.completed_at, data=excluded.data
+    `).run(value.id, value.taskId, value.checkpointId, value.status, value.startedAt, value.completedAt, JSON.stringify(value));
+  }
+
+  listContinuations(taskId: string): TaskContinuation[] {
+    const rows = this.database.prepare("SELECT data FROM task_continuations WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => TaskContinuationSchema.parse(JSON.parse(row.data)));
+  }
+
+  listInterruptedTasks(): Task[] {
+    const states = ["IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERING"];
+    const placeholders = states.map(() => "?").join(", ");
+    const rows = this.database.prepare(`SELECT data FROM tasks WHERE state IN (${placeholders}) ORDER BY updated_at`).all(...states) as { data: string }[];
+    return rows.map((row) => TaskSchema.parse(JSON.parse(row.data)));
+  }
+
   close(): void { this.database.close(); }
 }
+

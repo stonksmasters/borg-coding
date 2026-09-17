@@ -79,4 +79,5 @@ Proceed with `git pull --ff-only origin main` only when the remote is the canoni
 
 ## Remaining Alpha 0.3 work
 
-The routing, specialist-capability, polyglot language-server, cross-language graph, and persistent repository-memory foundations are complete. Alpha 0.3 still needs named checkpoints and continuation history, review-decision history, security dependency analysis, and task decomposition across independent specialist contexts.
+The routing, specialist-capability, polyglot language-server, cross-language graph, and persistent repository-memory foundations are complete. Alpha 0.3 now has named checkpoints and task continuation history. Remaining work is review-decision history across continuations, security dependency analysis, task decomposition across independent specialist contexts, and final integration hardening.
+

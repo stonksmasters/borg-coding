@@ -41,7 +41,7 @@
 - [x] TypeScript/JavaScript import graph, call hierarchy, and bounded change-impact context
 - [x] cross-language graph and call-hierarchy support
 - [x] persistent SQLite repository memory for symbols, imports, review findings, and approval decisions
-- [ ] named checkpoints and task continuation history
+- [x] named checkpoints and task continuation history
 - [ ] review-decision history across task continuations
 - [ ] security-focused verification and dependency analysis
 - [ ] task decomposition across independent specialist contexts
@@ -58,3 +58,4 @@
 ## 1.0 direction
 
 BORG should operate as an inspectable local engineering organization: specialists can plan, implement, test, review, repair, and deliver across software disciplines while every mutation, command, verification result, review finding, and delivery action remains explicit and attributable.
+
