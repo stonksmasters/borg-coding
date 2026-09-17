@@ -6,6 +6,13 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 export interface WorktreeInfo { path: string; repositoryPath: string; baseCommit: string; }
+export interface WorktreeRecoveryInfo {
+  state: "matched" | "dirty" | "diverged" | "missing";
+  path: string;
+  headCommit: string | null;
+  changedFiles: string[];
+  detail: string;
+}
 
 export class GitWorktreeManager {
   private readonly worktreeRoot: string;
@@ -33,5 +40,47 @@ export class GitWorktreeManager {
     return { path: destination, repositoryPath: repository, baseCommit };
   }
 
+
+  async inspect(worktreePath: string, expectedBaseCommit: string | null): Promise<WorktreeRecoveryInfo> {
+    const candidate = resolve(worktreePath);
+    const rel = relative(this.worktreeRoot, candidate);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      return { state: "diverged", path: candidate, headCommit: null, changedFiles: [], detail: "Recorded worktree is outside the managed worktree root." };
+    }
+    if (!existsSync(candidate)) {
+      return { state: "missing", path: candidate, headCommit: null, changedFiles: [], detail: "Recorded worktree no longer exists." };
+    }
+    try {
+      const actual = realpathSync(candidate);
+      const root = existsSync(this.worktreeRoot) ? realpathSync(this.worktreeRoot) : this.worktreeRoot;
+      const actualRel = relative(root, actual);
+      if (actualRel.startsWith("..") || isAbsolute(actualRel)) {
+        return { state: "diverged", path: actual, headCommit: null, changedFiles: [], detail: "Resolved worktree escapes the managed worktree root." };
+      }
+      const git = ["-c", `safe.directory=${actual}`, "-C", actual];
+      const { stdout: headOutput } = await execFileAsync("git", [...git, "rev-parse", "HEAD"], { windowsHide: true });
+      const headCommit = headOutput.trim();
+      if (expectedBaseCommit) {
+        try {
+          await execFileAsync("git", [...git, "merge-base", "--is-ancestor", expectedBaseCommit, headCommit], { windowsHide: true });
+        } catch {
+          return { state: "diverged", path: actual, headCommit, changedFiles: [], detail: "The recorded base commit is not an ancestor of the current worktree HEAD." };
+        }
+      }
+      const { stdout: statusOutput } = await execFileAsync("git", [...git, "status", "--porcelain", "-z"], { windowsHide: true, maxBuffer: 2_000_000 });
+      const changedFiles = statusOutput.split("\0").filter(Boolean).map((entry) => entry.slice(3)).slice(0, 500);
+      return {
+        state: changedFiles.length ? "dirty" : "matched",
+        path: actual,
+        headCommit,
+        changedFiles,
+        detail: changedFiles.length ? "Worktree exists with uncommitted changes that require inspection." : "Worktree and recorded base commit are valid.",
+      };
+    } catch (error) {
+      return { state: "diverged", path: candidate, headCommit: null, changedFiles: [], detail: error instanceof Error ? error.message : "Unable to inspect recorded worktree." };
+    }
+  }
+
   describe(info: WorktreeInfo) { return { ...info, name: basename(info.path) }; }
 }
+

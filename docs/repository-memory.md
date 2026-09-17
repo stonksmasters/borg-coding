@@ -1,6 +1,6 @@
 # Repository memory
 
-BORG keeps a local SQLite index at `.borg/repository-memory.db`. It records approved TypeScript/JavaScript symbols and import relationships with source file paths and index times. It also retains independent review findings and operator approval decisions with task IDs. The database is app-owned state and is not written into the Git repository or its isolated worktrees. Project-authored durable knowledge can continue to live in `.localcode/`.
+BORG keeps a local SQLite index at `.borg/repository-memory.db`. It records approved TypeScript/JavaScript, Python, Rust, Go, and C# symbols and workspace dependency relationships with source file paths and index times. Dependency edges are retained even when an optional external language server is unavailable; symbol indexing resumes when that provider is available. It also retains independent review findings and operator approval decisions with task IDs. The database is app-owned state and is not written into the Git repository or its isolated worktrees. Project-authored durable knowledge can continue to live in `.localcode/`.
 
 When a PLAN, EDIT, or AGENT task starts, BORG compares source file hashes, refreshes changed files, and removes deleted files from the index. It records the refresh result as a task event. Indexing is bounded to 500 source files of at most 500 KB each; the refresh result reports truncation when that cap is reached. ASK mode receives no repository context.
 

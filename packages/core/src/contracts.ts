@@ -1,12 +1,21 @@
 import { z } from "zod";
+import { permissionModes } from "./chat-session.ts";
 
-export const taskStates = ["CREATED", "CLASSIFYING", "DISCOVERING", "PLANNING", "AWAITING_APPROVAL", "IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERY_READY", "DELIVERING", "COMPLETE", "BLOCKED", "FAILED", "CANCELLED"] as const;
+export const taskStates = ["CREATED", "CLASSIFYING", "DISCOVERING", "PLANNING", "AWAITING_APPROVAL", "IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERY_READY", "DELIVERING", "PAUSED", "RECOVERY_REQUIRED", "COMPLETE", "BLOCKED", "FAILED", "CANCELLED"] as const;
 export const riskLevels = ["R0", "R1", "R2", "R3", "R4"] as const;
 export const severityLevels = ["info", "low", "medium", "high", "critical"] as const;
 export const approvalStatuses = ["REQUESTED", "APPROVED", "REJECTED"] as const;
 export const engineeringRoles = ["architect", "implementer", "verifier", "reviewer"] as const;
 export const engineeringDisciplines = ["general", "frontend", "backend", "database", "security", "qa", "devops", "infrastructure"] as const;
 export const roleAssignmentStatuses = ["pending", "active", "completed", "failed"] as const;
+export const checkpointKinds = ["manual", "plan_complete", "pre_edit", "implementation_complete", "verification_complete", "pre_repair", "pre_delivery", "interrupted"] as const;
+export const continuationStatuses = ["ready", "recovery_required", "completed", "failed"] as const;
+export const repositoryRecoveryStates = ["matched", "dirty", "diverged", "missing", "not_applicable"] as const;
+export const continuationActions = ["await_approval", "replan", "inspect_worktree", "deliver", "none"] as const;
+export const reviewFindingStates = ["open", "accepted", "fixed", "waived", "false_positive", "reopened", "superseded"] as const;
+export const reviewDecisionActions = ["accept", "mark_fixed", "waive", "false_positive", "reopen", "supersede"] as const;
+export const reviewDecisionActors = ["operator", "reviewer", "system"] as const;
+export const reviewRunStatuses = ["running", "completed", "failed"] as const;
 
 export const TaskSchema = z.object({
   id: z.string().min(1), projectId: z.string().min(1), request: z.string().min(1),
@@ -35,6 +44,36 @@ export const FindingSchema = z.object({
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
+export const ReviewRunSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), checkpointId: z.string().min(1).nullable(),
+  continuationId: z.string().min(1).nullable(), attempt: z.number().int().nonnegative(),
+  status: z.enum(reviewRunStatuses), verdict: z.enum(["pass", "repair", "unknown"]), summary: z.string(),
+  startedAt: z.string().datetime(), completedAt: z.string().datetime().nullable(),
+});
+export type ReviewRun = z.infer<typeof ReviewRunSchema>;
+
+export const ReviewFindingRecordSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  firstSeenRunId: z.string().min(1), lastSeenRunId: z.string().min(1), state: z.enum(reviewFindingStates),
+  finding: FindingSchema, firstSeenAt: z.string().datetime(), lastSeenAt: z.string().datetime(),
+});
+export type ReviewFindingRecord = z.infer<typeof ReviewFindingRecordSchema>;
+
+export const ReviewFindingOccurrenceSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), runId: z.string().min(1), findingId: z.string().min(1),
+  finding: FindingSchema, observedAt: z.string().datetime(),
+});
+export type ReviewFindingOccurrence = z.infer<typeof ReviewFindingOccurrenceSchema>;
+
+export const ReviewDecisionSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), findingId: z.string().min(1),
+  runId: z.string().min(1).nullable(), checkpointId: z.string().min(1).nullable(), continuationId: z.string().min(1).nullable(),
+  action: z.enum(reviewDecisionActions), resultingState: z.enum(reviewFindingStates),
+  reason: z.string().max(4000), evidence: z.array(z.string().min(1)).max(50),
+  actorType: z.enum(reviewDecisionActors), actorId: z.string().min(1), createdAt: z.string().datetime(),
+});
+export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
+
 export const TaskEventSchema = z.object({ id: z.string().min(1), taskId: z.string().min(1), type: z.string().min(1), payload: z.record(z.string(), z.unknown()), occurredAt: z.string().datetime() });
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
 
@@ -48,6 +87,49 @@ export const SpecialistPackRefSchema = z.object({
   discipline: z.enum(engineeringDisciplines),
 });
 export type SpecialistPackRef = z.infer<typeof SpecialistPackRefSchema>;
+
+export const TaskCheckpointSchema = z.object({
+  id: z.string().min(1),
+  taskId: z.string().min(1),
+  sessionId: z.string().min(1).nullable(),
+  name: z.string().min(1).max(200),
+  kind: z.enum(checkpointKinds),
+  taskState: z.enum(taskStates),
+  mode: z.enum(permissionModes),
+  repositoryPath: z.string().nullable(),
+  worktreePath: z.string().nullable(),
+  baseCommit: z.string().nullable(),
+  headCommit: z.string().nullable(),
+  approvalId: z.string().nullable(),
+  approvalStatus: z.enum(approvalStatuses).nullable(),
+  planText: z.string(),
+  contextSummary: z.string(),
+  completedSteps: z.array(z.string()),
+  remainingSteps: z.array(z.string()),
+  lastEventId: z.string().nullable(),
+  activeRole: z.enum(engineeringRoles).nullable(),
+  specialistPacks: z.array(SpecialistPackRefSchema).default([]),
+  createdAt: z.string().datetime(),
+});
+export type TaskCheckpoint = z.infer<typeof TaskCheckpointSchema>;
+
+export const TaskContinuationSchema = z.object({
+  id: z.string().min(1),
+  taskId: z.string().min(1),
+  checkpointId: z.string().min(1),
+  parentContinuationId: z.string().min(1).nullable(),
+  reason: z.string().min(1).max(1000),
+  status: z.enum(continuationStatuses),
+  restoredMode: z.enum(permissionModes),
+  previousState: z.enum(taskStates),
+  resultingState: z.enum(taskStates),
+  repositoryState: z.enum(repositoryRecoveryStates),
+  resumeAction: z.enum(continuationActions),
+  detail: z.string(),
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime().nullable(),
+});
+export type TaskContinuation = z.infer<typeof TaskContinuationSchema>;
 
 export const RoleAssignmentSchema = z.object({
   id: z.string().min(1),
@@ -116,4 +198,21 @@ export function createTask(input: Pick<Task, "id" | "projectId" | "request"> & P
 
 export function createApproval(input: Pick<Approval, "id" | "taskId">): Approval {
   return ApprovalSchema.parse({ ...input, status: "REQUESTED", requestedAt: new Date().toISOString(), decidedAt: null, worktreePath: null, baseCommit: null });
+}
+
+
+export function createTaskCheckpoint(input: Omit<TaskCheckpoint, "createdAt">): TaskCheckpoint {
+  return TaskCheckpointSchema.parse({ ...input, createdAt: new Date().toISOString() });
+}
+
+export function createTaskContinuation(input: Omit<TaskContinuation, "startedAt" | "completedAt"> & { completed?: boolean }): TaskContinuation {
+  const now = new Date().toISOString();
+  const { completed, ...value } = input;
+  return TaskContinuationSchema.parse({ ...value, startedAt: now, completedAt: completed ? now : null });
+}
+
+export function createReviewRun(input: Omit<ReviewRun, "startedAt" | "completedAt"> & { completed?: boolean }): ReviewRun {
+  const now = new Date().toISOString();
+  const { completed, ...value } = input;
+  return ReviewRunSchema.parse({ ...value, startedAt: now, completedAt: completed ? now : null });
 }

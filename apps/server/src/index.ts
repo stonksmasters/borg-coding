@@ -6,14 +6,23 @@ import {
   createApproval,
   createHandoff,
   createRoleAssignment,
+  createReviewRun,
   createTask,
+  createTaskCheckpoint,
+  createTaskContinuation,
   type EngineeringDiscipline,
   type EngineeringRole,
+  type Finding,
+  type ReviewDecision,
   type RoleAssignment,
   type Task,
+  type TaskCheckpoint,
+  type TaskContinuation,
   type TaskState,
 } from "../../../packages/core/src/contracts.ts";
 import { assertTransition } from "../../../packages/core/src/state-machine.ts";
+import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
+import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { RepositoryMemory, type MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
@@ -91,11 +100,180 @@ function recordMemoryNote(root: string, note: MemoryNote) {
   catch (error) { appendTaskEvent(note.taskId, "REPOSITORY_MEMORY_FAILED", { message: error instanceof Error ? error.message : String(error) }); }
 }
 
+function recordCompletedReview(
+  task: Task,
+  findings: Finding[],
+  verdict: "pass" | "repair" | "unknown",
+  summary: string,
+  resolutionEvidence: string[] = [],
+) {
+  const safeFindings = findings.map((finding) => finding.file && !access.allowsRepositoryFile(finding.file)
+    ? { ...finding, file: undefined, line: undefined }
+    : finding);
+  const checkpoint = tasks.listCheckpoints(task.id).at(-1) ?? null;
+  const continuation = tasks.listContinuations(task.id).at(-1) ?? null;
+  const run = createReviewRun({
+    id: randomUUID(), taskId: task.id, checkpointId: checkpoint?.id ?? null,
+    continuationId: continuation?.id ?? null, attempt: task.attempts,
+    status: "completed", verdict, summary, completed: true,
+  });
+  const reconciled = reconcileReviewRun({
+    run,
+    incoming: safeFindings,
+    existing: tasks.listReviewFindings(task.id),
+    resolutionEvidence,
+  });
+  tasks.saveReviewHistory({ run, ...reconciled });
+  // Compatibility projection for pre-history clients. The durable source of
+  // truth is review_finding_records plus append-only review_decisions.
+  tasks.replaceFindings(task.id, reconciled.records
+    .filter((record) => record.state === "open" || record.state === "accepted" || record.state === "reopened")
+    .map((record) => record.finding));
+  appendTaskEvent(task.id, "REVIEW_HISTORY_RECONCILED", {
+    runId: run.id,
+    findingIds: reconciled.records.map((record) => record.id),
+    automaticDecisionIds: reconciled.decisions.map((decision) => decision.id),
+  });
+  return { run, ...reconciled };
+}
+
+const checkpointStateOrder: TaskState[] = [
+  "CREATED", "CLASSIFYING", "DISCOVERING", "PLANNING", "AWAITING_APPROVAL",
+  "IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERY_READY", "DELIVERING", "COMPLETE",
+];
+
+function checkpointLabel(kind: TaskCheckpoint["kind"]): string {
+  return {
+    manual: "Manual checkpoint",
+    plan_complete: "Plan complete",
+    pre_edit: "Before approved edit",
+    implementation_complete: "Implementation complete",
+    verification_complete: "Verification complete",
+    pre_repair: "Before repair",
+    pre_delivery: "Ready for delivery",
+    interrupted: "Interrupted task recovery",
+  }[kind];
+}
+
+function recordedMode(taskId: string): PermissionMode {
+  const event = tasks.listEvents(taskId).findLast((value) => value.type === "APPROVAL_REQUESTED");
+  const value = String(event?.payload.mode ?? "");
+  if (value === "ask" || value === "plan" || value === "edit" || value === "agent") return value;
+  return tasks.findApproval(taskId)?.status === "APPROVED" ? "edit" : "plan";
+}
+
+function createCheckpointSnapshot(
+  task: Task,
+  kind: TaskCheckpoint["kind"],
+  input: Partial<Pick<TaskCheckpoint, "name" | "sessionId" | "mode" | "contextSummary">> = {},
+): TaskCheckpoint {
+  const events = tasks.listEvents(task.id);
+  const approval = tasks.findApproval(task.id);
+  const assignments = tasks.listRoleAssignments(task.id);
+  const activeAssignment = assignments.findLast((value) => value.status === "active") ?? assignments.at(-1) ?? null;
+  const plan = events.findLast((value) => value.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+  const stateIndex = checkpointStateOrder.indexOf(task.state);
+  const steps = checkpointStateOrder.filter((value) => !["PAUSED", "RECOVERY_REQUIRED"].includes(value));
+  const checkpoint = createTaskCheckpoint({
+    id: randomUUID(),
+    taskId: task.id,
+    sessionId: input.sessionId ?? null,
+    name: input.name?.trim().slice(0, 200) || checkpointLabel(kind),
+    kind,
+    taskState: task.state,
+    mode: input.mode ?? recordedMode(task.id),
+    repositoryPath: access.load().repositoryPath,
+    worktreePath: approval?.worktreePath ?? null,
+    baseCommit: approval?.baseCommit ?? null,
+    headCommit: approval?.baseCommit ?? null,
+    approvalId: approval?.id ?? null,
+    approvalStatus: approval?.status ?? null,
+    planText: typeof plan === "string" ? plan : "",
+    contextSummary: (input.contextSummary?.trim() || events.slice(-12).map((value) => value.type).join(" → ")).slice(0, 20_000),
+    completedSteps: stateIndex < 0 ? [] : steps.slice(0, stateIndex + 1),
+    remainingSteps: stateIndex < 0 ? steps : steps.slice(stateIndex + 1),
+    lastEventId: events.at(-1)?.id ?? null,
+    activeRole: activeAssignment?.role ?? null,
+    specialistPacks: activeAssignment?.specialistPacks ?? [],
+  });
+  tasks.saveCheckpoint(checkpoint);
+  appendTaskEvent(task.id, "TASK_CHECKPOINT_CREATED", { checkpointId: checkpoint.id, name: checkpoint.name, kind: checkpoint.kind, state: checkpoint.taskState });
+  return checkpoint;
+}
+
+async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, reason: string): Promise<TaskContinuation> {
+  if (checkpoint.taskId !== task.id) throw new Error("Checkpoint does not belong to this task.");
+  const previousState = task.state;
+  const approval = tasks.findApproval(task.id);
+  let repositoryState: TaskContinuation["repositoryState"] = "not_applicable";
+  let repositoryDetail = "";
+
+  if (checkpoint.worktreePath) {
+    const inspected = await worktrees.inspect(checkpoint.worktreePath, checkpoint.baseCommit);
+    repositoryState = inspected.state;
+    repositoryDetail = inspected.detail;
+  }
+  const { status, resultingState, resumeAction, detail } = evaluateContinuation(checkpoint, approval?.status ?? null, repositoryState, repositoryDetail);
+  const unresolvedReviewFindings = blockingReviewFindings(tasks.listReviewFindings(task.id));
+
+  const parent = tasks.listContinuations(task.id).at(-1) ?? null;
+  const restoredMode: PermissionMode = status === "recovery_required" ? "plan" : checkpoint.mode;
+  const continuation = createTaskContinuation({
+    id: randomUUID(),
+    taskId: task.id,
+    checkpointId: checkpoint.id,
+    parentContinuationId: parent?.id ?? null,
+    reason: reason.trim().slice(0, 1000) || "Resume from named checkpoint.",
+    status,
+    restoredMode,
+    previousState,
+    resultingState,
+    repositoryState,
+    resumeAction,
+    detail: unresolvedReviewFindings.length ? `${detail} ${unresolvedReviewFindings.length} unresolved high/critical review finding(s) remain attached to this continuation.` : detail,
+    completed: true,
+  });
+  tasks.saveContinuation(continuation);
+  tasks.saveTask({ ...task, state: resultingState, updatedAt: new Date().toISOString() });
+  appendTaskEvent(task.id, status === "recovery_required" ? "TASK_RECOVERY_REQUIRED" : "TASK_CONTINUED", {
+    continuationId: continuation.id,
+    checkpointId: checkpoint.id,
+    previousState,
+    resultingState,
+    restoredMode,
+    repositoryState,
+    resumeAction,
+    unresolvedReviewFindingIds: unresolvedReviewFindings.map((value) => value.id),
+  });
+  return continuation;
+}
+
+function recoverInterruptedTasks(): void {
+  for (const task of tasks.listInterruptedTasks()) {
+    const checkpoint = createCheckpointSnapshot(task, "interrupted");
+    tasks.saveTask({ ...task, state: "RECOVERY_REQUIRED", updatedAt: new Date().toISOString() });
+    appendTaskEvent(task.id, "TASK_RECOVERY_REQUIRED", {
+      checkpointId: checkpoint.id,
+      previousState: task.state,
+      reason: "The server restarted while a mutation-capable lifecycle stage was active.",
+    });
+  }
+}
+
+
 function transitionTask(task: Task, state: TaskState, emit?: (event: Record<string, unknown>) => void): Task {
   assertTransition(task.state, state);
   const updated = { ...task, state, updatedAt: new Date().toISOString() };
   tasks.saveTask(updated);
   appendTaskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: state });
+  const automaticKind: Partial<Record<TaskState, TaskCheckpoint["kind"]>> = {
+    AWAITING_APPROVAL: "plan_complete",
+    VERIFYING: "implementation_complete",
+    REVIEWING: "verification_complete",
+    DELIVERY_READY: "pre_delivery",
+  };
+  const kind = automaticKind[state];
+  if (kind) createCheckpointSnapshot(updated, kind);
   emit?.({ type: "task.state", taskId: task.id, state });
   return updated;
 }
@@ -171,6 +349,7 @@ function recordHandoff(input: {
 }
 
 function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
+  createCheckpointSnapshot(task, "pre_repair");
   let updated = transitionTask(task, "IMPLEMENTING", emit);
   updated = { ...updated, attempts: updated.attempts + 1, updatedAt: new Date().toISOString() };
   tasks.saveTask(updated);
@@ -178,6 +357,8 @@ function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => vo
   emit({ type: "repair.scheduled", attempt: updated.attempts, maximum: maxRepairAttempts, message: reason });
   return updated;
 }
+
+recoverInterruptedTasks();
 
 createServer((request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, null);
@@ -197,6 +378,8 @@ createServer((request, response) => {
       const approval = tasks.findApproval(taskId);
       if (!task || !approval?.worktreePath || approval.status !== "APPROVED") return send(response, 404, { error: "Verified task worktree not found." });
       if (task.state !== "DELIVERY_READY") return send(response, 409, { error: "Task is not ready for delivery." });
+      const blockingFindings = blockingReviewFindings(tasks.listReviewFindings(taskId));
+      if (blockingFindings.length) return send(response, 409, { error: "Unresolved high or critical review findings block delivery.", findingIds: blockingFindings.map((value) => value.id) });
       const method = String(input.method ?? "").toLowerCase();
       if (method !== "export" && method !== "commit") return send(response, 400, { error: "Delivery method must be export or commit." });
       task = transitionTask(task, "DELIVERING");
@@ -356,7 +539,8 @@ createServer((request, response) => {
               requiredNextAction: "Repair only the evidenced visual defect.",
             }, emit);
             activeRoleAssignment = null;
-            tasks.replaceFindings(taskId, visionReview.findings);
+            recordCompletedReview(task, visionReview.findings, "repair", "Local vision review found a blocking visual defect.");
+            emit({ type: "review.history.updated" });
             emit({ type: "stage.updated", stage: "Verification", status: "failed" });
             if (task.attempts >= maxRepairAttempts) {
               task = transitionTask(task, "BLOCKED", emit);
@@ -392,7 +576,16 @@ createServer((request, response) => {
         const review = await runFreshReview({ ollamaUrl, model: reviewerModel, taskId, request: task.request, diff: diff.stdout ?? "", verification, specialistInstructions: specialistInstructions.reviewer });
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
-        tasks.replaceFindings(taskId, [...(visionReview?.findings ?? []), ...review.findings]);
+        const reviewHistory = recordCompletedReview(
+          task,
+          [...(visionReview?.findings ?? []), ...review.findings],
+          review.verdict,
+          review.summary,
+          task.attempts > 0
+            ? [`Deterministic verification passed on repair attempt ${task.attempts}.`, `Fresh review run did not reproduce the prior finding.`]
+            : [],
+        );
+        emit({ type: "review.history.updated" });
         const reviewedRepository = access.load().repositoryPath;
         if (reviewedRepository) for (const finding of review.findings) recordMemoryNote(reviewedRepository, {
           id: `finding:${finding.id}`, kind: "finding", text: `${finding.severity}: ${finding.title} — ${finding.description}`,
@@ -422,6 +615,17 @@ createServer((request, response) => {
           repairEvidence = `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 60_000)}`;
           task = scheduleRepair(task, emit, "Fresh-context review found a blocking issue.");
           continue;
+        }
+
+        const unresolvedBlocking = blockingReviewFindings(reviewHistory.records);
+        if (unresolvedBlocking.length) {
+          emit({ type: "stage.updated", stage: "Review", status: "failed" });
+          appendTaskEvent(taskId, "DELIVERY_BLOCKED_BY_REVIEW_HISTORY", {
+            findingIds: unresolvedBlocking.map((record) => record.id),
+          });
+          emit({ type: "stream.blocked", message: `${unresolvedBlocking.length} unresolved high/critical review finding(s) block delivery. Resolve them in Review History.` });
+          response.end();
+          return;
         }
 
         emit({ type: "implementation.summary", status, diff, worktreePath: approval.worktreePath });
@@ -473,6 +677,89 @@ createServer((request, response) => {
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to accept visual baselines" }));
     return;
   }
+
+  const checkpointRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/checkpoints$/);
+  if (checkpointRoute) {
+    const taskId = decodeURIComponent(checkpointRoute[1]);
+    const task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found" });
+    if (request.method === "GET") {
+      return send(response, 200, { checkpoints: tasks.listCheckpoints(taskId), continuations: tasks.listContinuations(taskId) });
+    }
+    if (request.method === "POST") {
+      void readJson(request).then((input) => {
+        const requestedMode = String(input.mode ?? recordedMode(taskId)) as PermissionMode;
+        if (!["ask", "plan", "edit", "agent"].includes(requestedMode)) return send(response, 400, { error: "Invalid checkpoint mode." });
+        const checkpoint = createCheckpointSnapshot(task, "manual", {
+          name: typeof input.name === "string" ? input.name : undefined,
+          sessionId: typeof input.sessionId === "string" ? input.sessionId : null,
+          mode: requestedMode,
+          contextSummary: typeof input.contextSummary === "string" ? input.contextSummary : undefined,
+        });
+        return send(response, 201, { checkpoint });
+      }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create checkpoint" }));
+      return;
+    }
+  }
+
+  const reviewHistoryRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/review-history$/);
+  if (reviewHistoryRoute) {
+    const taskId = decodeURIComponent(reviewHistoryRoute[1]);
+    const existingTask = tasks.findTask(taskId);
+    if (!existingTask) return send(response, 404, { error: "Task not found" });
+    if (request.method === "GET") {
+      const findings = tasks.listReviewFindings(taskId);
+      return send(response, 200, {
+        runs: tasks.listReviewRuns(taskId), findings,
+        occurrences: tasks.listReviewOccurrences(taskId), decisions: tasks.listReviewDecisions(taskId),
+        blockingFindingIds: blockingReviewFindings(findings).map((value) => value.id),
+      });
+    }
+    if (request.method === "POST") {
+      void readJson(request).then((input) => {
+        let resultingTask = existingTask;
+        const finding = tasks.findReviewFinding(String(input.findingId ?? ""));
+        if (!finding || finding.taskId !== taskId) return send(response, 404, { error: "Review finding not found" });
+        const action = String(input.action ?? "") as ReviewDecision["action"];
+        if (!["accept", "mark_fixed", "waive", "false_positive", "reopen", "supersede"].includes(action)) return send(response, 400, { error: "Invalid review decision." });
+        const evidence = Array.isArray(input.evidence) ? input.evidence.map(String).filter(Boolean).slice(0, 50) : [];
+        const latestRun = tasks.listReviewRuns(taskId).at(-1) ?? null;
+        const decision: ReviewDecision = {
+          id: randomUUID(), taskId, findingId: finding.id, runId: latestRun?.id ?? null,
+          checkpointId: tasks.listCheckpoints(taskId).at(-1)?.id ?? null,
+          continuationId: tasks.listContinuations(taskId).at(-1)?.id ?? null,
+          action, resultingState: stateForDecision(action), reason: String(input.reason ?? "").trim().slice(0, 4000),
+          evidence, actorType: "operator", actorId: "desktop-operator", createdAt: new Date().toISOString(),
+        };
+        const updated = applyReviewDecision(finding, decision);
+        tasks.saveReviewHistory({ records: [updated], decisions: [decision] });
+        appendTaskEvent(taskId, "REVIEW_DECISION_RECORDED", { decisionId: decision.id, findingId: finding.id, action, resultingState: updated.state });
+        const blocking = blockingReviewFindings(tasks.listReviewFindings(taskId));
+        if (blocking.length === 0 && resultingTask.state === "REVIEWING") resultingTask = transitionTask(resultingTask, "DELIVERY_READY");
+        else if (blocking.length > 0 && resultingTask.state === "DELIVERY_READY") resultingTask = transitionTask(resultingTask, "REVIEWING");
+        return send(response, 201, { task: resultingTask, finding: updated, decision, blockingFindingIds: blocking.map((value) => value.id) });
+      }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to record review decision" }));
+      return;
+    }
+  }
+
+  const continuationRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/continuations$/);
+  if (continuationRoute) {
+    const taskId = decodeURIComponent(continuationRoute[1]);
+    const task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found" });
+    if (request.method === "GET") return send(response, 200, { continuations: tasks.listContinuations(taskId) });
+    if (request.method === "POST") {
+      void readJson(request).then(async (input) => {
+        const checkpoint = tasks.findCheckpoint(String(input.checkpointId ?? ""));
+        if (!checkpoint || checkpoint.taskId !== taskId) return send(response, 404, { error: "Checkpoint not found" });
+        const continuation = await continueFromCheckpoint(task, checkpoint, String(input.reason ?? "Resume from named checkpoint."));
+        return send(response, continuation.status === "recovery_required" ? 409 : 200, { continuation, checkpoint });
+      }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to continue task" }));
+      return;
+    }
+  }
+
   const approvalRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/approval$/);
   if (request.method === "GET" && approvalRoute) {
     const taskId = decodeURIComponent(approvalRoute[1]);
@@ -516,6 +803,7 @@ createServer((request, response) => {
       tasks.saveApproval(approved);
       appendTaskEvent(task.id, "APPROVAL_APPROVED", { approvalId: approval.id, worktreePath: worktree.path, baseCommit: worktree.baseCommit });
       recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: `Implementation plan approved at base commit ${worktree.baseCommit}.`, taskId: task.id, path: null, line: null, createdAt: approved.decidedAt! });
+      createCheckpointSnapshot(task, "pre_edit", { mode: recordedMode(task.id) });
       task = transitionTask(task, "IMPLEMENTING");
       return send(response, 200, { task, approval: approved, worktree: worktrees.describe(worktree) });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
@@ -636,8 +924,8 @@ createServer((request, response) => {
           }, emit);
           const approval = createApproval({ id: randomUUID(), taskId: task.id });
           tasks.saveApproval(approval);
-          task = transitionTask(task, "AWAITING_APPROVAL", emit);
           appendTaskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, mode });
+          task = transitionTask(task, "AWAITING_APPROVAL", emit);
           writeEvent(response, { type: "approval.requested", taskId: task.id, approval, message: "Review the plan, then approve or reject creation of an isolated Git worktree." });
         } else task = transitionTask(task, "COMPLETE", emit);
         writeEvent(response, { type: "stream.completed", taskId: task.id });

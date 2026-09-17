@@ -1,6 +1,6 @@
 # BORG Code
 
-A local engineering operating system. The current Alpha 0.3 slice includes the task domain, event persistence, safe repository inspection, TypeScript/JavaScript code graph and change-impact tools, persistent repository memory, approval-gated isolated worktree mutation, bounded commands, deterministic verification, bounded repair, fresh-context review findings, explicit delivery, local API, desktop launcher, and operator workspace.
+A local engineering operating system. The current Alpha 0.3 slice includes the task domain, event persistence, safe repository inspection, polyglot code graphs, call hierarchy and change-impact tools, persistent repository memory, named checkpoints and safe task continuation, durable review-decision history, approval-gated isolated worktree mutation, bounded commands, deterministic verification, bounded repair, fresh-context review findings, explicit delivery, local API, desktop launcher, and operator workspace.
 
 ## Run the current slice
 

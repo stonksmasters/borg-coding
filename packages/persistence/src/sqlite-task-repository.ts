@@ -4,13 +4,25 @@ import {
   FindingSchema,
   HandoffSchema,
   RoleAssignmentSchema,
+  ReviewDecisionSchema,
+  ReviewFindingOccurrenceSchema,
+  ReviewFindingRecordSchema,
+  ReviewRunSchema,
+  TaskCheckpointSchema,
+  TaskContinuationSchema,
   TaskEventSchema,
   TaskSchema,
   type Approval,
   type Finding,
   type Handoff,
   type RoleAssignment,
+  type ReviewDecision,
+  type ReviewFindingOccurrence,
+  type ReviewFindingRecord,
+  type ReviewRun,
   type Task,
+  type TaskCheckpoint,
+  type TaskContinuation,
   type TaskEvent,
 } from "../../core/src/contracts.ts";
 
@@ -51,11 +63,55 @@ export class SqliteTaskRepository {
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         from_role TEXT NOT NULL, to_role TEXT NOT NULL, data TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS task_checkpoints (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, kind TEXT NOT NULL, task_state TEXT NOT NULL,
+        mode TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS task_continuations (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        checkpoint_id TEXT NOT NULL REFERENCES task_checkpoints(id) ON DELETE RESTRICT,
+        status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS review_runs (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        checkpoint_id TEXT REFERENCES task_checkpoints(id) ON DELETE SET NULL,
+        continuation_id TEXT REFERENCES task_continuations(id) ON DELETE SET NULL,
+        status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS review_finding_records (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        fingerprint TEXT NOT NULL, state TEXT NOT NULL, last_seen_at TEXT NOT NULL, data TEXT NOT NULL,
+        UNIQUE(task_id, fingerprint)
+      );
+      CREATE TABLE IF NOT EXISTS review_finding_occurrences (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES review_runs(id) ON DELETE CASCADE,
+        finding_id TEXT NOT NULL REFERENCES review_finding_records(id) ON DELETE CASCADE,
+        observed_at TEXT NOT NULL, data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS review_decisions (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        finding_id TEXT NOT NULL REFERENCES review_finding_records(id) ON DELETE RESTRICT,
+        action TEXT NOT NULL, actor_type TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_tasks_project_updated ON tasks(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_task_events_task_sequence ON task_events(task_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id);
       CREATE INDEX IF NOT EXISTS idx_role_assignments_task_sequence ON role_assignments(task_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_handoffs_task_sequence ON handoffs(task_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_task_checkpoints_task_sequence ON task_checkpoints(task_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_task_continuations_task_sequence ON task_continuations(task_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_review_runs_task_sequence ON review_runs(task_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_review_findings_task_state ON review_finding_records(task_id, state);
+      CREATE INDEX IF NOT EXISTS idx_review_occurrences_finding_sequence ON review_finding_occurrences(finding_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_review_decisions_finding_sequence ON review_decisions(finding_id, sequence);
       PRAGMA optimize;
     `);
   }
@@ -148,6 +204,109 @@ export class SqliteTaskRepository {
   listHandoffs(taskId: string): Handoff[] {
     const rows = this.database.prepare("SELECT data FROM handoffs WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
     return rows.map((row) => HandoffSchema.parse(JSON.parse(row.data)));
+  }
+
+
+  saveCheckpoint(checkpoint: TaskCheckpoint): void {
+    const value = TaskCheckpointSchema.parse(checkpoint);
+    this.database.prepare(`
+      INSERT INTO task_checkpoints (id, task_id, name, kind, task_state, mode, created_at, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(value.id, value.taskId, value.name, value.kind, value.taskState, value.mode, value.createdAt, JSON.stringify(value));
+  }
+
+  findCheckpoint(id: string): TaskCheckpoint | null {
+    const row = this.database.prepare("SELECT data FROM task_checkpoints WHERE id = ?").get(id) as { data: string } | undefined;
+    return row ? TaskCheckpointSchema.parse(JSON.parse(row.data)) : null;
+  }
+
+  listCheckpoints(taskId: string): TaskCheckpoint[] {
+    const rows = this.database.prepare("SELECT data FROM task_checkpoints WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => TaskCheckpointSchema.parse(JSON.parse(row.data)));
+  }
+
+  saveContinuation(continuation: TaskContinuation): void {
+    const value = TaskContinuationSchema.parse(continuation);
+    this.database.prepare(`
+      INSERT INTO task_continuations (id, task_id, checkpoint_id, status, started_at, completed_at, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, completed_at=excluded.completed_at, data=excluded.data
+    `).run(value.id, value.taskId, value.checkpointId, value.status, value.startedAt, value.completedAt, JSON.stringify(value));
+  }
+
+  listContinuations(taskId: string): TaskContinuation[] {
+    const rows = this.database.prepare("SELECT data FROM task_continuations WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => TaskContinuationSchema.parse(JSON.parse(row.data)));
+  }
+
+  saveReviewRun(run: ReviewRun): void {
+    const value = ReviewRunSchema.parse(run);
+    this.database.prepare(`
+      INSERT INTO review_runs (id, task_id, checkpoint_id, continuation_id, status, started_at, completed_at, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, completed_at=excluded.completed_at, data=excluded.data
+    `).run(value.id, value.taskId, value.checkpointId, value.continuationId, value.status, value.startedAt, value.completedAt, JSON.stringify(value));
+  }
+
+  listReviewRuns(taskId: string): ReviewRun[] {
+    const rows = this.database.prepare("SELECT data FROM review_runs WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => ReviewRunSchema.parse(JSON.parse(row.data)));
+  }
+
+  saveReviewHistory(input: { run?: ReviewRun; records: ReviewFindingRecord[]; occurrences?: ReviewFindingOccurrence[]; decisions?: ReviewDecision[] }): void {
+    const run = input.run ? ReviewRunSchema.parse(input.run) : null;
+    const records = input.records.map((value) => ReviewFindingRecordSchema.parse(value));
+    const occurrences = (input.occurrences ?? []).map((value) => ReviewFindingOccurrenceSchema.parse(value));
+    const decisions = (input.decisions ?? []).map((value) => ReviewDecisionSchema.parse(value));
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      if (run) this.database.prepare(`
+        INSERT INTO review_runs (id, task_id, checkpoint_id, continuation_id, status, started_at, completed_at, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET status=excluded.status, completed_at=excluded.completed_at, data=excluded.data
+      `).run(run.id, run.taskId, run.checkpointId, run.continuationId, run.status, run.startedAt, run.completedAt, JSON.stringify(run));
+      const upsertRecord = this.database.prepare(`
+        INSERT INTO review_finding_records (id, task_id, fingerprint, state, last_seen_at, data)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id, fingerprint) DO UPDATE SET state=excluded.state, last_seen_at=excluded.last_seen_at, data=excluded.data
+      `);
+      for (const value of records) upsertRecord.run(value.id, value.taskId, value.fingerprint, value.state, value.lastSeenAt, JSON.stringify(value));
+      const insertOccurrence = this.database.prepare("INSERT INTO review_finding_occurrences (id, task_id, run_id, finding_id, observed_at, data) VALUES (?, ?, ?, ?, ?, ?)");
+      for (const value of occurrences) insertOccurrence.run(value.id, value.taskId, value.runId, value.findingId, value.observedAt, JSON.stringify(value));
+      const insertDecision = this.database.prepare("INSERT INTO review_decisions (id, task_id, finding_id, action, actor_type, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      for (const value of decisions) insertDecision.run(value.id, value.taskId, value.findingId, value.action, value.actorType, value.createdAt, JSON.stringify(value));
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  findReviewFinding(id: string): ReviewFindingRecord | null {
+    const row = this.database.prepare("SELECT data FROM review_finding_records WHERE id = ?").get(id) as { data: string } | undefined;
+    return row ? ReviewFindingRecordSchema.parse(JSON.parse(row.data)) : null;
+  }
+
+  listReviewFindings(taskId: string): ReviewFindingRecord[] {
+    const rows = this.database.prepare("SELECT data FROM review_finding_records WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => ReviewFindingRecordSchema.parse(JSON.parse(row.data)));
+  }
+
+  listReviewOccurrences(taskId: string): ReviewFindingOccurrence[] {
+    const rows = this.database.prepare("SELECT data FROM review_finding_occurrences WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => ReviewFindingOccurrenceSchema.parse(JSON.parse(row.data)));
+  }
+
+  listReviewDecisions(taskId: string): ReviewDecision[] {
+    const rows = this.database.prepare("SELECT data FROM review_decisions WHERE task_id = ? ORDER BY sequence").all(taskId) as { data: string }[];
+    return rows.map((row) => ReviewDecisionSchema.parse(JSON.parse(row.data)));
+  }
+
+  listInterruptedTasks(): Task[] {
+    const states = ["IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERING"];
+    const placeholders = states.map(() => "?").join(", ");
+    const rows = this.database.prepare(`SELECT data FROM tasks WHERE state IN (${placeholders}) ORDER BY updated_at`).all(...states) as { data: string }[];
+    return rows.map((row) => TaskSchema.parse(JSON.parse(row.data)));
   }
 
   close(): void { this.database.close(); }
