@@ -105,7 +105,7 @@ const definitions = {
     type: "function",
     function: {
       name: "repository_file_graph",
-      description: "Show direct import and reverse-import edges for an approved TypeScript or JavaScript file.",
+      description: "Show bounded direct dependency and reverse-dependency edges for an approved TypeScript, JavaScript, Python, Rust, Go, or C# file.",
       parameters: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
     },
   },
@@ -113,7 +113,7 @@ const definitions = {
     type: "function",
     function: {
       name: "repository_call_hierarchy",
-      description: "Show incoming and outgoing calls for a TypeScript or JavaScript symbol at a 1-based position, with call sites.",
+      description: "Show language-server incoming and outgoing calls for a supported symbol at a 1-based position, with call sites.",
       parameters: { type: "object", required: ["path", "line", "column"], properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 }, column: { type: "integer", minimum: 1 } } },
     },
   },
