@@ -16,6 +16,8 @@ test("website bootstrap creates a committed React project and can be restored fr
     assert.ok(existsSync(join(project.path, "src", "main.tsx")));
     assert.ok(existsSync(join(project.path, "src", "App.tsx")));
     assert.ok(existsSync(join(project.path, "src", "design", "tokens.css")));
+    assert.ok(existsSync(join(project.path, "server", "db.ts")));
+    assert.ok(existsSync(join(project.path, "server", "local-api.ts")));
     assert.equal(websiteInfo(project.path)?.name, "Miller's Glass");
     const manifest = JSON.parse(readFileSync(join(project.path, ".borg-website.json"), "utf8")) as {
       framework: string;
@@ -43,6 +45,9 @@ test("website bootstrap creates a committed React project and can be restored fr
     assert.ok(packageJson.dependencies?.motion);
     assert.ok(packageJson.devDependencies?.tailwindcss);
     assert.ok(packageJson.devDependencies?.["@tailwindcss/vite"]);
+    assert.ok(packageJson.devDependencies?.["@types/node"]);
+    assert.match(readFileSync(join(project.path, "vite.config.ts"), "utf8"), /borgLocalApi/);
+    assert.match(readFileSync(join(project.path, "server", "db.ts"), "utf8"), /CREATE TABLE IF NOT EXISTS submissions/);
     assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: project.path, encoding: "utf8" }).trim(), "");
     const worktreePath = join(root, "approved-worktree");
     execFileSync("git", ["worktree", "add", "-b", "preview-test", worktreePath], { cwd: project.path });
