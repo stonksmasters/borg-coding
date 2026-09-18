@@ -615,9 +615,9 @@ export function BorgWorkspaceV2() {
     if (buffer.trim()) applyEvent(JSON.parse(buffer) as StreamEvent);
   }
 
-  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend", targetSession = activeSession) {
+  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend", targetSession = activeSession, force = false) {
     const clean = prompt.trim();
-    if (!targetSession || !clean || taskBusy) return;
+    if (!targetSession || !clean || (taskBusy && !force)) return;
     const controller = new AbortController();
     abortRef.current = controller;
     liveAssistantId.current = null;
@@ -664,7 +664,7 @@ export function BorgWorkspaceV2() {
     }
   }
 
-  async function startSliceSession(action: "initial" | "advance" | "revise" | "backend") {
+  async function startSliceSession(action: "initial" | "advance" | "revise" | "backend", forceRun = false) {
     const feedback = sliceFeedback.trim();
     if (!activeSession || sliceBusy || ((action === "revise" || action === "backend") && !feedback)) return;
     setSliceBusy(true);
@@ -681,7 +681,7 @@ export function BorgWorkspaceV2() {
         : action === "advance" && !feedback
           ? "Approved. Continue directly to the next frontend slice in the frozen phase plan."
           : feedback;
-      await runTask(prompt, action, result.session);
+      await runTask(prompt, action, result.session, forceRun);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Unable to start the next slice.");
     } finally { setSliceBusy(false); }
@@ -707,7 +707,7 @@ export function BorgWorkspaceV2() {
         setRightPanel("preview");
         await refreshDocs(activeTaskId);
         await loadSession(activeSession.id, { restorePreview: false, resetWorkspace: false });
-        await startSliceSession("initial");
+        await startSliceSession("initial", true);
       } else if (decision === "approve") {
         setApproval(null);
         setEscalation(null);
