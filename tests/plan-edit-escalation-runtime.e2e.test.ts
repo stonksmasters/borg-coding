@@ -213,7 +213,11 @@ test("PLAN escalation survives gateway restart and approval resumes the persiste
     const taskId = taskCreated?.task?.id;
     assert.ok(taskId, "planning stream should create a task");
     const escalations = planningEvents.filter((event) => event.type === "mode.escalation.requested");
-    assert.equal(escalations.length, 1, "PLAN should emit exactly one canonical escalation event");
+    assert.equal(
+      escalations.length,
+      1,
+      `PLAN should emit exactly one canonical escalation event. Events: ${JSON.stringify(planningEvents)}\nCore: ${core.logs()}\nGateway: ${gateway.logs()}`,
+    );
     assert.equal(planningEvents.some((event) => event.type === "task.state" && event.state === "AWAITING_APPROVAL"), true);
     assert.equal(planningEvents.some((event) => event.type === "task.state" && event.state === "COMPLETE"), false);
     assert.equal(existsSync(join(repositoryPath, "hello.txt")), false, "PLAN must not mutate the base repository");
