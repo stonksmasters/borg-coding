@@ -48,6 +48,8 @@ import { assertArchitectOutput } from "./architect-output.ts";
 import { runFreshReview } from "./fresh-review.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { buildChangeLog } from "./change-log.ts";
+import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
+import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 
 const databasePath = resolve(process.env.BORG_DATABASE_PATH ?? ".borg/borg.db");
 mkdirSync(dirname(databasePath), { recursive: true });
@@ -55,7 +57,28 @@ const tasks = new SqliteTaskRepository(databasePath);
 const access = new AccessController(resolve(".borg/access.json"));
 const memory = new RepositoryMemory(resolve(".borg/repository-memory.db"));
 const worktreeRoot = resolve(".borg/worktrees");
-const tools = new ToolBroker(resolve(".borg/tools.json"), access, { worktreeRoot, findApproval: (taskId) => tasks.findApproval(taskId) }, memory);
+const processRuntime = new ProcessRuntime({
+  onEvent: (event: ProcessRuntimeEvent) => {
+    if (event.type === "process.output") {
+      appendTaskEvent(event.taskId, "PROCESS_OUTPUT", {
+        processId: event.processId,
+        stream: event.stream,
+        text: event.text,
+        occurredAt: event.occurredAt,
+      });
+      return;
+    }
+    appendTaskEvent(event.taskId, event.type === "process.started" ? "PROCESS_STARTED" : "PROCESS_STATE", {
+      process: event.process,
+      occurredAt: event.occurredAt,
+    });
+  },
+});
+const tools = new ToolBroker(resolve(".borg/tools.json"), access, {
+  worktreeRoot,
+  findApproval: (taskId) => tasks.findApproval(taskId),
+  processRuntime,
+}, memory);
 const worktrees = new GitWorktreeManager(worktreeRoot);
 const delivery = new WorktreeDelivery(worktreeRoot, resolve(".borg/deliveries"));
 const port = Number(process.env.BORG_PORT ?? 4311);
@@ -370,6 +393,58 @@ createServer((request, response) => {
     }).catch(() => send(response, 200, { status: "ok", runtime: "ollama", runtimeConnected: false, model, modelAvailable: false }));
     return;
   }
+  const processStopRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/processes\/([^/]+)\/stop$/);
+  if (request.method === "POST" && processStopRoute) {
+    const taskId = decodeURIComponent(processStopRoute[1]);
+    const processId = decodeURIComponent(processStopRoute[2]);
+    if (!tasks.findTask(taskId)) return send(response, 404, { error: "Task not found." });
+    const owned = processRuntime.list(taskId).find((value) => value.id === processId);
+    if (!owned) return send(response, 404, { error: "Process not found for this task." });
+    void processRuntime.stop(processId)
+      .then((process) => send(response, 200, { process }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to stop process." }));
+    return;
+  }
+
+  const processesRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/processes$/);
+  if (request.method === "GET" && processesRoute) {
+    const taskId = decodeURIComponent(processesRoute[1]);
+    if (!tasks.findTask(taskId)) return send(response, 404, { error: "Task not found." });
+    const events = tasks.listEvents(taskId)
+      .filter((event) => event.type === "PROCESS_STARTED" || event.type === "PROCESS_OUTPUT" || event.type === "PROCESS_STATE")
+      .map((event) => ({ type: event.type, payload: event.payload, occurredAt: event.occurredAt }));
+    return send(response, 200, { taskId, processes: processRuntime.list(taskId), events });
+  }
+
+  const taskPreviewRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/preview$/);
+  if (request.method === "POST" && taskPreviewRoute) {
+    const taskId = decodeURIComponent(taskPreviewRoute[1]);
+    const task = tasks.findTask(taskId);
+    const approval = tasks.findApproval(taskId);
+    if (!task || !approval?.worktreePath || approval.status !== "APPROVED") return send(response, 404, { error: "Approved task worktree not found." });
+    const website = websiteInfo(approval.worktreePath);
+    if (!website) return send(response, 404, { error: "This task worktree is not a BORG website project." });
+    void (async () => {
+      const running = processRuntime.findRunning(taskId, "dev_server");
+      if (running?.url) return send(response, 200, { preview: { url: running.url, status: "running", processId: running.id, pid: running.pid }, process: running });
+      const port = await findAvailableLoopbackPort();
+      const url = `http://127.0.0.1:${port}`;
+      const process = await processRuntime.ensureServer({
+        taskId,
+        kind: "dev_server",
+        label: "Live preview",
+        command: "npm",
+        args: ["run", "dev", "--", "--port", String(port), "--strictPort"],
+        cwd: website.path,
+        url,
+        env: { HOST: "127.0.0.1", BROWSER: "none" },
+        startupTimeoutMs: 60_000,
+      });
+      return send(response, 200, { preview: { url, status: "running", processId: process.id, pid: process.pid }, process });
+    })().catch((error) => send(response, 502, { error: error instanceof Error ? error.message : "Unable to start task preview." }));
+    return;
+  }
+
   const activityRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/activity$/);
   if (request.method === "GET" && activityRoute) {
     const taskId = decodeURIComponent(activityRoute[1]);
