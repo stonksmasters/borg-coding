@@ -50,6 +50,15 @@ import { runOllamaAgent } from "./ollama-agent.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import {
+  DesignBriefSchema,
+  DesignDirectorService,
+  VisualDirectorService,
+  designBriefPrompt,
+  requiresDesignDirection,
+  type DesignBrief,
+  type DesignReviewResult,
+} from "../../../packages/design-intelligence/src/index.ts";
 
 const databasePath = resolve(process.env.BORG_DATABASE_PATH ?? ".borg/borg.db");
 mkdirSync(dirname(databasePath), { recursive: true });
@@ -85,10 +94,13 @@ const port = Number(process.env.BORG_PORT ?? 4311);
 const ollamaUrl = process.env.BORG_OLLAMA_URL ?? "http://127.0.0.1:11434";
 const model = process.env.BORG_MODEL ?? "qwen3-coder:30b";
 const vision = new VisionReviewService(resolve(".borg/vision.json"), new OllamaVisionProvider(ollamaUrl));
+const designDirector = new DesignDirectorService(ollamaUrl);
+const visualDirector = new VisualDirectorService(ollamaUrl);
 const visualRegression = new VisualRegressionService();
 const disciplineRouter = new DisciplineRouter();
 const teamPolicies = new TeamPolicyService();
 const maxRepairAttempts = 2;
+const maxDesignRefinements = 3;
 
 function send(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, {
@@ -118,6 +130,16 @@ function writeEvent(response: ServerResponse, event: Record<string, unknown>) {
 
 function appendTaskEvent(taskId: string, type: string, payload: Record<string, unknown>) {
   tasks.appendEvent({ id: randomUUID(), taskId, type, payload, occurredAt: new Date().toISOString() });
+}
+
+function latestDesignBrief(taskId: string): DesignBrief | null {
+  const value = tasks.listEvents(taskId).findLast((event) => event.type === "DESIGN_BRIEF_CREATED")?.payload.brief;
+  const parsed = DesignBriefSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function designRefinementCount(taskId: string): number {
+  return tasks.listEvents(taskId).filter((event) => event.type === "DESIGN_REFINEMENT_SCHEDULED").length;
 }
 
 function recordMemoryNote(root: string, note: MemoryNote) {
@@ -371,6 +393,15 @@ function recordHandoff(input: {
   return handoff;
 }
 
+function scheduleDesignRefinement(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
+  createCheckpointSnapshot(task, "pre_repair");
+  const updated = transitionTask(task, "IMPLEMENTING", emit);
+  const refinement = designRefinementCount(task.id) + 1;
+  appendTaskEvent(task.id, "DESIGN_REFINEMENT_SCHEDULED", { refinement, maximum: maxDesignRefinements, reason });
+  emit({ type: "design.refinement.scheduled", refinement, maximum: maxDesignRefinements, message: reason });
+  return updated;
+}
+
 function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
   createCheckpointSnapshot(task, "pre_repair");
   let updated = transitionTask(task, "IMPLEMENTING", emit);
@@ -443,6 +474,24 @@ const server = createServer((request, response) => {
       return send(response, 200, { preview: { url, status: "running", processId: process.id, pid: process.pid }, process });
     })().catch((error) => send(response, 502, { error: error instanceof Error ? error.message : "Unable to start task preview." }));
     return;
+  }
+
+  const designRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/design$/);
+  if (request.method === "GET" && designRoute) {
+    const taskId = decodeURIComponent(designRoute[1]);
+    if (!tasks.findTask(taskId)) return send(response, 404, { error: "Task not found." });
+    const events = tasks.listEvents(taskId);
+    const brief = latestDesignBrief(taskId);
+    const reviewEvent = events.findLast((event) => event.type === "DESIGN_REVIEW_COMPLETED" || event.type === "DESIGN_REVIEW_BLOCKED");
+    const review = (reviewEvent?.payload.review ?? null) as DesignReviewResult | null;
+    return send(response, 200, {
+      taskId,
+      brief,
+      review,
+      refinementCount: events.filter((event) => event.type === "DESIGN_REFINEMENT_SCHEDULED").length,
+      maxRefinements: maxDesignRefinements,
+      required: Boolean(brief),
+    });
   }
 
   const activityRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/activity$/);
