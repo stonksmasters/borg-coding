@@ -52,7 +52,7 @@ import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } f
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
-import { prepareSlice, markSliceReady, readProjectDocs, readSliceState, slicePrompt, FRONTEND_SLICES, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { prepareSlice, markSliceReady, readProjectDocs, readSliceState, slicePlanningPrompt, slicePrompt, FRONTEND_SLICES, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -1190,7 +1190,7 @@ const server = createServer((request, response) => {
       let sliceDirective = "";
       if (slicedApplication && websiteProject) {
         const plannedSlice: SliceState = previousSlice ? { ...previousSlice, current: sliceAction === "advance" ? previousSlice.current + 1 : previousSlice.current, status: "working" } : { version: 1, current: 0, status: "working", brief: websiteProject.originalBrief || requestText, lastTaskId: null, feedback: [] };
-        sliceDirective = slicePrompt(plannedSlice);
+        sliceDirective = slicePlanningPrompt(plannedSlice);
         const docs = readProjectDocs(websiteProject.path).map((doc) => `${doc.path}\n${doc.content.slice(0, 4500)}`).join("\n\n").slice(0, 16_000);
         repositoryContext += `\n\nExisting build docs:\n${docs || "No prior build docs. Plan the visual foundation only."}`;
       }
