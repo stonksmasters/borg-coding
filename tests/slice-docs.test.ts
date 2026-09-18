@@ -30,7 +30,7 @@ test("PLAN slice instructions never tell the architect to implement components",
   assert.match(prompt, /request escalation to EDIT/i);
   assert.doesNotMatch(prompt, /Implement only this slice/);
   assert.doesNotMatch(prompt, /Stop after verification/);
-  assert.doesNotMatch(prompt, /run commands, previews, builds, tests, or verification/i);
+  assert.match(prompt, /Do not run commands, previews, builds, tests, or verification/i);
 });
 
 test("final frontend slice hands off to backend planning", () => {
