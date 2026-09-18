@@ -203,6 +203,11 @@ export function BorgWorkspaceV2() {
     setActiveSession(result.session);
     setSessions((current) => current.map((session) => session.id === result.session.id ? result.session : session));
     setMessages(result.messages);
+    if (resetWorkspace) {
+      const restoredPlan = [...result.messages].reverse().find((message) => message.role === "assistant" && message.kind === "plan")?.text?.trim();
+      if (restoredPlan && ["PLANNING", "AWAITING_APPROVAL", "CANCELLED"].includes(result.task?.state ?? "")) setRightPanel("plan");
+      else if (result.session.repositoryPath) setRightPanel("preview");
+    }
     setProgress(null);
     setLiveActivity([]);
     if (resetWorkspace) {
@@ -757,7 +762,7 @@ export function BorgWorkspaceV2() {
       <SidebarFooter className="border-t border-white/8 p-4"><div className="flex items-center gap-2 text-xs text-slate-400"><span className={`size-2 rounded-full ${serverAvailable ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : "bg-slate-600"}`} />{serverAvailable ? "Desktop gateway connected" : "Desktop gateway offline"}</div></SidebarFooter>
     </Sidebar>
 
-    <SidebarInset className="min-w-0 bg-[#0d1117] text-slate-100">
+    <SidebarInset className="h-svh min-h-0 min-w-0 overflow-hidden bg-[#0d1117] text-slate-100">
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeSession?.title ?? "New chat"}</span></div></div><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setReviewOpen(true)} className={`border-white/10 bg-white/4 ${blockingFindingIds.length ? "text-red-200" : "text-slate-300"}`}><ShieldAlert className="size-3.5" /><span className="hidden sm:inline">Review{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</span></Button><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Checkpoints</span></Button><Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${activeSession?.model ?? "qwen3-coder:30b"} · ${activeSession?.provider ?? "ollama"}` : "Runtime not connected"}</div></div></header>
 
       <section className="flex min-h-0 flex-1 flex-col">
