@@ -194,8 +194,7 @@ async function pipeExecution(taskId: string, session: ChatSession, response: Ser
       const toolText = describeToolEvent(event);
       if (toolText && event.type !== "tool.started") appendMessage({ sessionId: session.id, taskId, role: event.type === "tool.failed" ? "system" : "tool", kind: event.type === "tool.failed" ? "warning" : "tool", text: toolText, metadata: event });
       if (event.type === "implementation.summary") {
-        const diff = event.diff as { stdout?: string } | undefined;
-        appendMessage({ sessionId: session.id, taskId, role: "system", kind: "diff", text: diff?.stdout?.trim() || "No diff produced.", metadata: event });
+        appendMessage({ sessionId: session.id, taskId, role: "system", kind: "status", text: "Implementation changes are ready in the Changes panel.", metadata: event });
       }
       if (event.type === "review.completed") {
         const review = event.review as { summary?: string } | undefined;
