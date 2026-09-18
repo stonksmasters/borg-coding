@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createWebsiteProject, websiteInfo, websiteSlug } from "../packages/web-builder/src/project-bootstrap.ts";
+import { websiteGenerationContext } from "../packages/web-builder/src/generation-context.ts";
 
 test("website bootstrap creates a committed React project and can be restored from its path", async () => {
   const root = mkdtempSync(join(tmpdir(), "borg-websites-"));
@@ -61,4 +62,17 @@ test("failed installation removes the newly created project so creation can be r
     await assert.rejects(() => createWebsiteProject("Retry Site", root, async () => { throw new Error("offline"); }), /offline/);
     assert.equal(existsSync(join(root, "retry-site")), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("website generation contract separates first generation from follow-up edits", () => {
+  const project = { name: "Acme", template: "waitlist" as const, originalBrief: "Launch an AI note-taking waitlist." };
+  const initial = websiteGenerationContext(project, "initial_generation");
+  const followUp = websiteGenerationContext(project, "iterative_edit");
+  assert.match(initial, /first AI generation/i);
+  assert.match(initial, /complete, cohesive first version/i);
+  assert.match(initial, /SQLite/i);
+  assert.match(followUp, /follow-up edit/i);
+  assert.match(followUp, /smallest coherent change/i);
+  assert.match(followUp, /Original website brief: Launch an AI note-taking waitlist/);
 });
