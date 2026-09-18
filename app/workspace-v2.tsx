@@ -430,14 +430,25 @@ export function BorgWorkspaceV2() {
   }
 
   async function createWebsite() {
+    const name = websiteName.trim();
+    const brief = websiteBrief.trim();
+    if (!name || !brief) return;
     setWebsiteBusy(true);
     setWebsiteError("");
     try {
-      const response = await fetch(`${API}/api/websites`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: websiteName }) });
+      const response = await fetch(`${API}/api/websites`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, brief, template: websiteTemplate }),
+      });
       const result = await response.json() as { session?: ChatSession; error?: string };
       if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to create website.");
       setWebsiteOpen(false);
       setWebsiteName("");
+      setWebsiteBrief("");
+      setWebsiteTemplate("saas-landing");
+      setRequest(brief);
+      setRightPanel("preview");
       await refreshSessions(result.session.id);
     } catch (error) { setWebsiteError(error instanceof Error ? error.message : "Unable to create website."); }
     finally { setWebsiteBusy(false); }
