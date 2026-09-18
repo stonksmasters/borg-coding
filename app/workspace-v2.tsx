@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, ExternalLink, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
 import { isUnsupportedLanguageTool, stageProgress, toolProgress } from "./agent-progress";
+import { executionIsRunning, taskIsRunning, taskNeedsAttention, taskProgress } from "./task-activity";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -117,7 +118,10 @@ export function BorgWorkspaceV2() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const liveAssistantId = useRef<string | null>(null);
   const activeMode = activeSession?.activeMode ?? "plan";
-  const actionLabel = useMemo(() => streaming ? "Stop" : "Send", [streaming]);
+  const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
+  const canStop = streaming && !executionIsRunning(taskState);
+  const actionLabel = executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
+  const currentProgress = progress ?? taskProgress(taskState);
   const activityMessages = useMemo(() => messages.filter((message) => message.role === "tool" || (message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.role !== "tool" && !(message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const activityItems = useMemo(() => [...activityMessages.map((message) => message.text), ...liveActivity].slice(-60), [activityMessages, liveActivity]);
@@ -209,6 +213,19 @@ export function BorgWorkspaceV2() {
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming]);
+
+  useEffect(() => {
+    if (!activeSession || streaming || !taskIsRunning(taskState)) return;
+    const sessionId = activeSession.id;
+    let polling = false;
+    const timer = window.setInterval(() => {
+      if (polling) return;
+      polling = true;
+      void loadSession(sessionId).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to refresh task status."))
+        .finally(() => { polling = false; });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [activeSession, streaming, taskState, loadSession]);
 
   const refreshCheckpoints = useCallback(async (taskId: string) => {
     const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/checkpoints`);
@@ -356,7 +373,7 @@ export function BorgWorkspaceV2() {
 
   async function runTask(prompt: string) {
     const clean = prompt.trim();
-    if (!activeSession || !clean || streaming) return;
+    if (!activeSession || !clean || taskBusy) return;
     const controller = new AbortController();
     abortRef.current = controller;
     liveAssistantId.current = null;
@@ -394,7 +411,7 @@ export function BorgWorkspaceV2() {
     setApprovalBusy(true);
     try {
       const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/approval`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision }) });
-      const result = await response.json() as { session?: ChatSession; error?: string };
+      const result = await response.json() as { session?: ChatSession; task?: { state: string }; error?: string };
       if (!response.ok) throw new Error(result.error ?? "Unable to record mode decision.");
       if (result.session) {
         setActiveSession(result.session);
@@ -403,6 +420,7 @@ export function BorgWorkspaceV2() {
       if (decision === "approve") {
         setApproval(null);
         setEscalation(null);
+        setTaskState(result.task?.state ?? "IMPLEMENTING");
         setStreaming(true);
         setProgress(stageProgress("Implementation"));
         await activatePreview(activeSession.id);
@@ -673,7 +691,7 @@ export function BorgWorkspaceV2() {
           {sessionError && <div className="mb-5 rounded-lg border border-red-400/20 bg-red-400/8 px-4 py-3 text-sm text-red-200">{sessionError}</div>}
           <div className="space-y-4">
             {visibleMessages.length ? visibleMessages.map((message) => <AssistantMessage key={message.id} message={message} />) : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">New persistent chat</p><p className="mt-1 text-sm text-slate-500">This conversation will survive restarts and stay associated with the selected mode and workspace.</p></div></div>}
-            {streaming && <div role="status" aria-live="polite" className="rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4"><div className="flex items-start gap-3"><span className="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-[#a7ff4f]" /><div><p className="text-sm font-medium text-[#d9ffb5]">{progress?.title ?? "BORG is working"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{progress?.detail ?? "The proposed plan will appear here when it is ready."}</p></div></div></div>}
+            {(streaming || taskIsRunning(taskState)) && <div role="status" aria-live="polite" className="rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4"><div className="flex items-start gap-3"><span className="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-[#a7ff4f]" /><div><p className="text-sm font-medium text-[#d9ffb5]">{currentProgress?.title ?? "BORG is working"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{currentProgress?.detail ?? "BORG is continuing the current task."}</p></div></div></div>}
             {activityItems.length > 0 && <details className="rounded-lg border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer select-none font-medium text-slate-400">Technical activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
           </div>
         </div></div>{(previewUrl || previewError) && <div className="flex min-h-[320px] flex-1 flex-col border-t border-white/8 lg:min-h-0 lg:border-l lg:border-t-0"><div className="flex h-11 shrink-0 items-center justify-between border-b border-white/8 bg-[#0a0d12] px-3"><span className="text-xs font-medium text-slate-300">Live preview</span><div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} disabled={!previewUrl} className="text-slate-400"><RotateCcw className="size-3.5" />Refresh</Button>{previewUrl && <a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-white"><ExternalLink className="size-3.5" />Open</a>}</div></div>{previewUrl ? <iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="min-h-0 w-full flex-1 border-0 bg-white" /> : <div className="p-4 text-sm text-red-200">{previewError}</div>}</div>}</div>
@@ -681,7 +699,10 @@ export function BorgWorkspaceV2() {
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
           {approval && escalation && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3"><div className="max-w-xl"><p className="text-sm font-medium text-amber-100">PLAN reached a mutation boundary</p><p className="mt-1 text-xs leading-5 text-slate-400">PLAN remains read-only. Switch this session to EDIT to create the isolated worktree and execute the proposed plan, or stay in PLAN with no mutations.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />Stay in Plan</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Check className="size-4" />{approvalBusy ? "Switching…" : "Switch to Edit & Continue"}</Button></div></div>}
           {deliveryReady && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Verified changes ready</p><p className="mt-1 text-xs text-slate-400">Choose a delivery action for the isolated worktree.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => void deliver("export")} className="border-white/10 bg-transparent text-slate-300">Export patch</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Commit changes</Button></div></div>}
-          <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); const value = request; setRequest(""); void runTask(value); }}><Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={streaming || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={`Ask BORG in ${activeMode.toUpperCase()} mode…`} /><Button type={streaming ? "button" : "submit"} onClick={() => { if (streaming) { abortRef.current?.abort(); setStreaming(false); setTaskState("CANCELLED"); } }} className={`h-11 gap-2 px-5 ${streaming ? "bg-white/8 text-slate-200" : "bg-[#a7ff4f] text-[#071007]"}`}>{streaming ? <CircleStop className="size-4" /> : <Play className="size-4" />}{actionLabel}</Button></form>
+          <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); if (taskBusy) return; const value = request; setRequest(""); void runTask(value); }}>
+            <Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={taskBusy || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={`Ask BORG in ${activeMode.toUpperCase()} mode…`} />
+            <Button type={canStop ? "button" : "submit"} disabled={taskBusy && !canStop} onClick={() => { if (canStop) { abortRef.current?.abort(); setStreaming(false); setTaskState("CANCELLED"); } }} className={`h-11 gap-2 px-5 ${taskBusy ? "bg-white/8 text-slate-200" : "bg-[#a7ff4f] text-[#071007]"}`}>{canStop ? <CircleStop className="size-4" /> : <Play className="size-4" />}{actionLabel}</Button>
+          </form>
         </div>
       </section>
     </SidebarInset>
