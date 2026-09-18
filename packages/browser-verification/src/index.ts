@@ -297,8 +297,10 @@ export class BrowserVerification {
   }
 
   async closeForVerification(taskId: string) {
+    const hadEvidence = this.reports.has(taskId);
+    const hasServer = Boolean(this.processRuntime.findRunning(taskId, "dev_server"));
     await this.close(taskId);
-    this.updateReport(taskId);
+    if (hadEvidence || hasServer) this.updateReport(taskId);
     return this.latest(taskId);
   }
 
