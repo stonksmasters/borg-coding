@@ -1224,6 +1224,12 @@ const server = createServer((request, response) => {
       let sliceDirective = "";
       if (projectPlanning && websiteProject) {
         sliceDirective = projectPlanningPrompt(websiteProject.originalBrief || requestText);
+        if (projectPlan) {
+          const planningDocs = readProjectDocs(websiteProject.path)
+            .filter((doc) => ["brief.md", "plan.md", "decisions.md", "site-map.md"].some((name) => doc.path.endsWith(`/${name}`)))
+            .map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 14_000);
+          repositoryContext += `\n\nExisting proposed plan to revise explicitly:\n${planningDocs}`;
+        }
       } else if (slicedApplication && websiteProject && projectPlan && previousSlice) {
         const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
         const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
