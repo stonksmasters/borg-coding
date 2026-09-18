@@ -930,16 +930,41 @@ export function BorgWorkspaceV2() {
 
     <Sidebar className="border-r border-white/8 bg-[#0a0d12]" collapsible="offcanvas">
       <SidebarHeader className="border-b border-white/8 px-4 py-4">
-        <div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-lg bg-[#a7ff4f] text-[#071007]"><Bot className="size-5" /></div><div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG CODE</p><p className="text-xs text-slate-500">PERSISTENT WORKSTATION</p></div></div>
-        <Button onClick={() => void createSession()} className="mt-4 w-full justify-start gap-2 bg-white/7 text-slate-200 hover:bg-white/10"><Plus className="size-4" />New Chat</Button>
-        <Button onClick={() => setWebsiteOpen(true)} className="mt-2 w-full justify-start gap-2 bg-[#a7ff4f] text-[#071007] hover:bg-[#b9ff74]"><Globe2 className="size-4" />New Website</Button>
+        <div className="flex items-center gap-3">
+          <div className="grid size-9 place-items-center rounded-lg bg-[#a7ff4f] text-[#071007]"><Bot className="size-5" /></div>
+          <div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG</p><p className="text-xs text-slate-500">LOCAL WEBSITE BUILDER</p></div>
+        </div>
+        <Button onClick={() => setWebsiteOpen(true)} className="mt-4 w-full justify-start gap-2 bg-[#a7ff4f] text-[#071007] hover:bg-[#b9ff74]"><Plus className="size-4" />New Website</Button>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup><SidebarGroupLabel className="text-slate-500">Chats</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>{sessions.map((session) => <SidebarMenuItem key={session.id}><div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeSession?.id === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><MessageSquare /><span className="truncate">{session.title}</span><span className="ml-auto text-[10px] uppercase text-slate-600">{session.activeMode}</span></SidebarMenuButton><button type="button" onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div></SidebarMenuItem>)}</SidebarMenu></SidebarGroupContent></SidebarGroup>
-        <SidebarGroup><SidebarGroupLabel className="text-slate-500">Workspace</SidebarGroupLabel><SidebarGroupContent><SidebarMenu><SidebarMenuItem><SidebarMenuButton onClick={() => setAccessOpen(true)} isActive={Boolean(accessConfig?.repositoryPath)} className="text-slate-300 hover:bg-white/7 hover:text-white"><FolderGit2 /><span>{accessConfig?.repositoryName ?? "Choose repository"}</span></SidebarMenuButton></SidebarMenuItem>{accessConfig?.documentNames.map((name) => <SidebarMenuItem key={name}><SidebarMenuButton onClick={() => setAccessOpen(true)} className="text-slate-400"><FileText /><span>{name}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu><Button variant="ghost" size="sm" onClick={() => setAccessOpen(true)} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><Settings2 className="size-3.5" />Manage access</Button></SidebarGroupContent></SidebarGroup>
-        <SidebarGroup><SidebarGroupLabel className="text-slate-500">Tools</SidebarGroupLabel><SidebarGroupContent><SidebarMenu><SidebarMenuItem><SidebarMenuButton onClick={() => setToolsOpen(true)} isActive={toolConfig?.configurationState === "available"} className="text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span>Internet</span><span className="ml-auto text-xs text-slate-500">{statusLabel(toolConfig)}</span></SidebarMenuButton></SidebarMenuItem></SidebarMenu><Button variant="ghost" size="sm" onClick={() => setToolsOpen(true)} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><Wrench className="size-3.5" />Manage tools</Button></SidebarGroupContent></SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-slate-500">My Websites</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {websiteSessions.map((session) => <SidebarMenuItem key={session.id}><div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeSession?.id === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div></SidebarMenuItem>)}
+            </SidebarMenu>
+            {!websiteSessions.length && <button type="button" onClick={() => setWebsiteOpen(true)} className="w-full rounded-lg border border-dashed border-white/10 px-3 py-4 text-left text-xs leading-5 text-slate-500 hover:border-white/20 hover:text-slate-300">Create your first website to start building with BORG.</button>}
+            {activeTaskId && <Button variant="ghost" size="sm" onClick={() => setRightPanel("changes")} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><History className="size-3.5" />Recent changes{changes.files.length ? ` (${changes.files.length})` : ""}</Button>}
+          </SidebarGroupContent>
+        </SidebarGroup>
+        {legacySessions.length > 0 && <SidebarGroup>
+          <details className="px-2">
+            <summary className="cursor-pointer select-none px-2 py-2 text-xs font-medium text-slate-600">Developer sessions</summary>
+            <SidebarMenu>{legacySessions.map((session) => <SidebarMenuItem key={session.id}><SidebarMenuButton isActive={activeSession?.id === session.id} onClick={() => void loadSession(session.id)} className="text-slate-400 hover:bg-white/7 hover:text-white"><MessageSquare /><span className="truncate">{session.title}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu>
+            <Button variant="ghost" size="sm" onClick={() => void createSession()} className="mt-1 w-full justify-start gap-2 text-xs text-slate-600"><Plus className="size-3.5" />New developer chat</Button>
+          </details>
+        </SidebarGroup>}
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-slate-500">Settings</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem><SidebarMenuButton onClick={() => setToolsOpen(true)} isActive={toolConfig?.configurationState === "available"} className="text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span>Internet & model tools</span><span className="ml-auto text-[10px] text-slate-600">{statusLabel(toolConfig)}</span></SidebarMenuButton></SidebarMenuItem>
+              <SidebarMenuItem><SidebarMenuButton onClick={() => setAccessOpen(true)} className="text-slate-400 hover:bg-white/7 hover:text-white"><FolderGit2 /><span>Advanced repository access</span></SidebarMenuButton></SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="border-t border-white/8 p-4"><div className="flex items-center gap-2 text-xs text-slate-400"><span className={`size-2 rounded-full ${serverAvailable ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : "bg-slate-600"}`} />{serverAvailable ? "Desktop gateway connected" : "Desktop gateway offline"}</div></SidebarFooter>
+      <SidebarFooter className="border-t border-white/8 p-4"><div className="flex items-center gap-2 text-xs text-slate-400"><span className={`size-2 rounded-full ${serverAvailable ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : "bg-slate-600"}`} />{serverAvailable ? "BORG ready" : "BORG offline"}</div></SidebarFooter>
     </Sidebar>
 
     <SidebarInset className="h-svh min-h-0 min-w-0 overflow-hidden bg-[#0d1117] text-slate-100">
