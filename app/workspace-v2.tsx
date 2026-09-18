@@ -6,6 +6,7 @@ import { AssistantMessage, type RenderableMessage } from "@/components/chat/assi
 import { ActivityFeed, type AgentActivity } from "@/components/agent/activity-feed";
 import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel";
 import { PlanPanel } from "@/components/workspace/plan-panel";
+import { TerminalPanel, type TaskProcess, type TaskProcessEvent } from "@/components/workspace/terminal-panel";
 import { isUnsupportedLanguageTool, stageProgress, toolProgress } from "./agent-progress";
 import { executionIsRunning, taskIsRunning, taskNeedsAttention, taskProgress } from "./task-activity";
 import { previewChangeFingerprint, shouldRefreshPreview } from "./preview-refresh";
@@ -104,7 +105,9 @@ export function BorgWorkspaceV2() {
   const [liveActivity, setLiveActivity] = useState<string[]>([]);
   const [activities, setActivities] = useState<AgentActivity[]>([]);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
-  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes">("preview");
+  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "terminal">("preview");
+  const [processes, setProcesses] = useState<TaskProcess[]>([]);
+  const [processEvents, setProcessEvents] = useState<TaskProcessEvent[]>([]);
   const [websiteOpen, setWebsiteOpen] = useState(false);
   const [websiteName, setWebsiteName] = useState("");
   const [websiteBusy, setWebsiteBusy] = useState(false);
@@ -140,6 +143,8 @@ export function BorgWorkspaceV2() {
     const message = [...messages].reverse().find((item) => item.role === "assistant" && item.kind === "plan");
     return message?.text?.trim() || escalation?.planText?.trim() || null;
   }, [escalation, messages]);
+  const runningProcesses = useMemo(() => processes.filter((process) => process.status === "starting" || process.status === "running"), [processes]);
+  const previewProcess = useMemo(() => processes.find((process) => process.kind === "dev_server" && (process.status === "starting" || process.status === "running")) ?? processes.findLast((process) => process.kind === "dev_server") ?? null, [processes]);
 
   const activatePreview = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST" });
@@ -184,6 +189,14 @@ export function BorgWorkspaceV2() {
     return refreshPreview;
   }, []);
 
+  const refreshProcesses = useCallback(async (taskId: string) => {
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/processes`);
+    if (!response.ok) return;
+    const result = await response.json() as { processes?: TaskProcess[]; events?: TaskProcessEvent[] };
+    setProcesses(result.processes ?? []);
+    setProcessEvents(result.events ?? []);
+  }, []);
+
   const loadSession = useCallback(async (sessionId: string, options?: { restorePreview?: boolean; resetWorkspace?: boolean }) => {
     const restorePreview = options?.restorePreview ?? true;
     const resetWorkspace = options?.resetWorkspace ?? true;
@@ -213,6 +226,8 @@ export function BorgWorkspaceV2() {
     if (resetWorkspace) {
       setActivities([]);
       setChanges(EMPTY_CHANGE_SET);
+      setProcesses([]);
+      setProcessEvents([]);
       changeFingerprintRef.current = null;
     }
     setActiveTaskId(result.latestTaskId);
@@ -224,10 +239,14 @@ export function BorgWorkspaceV2() {
       setPreviewUrl(null);
       setPreviewError("");
     }
-    if (result.latestTaskId) await Promise.allSettled([refreshTaskActivity(result.latestTaskId), refreshChanges(result.latestTaskId)]);
+    if (result.latestTaskId) await Promise.allSettled([
+      refreshTaskActivity(result.latestTaskId),
+      refreshChanges(result.latestTaskId),
+      refreshProcesses(result.latestTaskId),
+    ]);
     if (restorePreview) await activatePreview(sessionId);
     return result;
-  }, [activatePreview, refreshChanges, refreshTaskActivity]);
+  }, [activatePreview, refreshChanges, refreshProcesses, refreshTaskActivity]);
 
   const refreshSessions = useCallback(async (preferredId?: string) => {
     const response = await fetch(`${API}/api/sessions`);
@@ -270,6 +289,27 @@ export function BorgWorkspaceV2() {
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming]);
+
+  useEffect(() => {
+    if (!activeTaskId) {
+      setProcesses([]);
+      setProcessEvents([]);
+      return;
+    }
+    let cancelled = false;
+    let polling = false;
+    const poll = () => {
+      if (polling || cancelled) return;
+      polling = true;
+      void refreshProcesses(activeTaskId)
+        .catch(() => undefined)
+        .finally(() => { polling = false; });
+    };
+    poll();
+    const interval = taskIsRunning(taskState) || rightPanel === "terminal" ? 750 : 2500;
+    const timer = window.setInterval(poll, interval);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeTaskId, refreshProcesses, rightPanel, taskState]);
 
   useEffect(() => {
     if (!activeSession || streaming || !taskIsRunning(taskState)) return;
@@ -367,6 +407,8 @@ export function BorgWorkspaceV2() {
       setTaskState(event.task.state);
       setActivities([]);
       setChanges(EMPTY_CHANGE_SET);
+      setProcesses([]);
+      setProcessEvents([]);
       changeFingerprintRef.current = null;
     } else if (event.type === "task.state" && event.state) {
       setTaskState(event.state);
@@ -390,6 +432,7 @@ export function BorgWorkspaceV2() {
       if (next) setProgress(next);
     } else if (event.type === "tool.started") {
       const tool = event.tool ?? "tool";
+      if (event.taskId && ["worktree_command", "verification_run", "browser_server_start", "browser_server_stop"].includes(tool)) void refreshProcesses(event.taskId);
       const title = toolProgress(tool, event.input);
       const path = typeof event.input?.path === "string" ? event.input.path : "";
       setProgress({ title, detail: path ? `Working in ${path}.` : "BORG is continuing this part of the task." });
@@ -397,6 +440,9 @@ export function BorgWorkspaceV2() {
     } else if (event.type === "tool.completed") {
       if (event.taskId && ["worktree_patch", "worktree_command", "git_diff", "git_status"].includes(event.tool ?? "")) {
         void refreshChanges(event.taskId, { refreshPreviewOnChange: true });
+      }
+      if (event.taskId && ["worktree_command", "verification_run", "browser_server_start", "browser_server_stop"].includes(event.tool ?? "")) {
+        void refreshProcesses(event.taskId);
       }
     } else if (event.type === "tool.failed") {
       const detail = `${event.tool ?? "Tool"} failed: ${event.message ?? "Unknown error"}`;
@@ -519,6 +565,17 @@ export function BorgWorkspaceV2() {
       setStreaming(false);
       setApprovalBusy(false);
     }
+  }
+
+  async function stopTaskProcess(processId: string) {
+    if (!activeTaskId) return;
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/processes/${encodeURIComponent(processId)}/stop`, { method: "POST" });
+    const result = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) {
+      setMessages((current) => [...current, transientMessage("system", result.error ?? "Unable to stop process.", "warning")]);
+      return;
+    }
+    await refreshProcesses(activeTaskId);
   }
 
   async function deliver(method: "export" | "commit") {
@@ -781,17 +838,23 @@ export function BorgWorkspaceV2() {
               <button type="button" disabled={!previewUrl && !previewError} onClick={() => setRightPanel("preview")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "preview" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
               <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "plan" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
               <button type="button" onClick={() => setRightPanel("changes")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "changes" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Changes{changes.files.length ? ` (${changes.files.length})` : ""}</button>
+              <button type="button" onClick={() => setRightPanel("terminal")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "terminal" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
             </div>
-            {rightPanel === "preview" && previewUrl && <div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} className="text-slate-400"><RotateCcw className="size-3.5" />Refresh</Button><a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-white"><ExternalLink className="size-3.5" />Open</a></div>}
+            {rightPanel === "preview" && <div className="flex items-center gap-2">
+              {previewProcess && <span className={`hidden items-center gap-1.5 text-[10px] sm:inline-flex ${previewProcess.status === "running" ? "text-[#a7ff4f]" : previewProcess.status === "failed" ? "text-red-300" : "text-slate-500"}`}><span className={`size-1.5 rounded-full ${previewProcess.status === "running" ? "bg-[#a7ff4f]" : previewProcess.status === "starting" ? "animate-pulse bg-sky-300" : previewProcess.status === "failed" ? "bg-red-300" : "bg-slate-600"}`} />{previewProcess.status === "running" ? "Running" : previewProcess.status.replaceAll("_", " ")}</span>}
+              {previewUrl && <><Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} className="text-slate-400"><RotateCcw className="size-3.5" />Refresh</Button><a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-white"><ExternalLink className="size-3.5" />Open</a></>}
+            </div>}
           </div>
           <div className="flex min-h-0 flex-1 overflow-hidden">
             {rightPanel === "plan"
               ? <PlanPanel plan={latestPlan} />
               : rightPanel === "changes"
                 ? <ChangesPanel changes={changes} />
-                : previewUrl
-                  ? <iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full min-h-0 w-full flex-1 border-0 bg-white" />
-                  : <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 text-sm text-red-200">{previewError || "Preview is not available for this task yet."}</div>}
+                : rightPanel === "terminal"
+                  ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
+                  : previewUrl
+                    ? <iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full min-h-0 w-full flex-1 border-0 bg-white" />
+                    : <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 text-sm text-red-200">{previewError || "Preview is not available for this task yet."}</div>}
           </div>
         </div>}</div>
 
