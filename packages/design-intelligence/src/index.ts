@@ -113,7 +113,11 @@ export function requiresDesignDirection(input: { request: string; disciplines: r
 }
 
 export class DesignDirectorService {
-  constructor(private readonly ollamaUrl: string) {}
+  private readonly ollamaUrl: string;
+
+  constructor(ollamaUrl: string) {
+    this.ollamaUrl = ollamaUrl;
+  }
 
   async createBrief(input: { taskId: string; request: string; model: string; repositoryContext: string; isGreenfield: boolean }): Promise<DesignBrief> {
     const prompt = [
@@ -162,7 +166,11 @@ function selectScreenshots(evidence: BrowserEvidenceReport, maximum: number): Sc
 }
 
 export class VisualDirectorService {
-  constructor(private readonly ollamaUrl: string) {}
+  private readonly ollamaUrl: string;
+
+  constructor(ollamaUrl: string) {
+    this.ollamaUrl = ollamaUrl;
+  }
 
   async review(input: { taskId: string; request: string; worktreePath: string; browserEvidence: BrowserEvidenceReport; brief: DesignBrief; policy: VisionPolicy }): Promise<DesignReviewResult> {
     const policy = input.policy;
