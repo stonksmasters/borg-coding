@@ -278,6 +278,7 @@ export function BorgWorkspaceV2() {
       task: { id: string; state: string } | null;
       approval: Approval | null;
       escalation: Escalation | null;
+      projectPlanApproval?: boolean;
       runtimeAvailable: boolean;
     };
     const pendingApproval = result.approval?.status === "REQUESTED" ? result.approval : null;
@@ -307,6 +308,7 @@ export function BorgWorkspaceV2() {
     setActiveTaskId(result.latestTaskId);
     setApproval(pendingApproval);
     setEscalation(pendingEscalation);
+    setPlanApproval(Boolean(pendingApproval && result.projectPlanApproval));
     setDeliveryReady(result.task?.state === "DELIVERY_READY");
     setTaskState(result.task?.state ?? (result.latestTaskId && !result.runtimeAvailable ? "RUNTIME UNAVAILABLE" : "READY"));
     if (restorePreview) {
