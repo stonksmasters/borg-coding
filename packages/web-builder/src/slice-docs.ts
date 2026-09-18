@@ -38,9 +38,30 @@ export type SliceState = {
   backendRequired: boolean;
 };
 export type ProjectDoc = { path: string; title: string; content: string };
+export type FrontendWorkflowStage =
+  | "planning"
+  | "plan_approved"
+  | "slice_planning"
+  | "slice_implementing"
+  | "slice_verifying"
+  | "slice_reviewing"
+  | "awaiting_feedback"
+  | "frontend_complete"
+  | "blocked";
+export type FrontendWorkflowState = {
+  version: 1;
+  stage: FrontendWorkflowStage;
+  currentSlice: number;
+  totalSlices: number;
+  taskId: string | null;
+  updatedAt: string;
+  detail: string;
+};
 
 const folder = ".localcode/build";
 const stateFile = "state.md";
+const workflowFile = "workflow.md";
+const designBriefFile = "design-brief.md";
 const legacyStateFile = "state.json";
 const planMarker = /<borg-project-plan>([\s\S]*?)<\/borg-project-plan>/i;
 
@@ -51,6 +72,7 @@ function docsDirectory(root: string) {
   return dir;
 }
 function statePath(root: string) { return join(docsDirectory(root), stateFile); }
+function workflowPath(root: string) { return join(docsDirectory(root), workflowFile); }
 function safeRead(path: string) { return existsSync(path) && lstatSync(path).isFile() ? readFileSync(path, "utf8") : ""; }
 function writeFileSync(path: string, content: string) {
   if (existsSync(path) && !lstatSync(path).isFile()) throw new Error("Build doc path is not a normal file.");
@@ -68,6 +90,47 @@ function writeState(root: string, state: SliceState) {
   const dir = docsDirectory(root);
   mkdirSync(dir, { recursive: true });
   writeFileSync(statePath(root), `# BORG build state\n\n\`\`\`json\n${JSON.stringify(state, null, 2)}\n\`\`\`\n`);
+}
+
+export function setFrontendWorkflowStage(root: string, stage: FrontendWorkflowStage, input: { currentSlice?: number; totalSlices?: number; taskId?: string | null; detail?: string } = {}): FrontendWorkflowState {
+  const previous = readFrontendWorkflowState(root);
+  const state: FrontendWorkflowState = {
+    version: 1,
+    stage,
+    currentSlice: Math.max(0, input.currentSlice ?? previous?.currentSlice ?? 0),
+    totalSlices: Math.max(0, input.totalSlices ?? previous?.totalSlices ?? 0),
+    taskId: input.taskId === undefined ? previous?.taskId ?? null : input.taskId,
+    updatedAt: new Date().toISOString(),
+    detail: input.detail?.trim().slice(0, 2000) ?? previous?.detail ?? "",
+  };
+  const dir = docsDirectory(root);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(workflowPath(root), `# Frontend workflow\n\nStage: **${state.stage.replaceAll("_", " ")}**\n\n\`\`\`json\n${JSON.stringify(state, null, 2)}\n\`\`\`\n`);
+  return state;
+}
+
+export function readFrontendWorkflowState(root: string): FrontendWorkflowState | null {
+  try {
+    const match = safeRead(workflowPath(root)).match(/\`\`\`json\s*([\s\S]*?)\s*\`\`\`/i);
+    if (!match) return null;
+    const value = JSON.parse(match[1]) as FrontendWorkflowState;
+    return value.version === 1 && typeof value.stage === "string" ? value : null;
+  } catch { return null; }
+}
+
+export function persistDesignBrief(root: string, brief: Record<string, unknown>) {
+  const dir = docsDirectory(root);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, designBriefFile), `# Approved design brief\n\nThis brief is durable project-level frontend context and must be inherited by every frontend slice.\n\n\`\`\`json\n${JSON.stringify(brief, null, 2)}\n\`\`\`\n`);
+}
+
+export function readPersistedDesignBrief(root: string): Record<string, unknown> | null {
+  try {
+    const match = safeRead(join(docsDirectory(root), designBriefFile)).match(/\`\`\`json\s*([\s\S]*?)\s*\`\`\`/i);
+    if (!match) return null;
+    const value = JSON.parse(match[1]) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  } catch { return null; }
 }
 function planMarkdown(plan: ProjectPlan) {
   return `# Approved frontend phase plan\n\nStatus: **${plan.status.replaceAll("_", " ")}** · Revision ${plan.revision}\n\n## Site goal\n\n${plan.siteGoal}\n\n## Audience\n\n${plan.audience}\n\n## Visual direction\n\n${plan.visualDirection}\n\n## Pages\n\n${plan.pages.map((item) => `- ${item}`).join("\n") || "- Single page"}\n\n## Features\n\n${plan.features.map((item) => `- ${item}`).join("\n") || "- Content and navigation"}\n\n## Frontend slices\n\n${plan.slices.map((slice, index) => `${index + 1}. **${slice.title}** — ${slice.outcome}\n   - Scope: ${slice.scope.join("; ") || "As defined by the approved brief"}\n   - Acceptance: ${slice.acceptanceCriteria.join("; ") || "Working preview and relevant verification"}`).join("\n")}\n\n## Frontend completion gate\n\n${plan.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\n## Backend phase\n\n${plan.backendRequired ? "Required after frontend approval because the brief needs server features, stored data, accounts, or integrations." : "Not required by the approved brief. The site may be marked complete after the frontend completion gate passes."}\n\n<borg-project-plan>${JSON.stringify(plan)}</borg-project-plan>\n`;
@@ -201,6 +264,7 @@ export function persistProposedProjectPlan(root: string, brief: string, plan: Pr
   if (!existsSync(join(dir, "history.md"))) writeFileSync(join(dir, "history.md"), "# Completed session history\n");
   writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nPlanning task: ${taskId}\n\nThe frontend phase plan is proposed and waiting for user approval. No implementation is authorized yet.\n`);
   writeState(root, stateFromPlan(proposed, brief, "plan_pending", taskId));
+  setFrontendWorkflowStage(root, "planning", { currentSlice: 0, totalSlices: proposed.slices.length, taskId, detail: "Frontend phase plan is proposed and waiting for approval." });
   return proposed;
 }
 
@@ -215,6 +279,7 @@ export function approveProjectPlan(root: string, taskId: string) {
   writeFileSync(join(docsDirectory(root), "current-slice.md"), `# Current slice\n\nReady to start **${approved.slices[0].title}**.\n\nOutcome: ${approved.slices[0].outcome}\n`);
   writeFileSync(join(docsDirectory(root), "progress.md"), `# Progress\n\nPhase: **Frontend**\n\nPlan revision: ${approved.revision}\n\nStatus: approved; ready for slice 1 of ${approved.slices.length}\n`);
   writeFileSync(join(docsDirectory(root), "decisions.md"), `${safeRead(join(docsDirectory(root), "decisions.md"))}\n## ${new Date().toISOString()} — frontend plan approved\n\nApproved revision ${approved.revision} with ${approved.slices.length} slices.\n`);
+  setFrontendWorkflowStage(root, "plan_approved", { currentSlice: 0, totalSlices: approved.slices.length, taskId, detail: "Plan approved. The server owns the transition into slice 1." });
   return { plan: approved, state: next };
 }
 
@@ -252,6 +317,7 @@ export function prepareSlice(root: string, brief: string, action: SliceAction, f
   writeFileSync(join(dir, "plans", `${slice.id}-${taskId}.md`), planText);
   if (feedback.trim()) writeFileSync(join(dir, "decisions.md"), `${safeRead(join(dir, "decisions.md"))}\n## ${new Date().toISOString()} — ${action}\n\n${feedback.trim().slice(0, 4000)}\n`);
   writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nCurrent task: ${taskId}\n\nImplement only **${slice.title}**. ${slice.outcome}\n\nUse the approved phase plan as scope authority. Read only the files needed for this slice and the relevant decisions/handoff; do not restart repository discovery or create a new project plan.\n`);
+  setFrontendWorkflowStage(root, "slice_planning", { currentSlice: current, totalSlices: plan.slices.length, taskId, detail: `Preparing ${slice.title} as a bounded implementation mini-loop.` });
   return next;
 }
 
@@ -272,13 +338,19 @@ export function markSliceReady(root: string, taskId: string, summary: string): S
     const completedPlan: ProjectPlan = { ...plan, status: "frontend_complete" };
     writeFileSync(join(dir, "plan.md"), planMarkdown(completedPlan));
   }
+  setFrontendWorkflowStage(root, complete ? "frontend_complete" : "awaiting_feedback", {
+    currentSlice: state.current,
+    totalSlices: plan.slices.length,
+    taskId,
+    detail: complete ? "All approved frontend slices are complete." : `${slice.title} is verified, reviewed, and checkpoint-ready for feedback.`,
+  });
   return next;
 }
 
 export function readProjectDocs(root: string): ProjectDoc[] {
   let dir: string;
   try { dir = docsDirectory(root); } catch { return []; }
-  const names = ["README.md", "brief.md", "site-map.md", "plan.md", "current-slice.md", "current-plan.md", "decisions.md", "progress.md", "verification.md", "known-issues.md", "data-contract.md", "handoff.md", "history.md", stateFile];
+  const names = ["README.md", "brief.md", designBriefFile, "site-map.md", "plan.md", "current-slice.md", "current-plan.md", "decisions.md", "progress.md", "verification.md", "known-issues.md", "data-contract.md", "handoff.md", "history.md", stateFile, workflowFile];
   if (existsSync(join(dir, "plans")) && lstatSync(join(dir, "plans")).isDirectory()) names.push(...readdirSync(join(dir, "plans")).filter((name) => name.endsWith(".md")).sort().map((name) => `plans/${name}`));
   return names.flatMap((name) => {
     const path = join(dir, name);
