@@ -1020,19 +1020,35 @@ export function BorgWorkspaceV2() {
             {activityItems.length > 0 && <details className="rounded-lg border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer select-none font-medium text-slate-400">Technical activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
           </div>
         </div></div>{(activeTaskId || previewUrl || previewError || latestPlan || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden overscroll-contain border-t border-white/8 lg:min-h-0 lg:basis-[65%] lg:flex-none lg:border-l lg:border-t-0">
-          <div className="flex h-11 shrink-0 items-center justify-between border-b border-white/8 bg-[#0a0d12] px-3">
+          <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-1.5">
             <div className="flex items-center gap-1">
               <button type="button" disabled={!previewUrl && !previewError} onClick={() => setRightPanel("preview")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "preview" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
-              <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "plan" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
               <button type="button" onClick={() => setRightPanel("changes")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "changes" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Changes{changes.files.length ? ` (${changes.files.length})` : ""}</button>
-              <button type="button" disabled={!designBrief} onClick={() => setRightPanel("design")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "design" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Design{designReview?.status === "repair" ? " •" : ""}</button>
-              <button type="button" onClick={() => setRightPanel("terminal")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "terminal" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
+              <details className="relative">
+                <summary className="list-none cursor-pointer rounded px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-white/5 hover:text-slate-300">Advanced</summary>
+                <div className="absolute left-0 z-40 mt-2 w-40 rounded-lg border border-white/10 bg-[#11161e] p-1.5 shadow-2xl">
+                  <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Plan</button>
+                  <button type="button" disabled={!designBrief} onClick={() => setRightPanel("design")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Design review{designReview?.status === "repair" ? " •" : ""}</button>
+                  <button type="button" onClick={() => setRightPanel("terminal")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
+                </div>
+              </details>
             </div>
-            {rightPanel === "preview" && <div className="flex items-center gap-2">
-              {previewProcess && <span className={`hidden items-center gap-1.5 text-[10px] sm:inline-flex ${previewProcess.status === "running" ? "text-[#a7ff4f]" : previewProcess.status === "failed" ? "text-red-300" : "text-slate-500"}`}><span className={`size-1.5 rounded-full ${previewProcess.status === "running" ? "bg-[#a7ff4f]" : previewProcess.status === "starting" ? "animate-pulse bg-sky-300" : previewProcess.status === "failed" ? "bg-red-300" : "bg-slate-600"}`} />{previewProcess.status === "running" ? "Running" : previewProcess.status.replaceAll("_", " ")}</span>}
-              {previewUrl && <><Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} className="text-slate-400"><RotateCcw className="size-3.5" />Refresh</Button><a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-white"><ExternalLink className="size-3.5" />Open</a></>}
+            {rightPanel === "preview" && <div className="flex items-center gap-1">
+              {previewUrl && <>
+                <button type="button" aria-label="Desktop preview" onClick={() => setPreviewViewport("desktop")} className={`rounded p-1.5 ${previewViewport === "desktop" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Monitor className="size-3.5" /></button>
+                <button type="button" aria-label="Tablet preview" onClick={() => setPreviewViewport("tablet")} className={`rounded p-1.5 ${previewViewport === "tablet" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Tablet className="size-3.5" /></button>
+                <button type="button" aria-label="Mobile preview" onClick={() => setPreviewViewport("mobile")} className={`rounded p-1.5 ${previewViewport === "mobile" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Smartphone className="size-3.5" /></button>
+                <span className="mx-1 h-4 w-px bg-white/10" />
+                <Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} className="h-7 gap-1 px-2 text-xs text-slate-500"><RotateCcw className="size-3.5" /><span className="hidden sm:inline">Refresh</span></Button>
+                <a href={previewUrl} target="_blank" rel="noreferrer" aria-label="Open preview in a new window" className="inline-flex rounded p-1.5 text-slate-500 hover:bg-white/5 hover:text-white"><ExternalLink className="size-3.5" /></a>
+              </>}
             </div>}
           </div>
+          {rightPanel === "preview" && previewUrl && <div className="flex h-9 shrink-0 items-center gap-2 border-b border-white/8 bg-[#0c1016] px-3 text-[10px] text-slate-600">
+            <span className={`size-1.5 rounded-full ${previewProcess?.status === "failed" ? "bg-red-300" : "bg-[#a7ff4f]"}`} />
+            <span className="min-w-0 flex-1 truncate font-mono">{previewUrl}</span>
+            <span>{previewVersion > 0 ? "Preview updated" : previewProcess?.status === "starting" ? "Starting…" : "Live"}</span>
+          </div>}
           <div className="flex min-h-0 flex-1 overflow-hidden">
             {rightPanel === "plan"
               ? <PlanPanel plan={latestPlan} />
@@ -1043,8 +1059,8 @@ export function BorgWorkspaceV2() {
                   : rightPanel === "terminal"
                     ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
                     : previewUrl
-                    ? <iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full min-h-0 w-full flex-1 border-0 bg-white" />
-                    : <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 text-sm text-red-200">{previewError || "Preview is not available for this task yet."}</div>}
+                    ? <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#151a22] p-2 sm:p-3"><div className={`h-full min-h-[520px] overflow-hidden rounded-md border border-white/10 bg-white shadow-2xl transition-[width] duration-200 ${previewViewport === "mobile" ? "w-[390px] max-w-full" : previewViewport === "tablet" ? "w-[820px] max-w-full" : "w-full"}`}><iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full w-full border-0 bg-white" /></div></div>
+                    : <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto overscroll-contain p-6 text-center"><div><Monitor className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">{previewError || "The live preview will appear here as soon as the website is ready."}</p></div></div>}
           </div>
         </div>}</div>
 
