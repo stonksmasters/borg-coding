@@ -74,6 +74,37 @@ function compactTitle(request: string): string {
   return clean.length > 64 ? `${clean.slice(0, 61)}…` : clean;
 }
 
+function rootWorkflowSession(session: ChatSession): ChatSession {
+  if (!session.parentSessionId) return session;
+  return chats.findSession(session.parentSessionId) ?? session;
+}
+
+function migrateLegacyWorkflowSessions() {
+  const all = chats.listSessions();
+  const groups = new Map<string, ChatSession[]>();
+  for (const session of all) {
+    if (!session.repositoryPath) continue;
+    const key = session.repositoryPath.toLowerCase();
+    groups.set(key, [...(groups.get(key) ?? []), session]);
+  }
+  const internalTitle = / · (Slice 1|Next slice|Revision|Backend planning)$/;
+  for (const group of groups.values()) {
+    const unparented = group.filter((session) => !session.parentSessionId);
+    if (unparented.length < 2) continue;
+    const root = [...unparented].filter((session) => !internalTitle.test(session.title)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]
+      ?? [...unparented].sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    for (const session of unparented) {
+      if (session.id === root.id || !internalTitle.test(session.title)) continue;
+      chats.updateSession(session.id, {
+        parentSessionId: root.id,
+        workflowRole: session.title.endsWith(" · Backend planning") ? "backend" : "frontend_slice",
+      });
+    }
+  }
+}
+
+migrateLegacyWorkflowSessions();
+
 function describeToolEvent(event: Record<string, unknown>): string | null {
   const type = String(event.type ?? "");
   const tool = String(event.tool ?? "tool");
@@ -205,6 +236,16 @@ async function pipeExecution(taskId: string, session: ChatSession, emitToClient:
         const review = event.review as { summary?: string } | undefined;
         if (review?.summary) appendMessage({ sessionId: session.id, taskId, role: "system", kind: "evidence", text: review.summary, metadata: event });
       }
+      if (event.type === "runtime.failed" || event.type === "stream.failed" || event.type === "stream.blocked" || event.type === "design.review.blocked") {
+        appendMessage({
+          sessionId: session.id,
+          taskId,
+          role: "system",
+          kind: "warning",
+          text: String(event.message ?? "The frontend workflow needs attention."),
+          metadata: event,
+        });
+      }
       emitToClient(event);
     }
     if (done) break;
@@ -261,10 +302,11 @@ function sliceLaunchPrompt(action: "initial" | "advance" | "revise" | "backend",
 }
 
 async function launchFrontendWorkflowSession(parent: ChatSession, action: "initial" | "advance" | "revise" | "backend", feedback = "") {
-  if (!parent.repositoryPath) throw new Error("The website session is not attached to a repository.");
+  const root = rootWorkflowSession(parent);
+  if (!root.repositoryPath) throw new Error("The website session is not attached to a repository.");
   const currentAccess = access.load();
-  if (currentAccess.repositoryPath !== parent.repositoryPath) access.save({ repositoryPath: parent.repositoryPath, documents: currentAccess.documents });
-  const key = `${parent.repositoryPath.toLowerCase()}::${action}`;
+  if (currentAccess.repositoryPath !== root.repositoryPath) access.save({ repositoryPath: root.repositoryPath, documents: currentAccess.documents });
+  const key = `${root.repositoryPath.toLowerCase()}::${action}`;
   const active = frontendLaunches.get(key);
   if (active) return active.session;
 
@@ -272,12 +314,14 @@ async function launchFrontendWorkflowSession(parent: ChatSession, action: "initi
   const activeMode: PermissionMode = action === "backend" ? "plan" : "edit";
   const session = createChatSession({
     id: randomUUID(),
-    title: `${parent.title} · ${label}`,
+    title: `${root.title} · ${label}`,
     activeMode,
-    repositoryPath: parent.repositoryPath,
-    workspaceId: parent.workspaceId,
-    provider: parent.provider,
-    model: parent.model,
+    repositoryPath: root.repositoryPath,
+    workspaceId: root.workspaceId,
+    provider: root.provider,
+    model: root.model,
+    parentSessionId: root.id,
+    workflowRole: action === "backend" ? "backend" : "frontend_slice",
   });
   chats.saveSession(session);
 
@@ -434,7 +478,7 @@ const server = createServer((request, response) => {
       if (!name) return send(response, 400, { error: "Website name is required." });
       const project = await createWebsiteProject(name, undefined, undefined, { template, originalBrief: brief });
       const savedAccess = access.save({ repositoryPath: project.path, documents: [] });
-      const session = createChatSession({ id: randomUUID(), title: project.name, activeMode: "plan", repositoryPath: savedAccess.repositoryPath, workspaceId: project.slug, provider: "ollama", model: process.env.BORG_MODEL ?? "qwen3-coder:30b" });
+      const session = createChatSession({ id: randomUUID(), title: project.name, activeMode: "plan", repositoryPath: savedAccess.repositoryPath, workspaceId: project.slug, provider: "ollama", model: process.env.BORG_MODEL ?? "qwen3-coder:30b", parentSessionId: null, workflowRole: "primary" });
       chats.saveSession(session);
       const preview = await previews.ensure(project.path);
       return send(response, 201, { session, project, preview, access: access.describe(savedAccess) });
@@ -469,7 +513,7 @@ const server = createServer((request, response) => {
   }
   if (request.method === "POST" && request.url === "/api/sessions") {
     void readJson(request).then((input) => {
-      const repositoryPath = access.load().repositoryPath;
+      const repositoryPath = input.repositoryPath === null ? null : access.load().repositoryPath;
       const requestedMode = String(input.activeMode ?? "plan").toLowerCase() as PermissionMode;
       const activeMode = permissionModes.includes(requestedMode) ? requestedMode : "plan";
       const session = createChatSession({
@@ -480,6 +524,8 @@ const server = createServer((request, response) => {
         workspaceId: typeof input.workspaceId === "string" ? input.workspaceId : "borg-code",
         provider: "ollama",
         model: typeof input.model === "string" ? input.model : process.env.BORG_MODEL ?? "qwen3-coder:30b",
+        parentSessionId: null,
+        workflowRole: "primary",
       });
       chats.saveSession(session);
       return send(response, 201, { session, messages: [] });
@@ -512,9 +558,14 @@ const server = createServer((request, response) => {
       return;
     }
     if (request.method === "DELETE") {
-      const stream = activeStreams.get(sessionId);
-      stream?.abort();
-      activeStreams.delete(sessionId);
+      const session = chats.findSession(sessionId);
+      if (!session) return send(response, 404, { deleted: false });
+      const related = chats.listSessions().filter((candidate) => candidate.id === sessionId || candidate.parentSessionId === sessionId);
+      for (const candidate of related) {
+        activeStreams.get(candidate.id)?.abort();
+        activeStreams.delete(candidate.id);
+      }
+      for (const candidate of related.filter((candidate) => candidate.id !== sessionId)) chats.deleteSession(candidate.id);
       return send(response, chats.deleteSession(sessionId) ? 200 : 404, { deleted: true });
     }
   }
@@ -626,7 +677,10 @@ const server = createServer((request, response) => {
 async function recoverApprovedFrontendPlans() {
   const sessions = chats.listSessions();
   const repositories = new Map<string, ChatSession>();
-  for (const session of sessions) if (session.repositoryPath && !repositories.has(session.repositoryPath.toLowerCase())) repositories.set(session.repositoryPath.toLowerCase(), session);
+  for (const session of sessions) {
+    if (!session.repositoryPath || session.parentSessionId) continue;
+    if (!repositories.has(session.repositoryPath.toLowerCase())) repositories.set(session.repositoryPath.toLowerCase(), session);
+  }
   for (const parent of repositories.values()) {
     try {
       if (!parent.repositoryPath || !websiteInfo(parent.repositoryPath)) continue;
