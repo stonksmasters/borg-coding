@@ -1055,11 +1055,20 @@ export function BorgWorkspaceV2() {
           <SidebarGroupContent>
             <SidebarMenu>
               {websiteSessions.map((session) => {
-                const latest = sessions
-                  .filter((candidate) => candidate.id === session.id || candidate.parentSessionId === session.id)
-                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? session;
+                const children = sessions
+                  .filter((candidate) => candidate.parentSessionId === session.id)
+                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+                const latest = children[0] ?? session;
                 const activeRootId = activeSession?.parentSessionId ?? activeSession?.id;
-                return <SidebarMenuItem key={session.id}><div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeRootId === session.id} onClick={() => void loadSession(latest.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div></SidebarMenuItem>;
+                return <SidebarMenuItem key={session.id}>
+                  <div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeRootId === session.id} onClick={() => void loadSession(latest.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div>
+                  {activeRootId === session.id && children.length > 0 && <details className="ml-7 mt-1">
+                    <summary className="cursor-pointer select-none py-1 text-[10px] uppercase tracking-wide text-slate-600">Build sessions ({children.length})</summary>
+                    <div className="mt-1 space-y-0.5 border-l border-white/8 pl-2">
+                      {children.map((child) => <button key={child.id} type="button" onClick={() => void loadSession(child.id)} className={`block w-full truncate rounded px-2 py-1.5 text-left text-[11px] ${activeSession?.id === child.id ? "bg-white/7 text-slate-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-300"}`}>{child.title.includes(" · ") ? child.title.split(" · ").at(-1) : child.title}</button>)}
+                    </div>
+                  </details>}
+                </SidebarMenuItem>;
               })}
             </SidebarMenu>
             {!websiteSessions.length && <button type="button" onClick={() => setWebsiteOpen(true)} className="w-full rounded-lg border border-dashed border-white/10 px-3 py-4 text-left text-xs leading-5 text-slate-500 hover:border-white/20 hover:text-slate-300">Create your first website to start building with BORG.</button>}
