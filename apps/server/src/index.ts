@@ -569,6 +569,8 @@ const server = createServer((request, response) => {
       if (eventType === "activity.updated") appendTaskEvent(taskId, "AGENT_ACTIVITY", { activity: event.activity });
     };
     const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+    const designBrief = latestDesignBrief(taskId);
+    const designContext = designBrief ? designBriefPrompt(designBrief) : "";
     const teamPolicy = teamPolicies.load(access.load().repositoryPath);
     const activeDisciplines = (task.disciplines.length ? task.disciplines : [teamPolicy.defaultDiscipline]) as EngineeringDiscipline[];
     const primaryDiscipline = activeDisciplines[0];
@@ -585,13 +587,13 @@ const server = createServer((request, response) => {
       while (task) {
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
-        const repairPrompt = task.attempts > 0
-          ? `This is bounded repair attempt ${task.attempts} of ${maxRepairAttempts}. Fix only the evidenced failure below, then inspect the diff.\n\n${repairEvidence}`
+        const repairPrompt = repairEvidence
+          ? `Evidence-driven follow-up. Address only the concrete failure or refinement evidence below, then inspect the diff.\n\n${repairEvidence}`
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
         const { answer, usedTools } = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
           messages: [
-            { role: "system", content: `You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Use exact, small patches; inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, start or reuse the local app with browser_server_start, inspect and interact with it through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            { role: "system", content: `You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Use exact, small patches; inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, start or reuse the local app with browser_server_start, inspect and interact with it through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
         });
@@ -708,6 +710,64 @@ const server = createServer((request, response) => {
           }
         }
 
+        let designReview: DesignReviewResult | null = null;
+        if (designBrief) {
+          if (!verification.browserEvidence) {
+            finishRole(activeRoleAssignment, "completed", emit);
+            activeRoleAssignment = null;
+            appendTaskEvent(taskId, "DESIGN_REVIEW_BLOCKED", { reason: "Missing browser evidence.", attempt: task.attempts });
+            task = transitionTask(task, "BLOCKED", emit);
+            emit({ type: "design.review.blocked", message: "Premium frontend delivery requires responsive browser screenshots for aesthetic review." });
+            emit({ type: "stream.blocked", message: "Design quality could not be verified because responsive browser evidence is missing." });
+            response.end();
+            return;
+          }
+          const policy = vision.status();
+          appendTaskEvent(taskId, "DESIGN_REVIEW_STARTED", { provider: policy.provider, model: policy.model, attempt: task.attempts });
+          emit({ type: "design.review.started", provider: policy.provider, model: policy.model });
+          designReview = await visualDirector.review({
+            taskId,
+            request: task.request,
+            worktreePath: approvedWorktreePath,
+            browserEvidence: verification.browserEvidence,
+            brief: designBrief,
+            policy,
+          });
+          appendTaskEvent(taskId, designReview.status === "pass" || designReview.status === "repair" ? "DESIGN_REVIEW_COMPLETED" : "DESIGN_REVIEW_BLOCKED", {
+            review: designReview,
+            attempt: task.attempts,
+          });
+          emit({ type: "design.review.completed", designReview });
+
+          if (designReview.status === "repair") {
+            finishRole(activeRoleAssignment, "completed", emit);
+            activeRoleAssignment = null;
+            emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
+            const refinements = designRefinementCount(taskId);
+            if (refinements >= maxDesignRefinements) {
+              task = transitionTask(task, "BLOCKED", emit);
+              appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", { refinements, maximum: maxDesignRefinements, review: designReview });
+              emit({ type: "stream.blocked", message: `Visual Director still requires refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
+              response.end();
+              return;
+            }
+            repairEvidence = `VISUAL DIRECTOR REFINEMENT REQUIRED. This is not a functional bug repair. Rework the visual design against the persisted Design Brief and the screenshot evidence below. Preserve working behavior, then recapture responsive browser evidence.\n\n${JSON.stringify(designReview).slice(0, 70000)}`;
+            task = scheduleDesignRefinement(task, emit, designReview.summary);
+            continue;
+          }
+
+          if (designReview.status !== "pass") {
+            finishRole(activeRoleAssignment, "completed", emit);
+            activeRoleAssignment = null;
+            task = transitionTask(task, "BLOCKED", emit);
+            emit({ type: "design.review.blocked", designReview, message: designReview.summary });
+            emit({ type: "stream.blocked", message: `Premium frontend delivery is blocked because mandatory aesthetic review is ${designReview.status}: ${designReview.summary}` });
+            response.end();
+            return;
+          }
+          emit({ type: "stage.updated", stage: "Visual Direction", status: "complete" });
+        }
+
         const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
         const diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
         finishRole(activeRoleAssignment, "completed", emit);
@@ -717,7 +777,10 @@ const server = createServer((request, response) => {
           toRole: "reviewer",
           objective: task.request,
           changedFiles: (status.stdout ?? "").split("\n").filter(Boolean).slice(0, 200),
-          evidence: [JSON.stringify(verification).slice(0, 20_000)],
+          evidence: [
+            JSON.stringify(verification).slice(0, 20_000),
+            ...(designReview ? [`Visual Director: ${designReview.status} — ${designReview.summary}`] : []),
+          ],
           requiredNextAction: "Review the verified diff from fresh context without mutation access.",
         }, emit);
         activeRoleAssignment = null;
