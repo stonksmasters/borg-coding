@@ -1050,18 +1050,27 @@ const server = createServer((request, response) => {
         return send(response, 409, { error: `Approval was already ${approval.status.toLowerCase()}.` });
       }
       if (task.state !== "AWAITING_APPROVAL") return send(response, 409, { error: "Task is not awaiting approval." });
+      const isProjectPlanApproval = tasks.listEvents(task.id).some((event) => event.type === "PROJECT_PLAN_PROPOSED");
       if (decision === "reject") {
         const rejected = { ...approval, status: "REJECTED" as const, decidedAt: new Date().toISOString() };
         tasks.saveApproval(rejected);
-        appendTaskEvent(task.id, "APPROVAL_REJECTED", { approvalId: approval.id });
+        appendTaskEvent(task.id, isProjectPlanApproval ? "PROJECT_PLAN_REVISION_REQUESTED" : "APPROVAL_REJECTED", { approvalId: approval.id });
         const repositoryPath = access.load().repositoryPath;
-        if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: "Implementation plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
+        if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: isProjectPlanApproval ? "Frontend phase plan requires revision." : "Implementation mini-plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
         task = transitionTask(task, "CANCELLED");
-        return send(response, 200, { task, approval: rejected });
+        return send(response, 200, { task, approval: rejected, projectPlanApproval: isProjectPlanApproval });
       }
       if (decision !== "approve") return send(response, 400, { error: "Decision must be approve or reject." });
       const repositoryPath = access.load().repositoryPath;
-      if (!repositoryPath) return send(response, 400, { error: "Approve a Git repository before creating a worktree." });
+      if (!repositoryPath) return send(response, 400, { error: "Approve a Git repository before continuing." });
+      if (isProjectPlanApproval) {
+        const approvedProject = approveProjectPlan(repositoryPath, task.id);
+        const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
+        tasks.saveApproval(approved);
+        appendTaskEvent(task.id, "PROJECT_PLAN_APPROVED", { approvalId: approval.id, revision: approvedProject.plan.revision });
+        task = transitionTask(task, "COMPLETE");
+        return send(response, 200, { task, approval: approved, projectPlanApproved: true, projectPlan: approvedProject.plan, slice: approvedProject.state });
+      }
       const worktree = await worktrees.create(repositoryPath, task.id);
       const sliceIntent = tasks.listEvents(task.id).findLast((event) => event.type === "FRONTEND_SLICE_SELECTED")?.payload as { action?: SliceAction; feedback?: string } | undefined;
       if (sliceIntent) {
@@ -1264,6 +1273,13 @@ const server = createServer((request, response) => {
         writeEvent(response, { type: "message.delta", taskId: task.id, text: answer });
         finishRole(architectAssignment, "completed", emit);
         appendTaskEvent(task.id, "MODEL_RESPONSE_COMPLETED", { runtime: "ollama", model: architectModel, role: "architect", answer, usedTools });
+        const proposedProjectPlan = projectPlanning && websiteProject
+          ? persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template), task.id)
+          : null;
+        if (proposedProjectPlan) {
+          appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan });
+          emit({ type: "project.plan.proposed", plan: proposedProjectPlan });
+        }
         if (mode === "plan" || mode === "edit" || mode === "agent") {
           recordHandoff({
             task,
@@ -1283,9 +1299,18 @@ const server = createServer((request, response) => {
           }, emit);
           const approval = createApproval({ id: randomUUID(), taskId: task.id });
           tasks.saveApproval(approval);
-          appendTaskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, mode });
+          appendTaskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, mode, kind: proposedProjectPlan ? "project_plan" : "execution" });
           task = transitionTask(task, "AWAITING_APPROVAL", emit);
-          if (mode === "plan") {
+          if (proposedProjectPlan) {
+            writeEvent(response, {
+              type: "project.plan.approval.requested",
+              taskId: task.id,
+              approval,
+              planText: answer,
+              projectPlan: proposedProjectPlan,
+              message: "Approve the tailored frontend phase plan. Approval freezes scope but does not authorize source-file mutation; slice 1 starts in a new session.",
+            });
+          } else if (mode === "plan") {
             writeEvent(response, {
               type: "mode.escalation.requested",
               taskId: task.id,
@@ -1293,10 +1318,10 @@ const server = createServer((request, response) => {
               fromMode: "plan",
               requestedMode: "edit",
               planText: answer,
-              message: "PLAN is read-only. Approve the plan to switch the session to EDIT and create an isolated Git worktree.",
+              message: "Approve this slice mini-plan to switch this slice session to EDIT.",
             });
           } else {
-            writeEvent(response, { type: "approval.requested", taskId: task.id, approval, message: "Review the plan, then approve or reject creation of an isolated Git worktree." });
+            writeEvent(response, { type: "approval.requested", taskId: task.id, approval, message: "Review the slice mini-plan, then approve or reject isolated worktree execution." });
           }
         } else task = transitionTask(task, "COMPLETE", emit);
         writeEvent(response, { type: "stream.completed", taskId: task.id });
