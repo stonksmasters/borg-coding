@@ -1037,9 +1037,11 @@ const server = createServer((request, response) => {
     const taskId = decodeURIComponent(approvalRoute[1]);
     const task = tasks.findTask(taskId);
     if (!task) return send(response, 404, { error: "Task not found" });
+    const currentApproval = tasks.findApproval(taskId);
     return send(response, 200, {
       task,
-      approval: tasks.findApproval(taskId),
+      approval: currentApproval,
+      projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_PROPOSED"),
       findings: tasks.listFindings(taskId),
       events: tasks.listEvents(taskId),
       roleAssignments: tasks.listRoleAssignments(taskId),
