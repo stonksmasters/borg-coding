@@ -50,6 +50,7 @@ type ToolConfig = {
   lastConnectionError: string | null;
   updatedAt: string;
 };
+type RuntimeStatus = { runtime: string; runtimeConnected: boolean; model: string; modelAvailable: boolean };
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
 type Escalation = { id: string; sessionId: string; taskId: string; fromMode: "plan"; requestedMode: "edit"; reason: string; planText: string; createdAt: string };
 type TaskCheckpoint = { id: string; taskId: string; sessionId: string | null; name: string; kind: string; taskState: string; mode: PermissionMode; repositoryPath: string | null; worktreePath: string | null; baseCommit: string | null; contextSummary: string; completedSteps: string[]; remainingSteps: string[]; createdAt: string };
@@ -102,7 +103,7 @@ export function BorgWorkspaceV2() {
   const [request, setRequest] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [serverAvailable, setServerAvailable] = useState(false);
-  const [, setRuntimeConnected] = useState(false);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskState, setTaskState] = useState("READY");
   const [approval, setApproval] = useState<Approval | null>(null);
@@ -354,10 +355,15 @@ export function BorgWorkspaceV2() {
   useEffect(() => {
     void Promise.all([
       fetch(`${API}/health`).then(async (response) => {
-        const health = await response.json() as { core?: { runtimeConnected?: boolean; modelAvailable?: boolean } };
+        const health = await response.json() as { core?: Partial<RuntimeStatus> };
         setServerAvailable(response.ok);
-        setRuntimeConnected(Boolean(health.core?.runtimeConnected && health.core?.modelAvailable));
-      }).catch(() => { setServerAvailable(false); setRuntimeConnected(false); }),
+        setRuntimeStatus(health.core?.model ? {
+          runtime: health.core.runtime ?? "ollama",
+          runtimeConnected: Boolean(health.core.runtimeConnected),
+          model: String(health.core.model),
+          modelAvailable: Boolean(health.core.modelAvailable),
+        } : null);
+      }).catch(() => { setServerAvailable(false); setRuntimeStatus(null); }),
       fetch(`${API}/api/access`).then(async (response) => {
         if (!response.ok) return;
         const result = await response.json() as { access: AccessConfig };
@@ -374,6 +380,30 @@ export function BorgWorkspaceV2() {
       refreshSessions(),
     ]).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to initialize workspace."));
   }, [refreshSessions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      void fetch(`${API}/health`).then(async (response) => {
+        const health = await response.json() as { core?: Partial<RuntimeStatus> };
+        if (cancelled) return;
+        setServerAvailable(response.ok);
+        setRuntimeStatus(health.core?.model ? {
+          runtime: health.core.runtime ?? "ollama",
+          runtimeConnected: Boolean(health.core.runtimeConnected),
+          model: String(health.core.model),
+          modelAvailable: Boolean(health.core.modelAvailable),
+        } : null);
+      }).catch(() => {
+        if (!cancelled) {
+          setServerAvailable(false);
+          setRuntimeStatus(null);
+        }
+      });
+    };
+    const timer = window.setInterval(poll, 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
 
   useEffect(() => {
     if (!activeSession?.repositoryPath) return;
@@ -1092,7 +1122,15 @@ export function BorgWorkspaceV2() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="border-t border-white/8 p-4"><div className="flex items-center gap-2 text-xs text-slate-400"><span className={`size-2 rounded-full ${serverAvailable ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : "bg-slate-600"}`} />{serverAvailable ? "BORG ready" : "BORG offline"}</div></SidebarFooter>
+      <SidebarFooter className="border-t border-white/8 p-4">
+        <div className="flex items-start gap-2 text-xs text-slate-400">
+          <span className={`mt-1 size-2 rounded-full ${serverAvailable && runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : serverAvailable ? "bg-amber-300" : "bg-slate-600"}`} />
+          <div className="min-w-0">
+            <p>{serverAvailable ? (runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable ? "Local model connected" : "BORG ready · model unavailable") : "BORG offline"}</p>
+            <p className="mt-0.5 truncate font-mono text-[10px] text-slate-600">{runtimeStatus?.model ?? activeSession?.model ?? "No model detected"}</p>
+          </div>
+        </div>
+      </SidebarFooter>
     </Sidebar>
 
     <SidebarInset className="h-svh min-h-0 min-w-0 overflow-hidden bg-[#0d1117] text-slate-100">
@@ -1105,6 +1143,10 @@ export function BorgWorkspaceV2() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <div title={runtimeStatus ? `${runtimeStatus.runtime}: ${runtimeStatus.model}` : "Local model status unavailable"} className="hidden items-center gap-2 rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-[10px] text-slate-400 lg:flex">
+            <span className={`size-1.5 rounded-full ${runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable ? "bg-[#a7ff4f]" : "bg-amber-300"}`} />
+            <span className="max-w-44 truncate font-mono">{runtimeStatus?.model ?? activeSession?.model ?? "model unavailable"}</span>
+          </div>
           {isWebsite && <Button size="sm" variant="outline" onClick={() => setRightPanel("preview")} className="hidden border-white/10 bg-white/4 text-slate-300 sm:inline-flex"><Monitor className="size-3.5" />Preview</Button>}
           <Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setRightPanel("changes")} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Changes</span></Button>
           <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || taskBusy}>

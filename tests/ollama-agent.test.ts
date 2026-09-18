@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ToolBroker } from "../packages/tools/src/tool-broker.ts";
-import { modelMessages, runOllamaAgent } from "../apps/server/src/ollama-agent.ts";
+import { modelMessages, parseTextToolCalls, runOllamaAgent } from "../apps/server/src/ollama-agent.ts";
 
 test("retry context is smaller even when pinned messages are oversized", () => {
   const messages = [
@@ -117,4 +117,82 @@ test("a model turn that already streamed text does not retry and duplicate it", 
     assert.equal(requests, 1);
     assert.equal(events.filter((event) => event.type === "message.delta").length, 1);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+
+test("text tool-call markup is parsed for local-model compatibility", () => {
+  const calls = parseTextToolCalls(`<function=activity_update>
+<parameter=phase>
+planning
+</parameter>
+<parameter=status>
+completed
+</parameter>
+<parameter=title>
+Repository Analysis Complete
+</parameter>
+</function>
+</tool_call>`);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].function.name, "activity_update");
+  assert.deepEqual(calls[0].function.arguments, {
+    phase: "planning",
+    status: "completed",
+    title: "Repository Analysis Complete",
+  });
+});
+
+test("textual tool calls execute and do not become the final architect answer", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  const executions: { name: string; args: Record<string, unknown> }[] = [];
+  const events: Record<string, unknown>[] = [];
+  const fakeTools = {
+    toolDefinitions: () => [{ type: "function", function: { name: "activity_update", description: "status", parameters: { type: "object" } } }],
+    execute: async (call: { function: { name: string; arguments: Record<string, unknown> } }) => {
+      executions.push({ name: call.function.name, args: call.function.arguments });
+      return { acknowledged: true };
+    },
+  } as unknown as ToolBroker;
+
+  globalThis.fetch = async () => {
+    requests += 1;
+    const message = requests === 1
+      ? { content: `<function=activity_update>
+<parameter=phase>
+planning
+</parameter>
+<parameter=status>
+completed
+</parameter>
+<parameter=title>
+Repository Analysis Complete
+</parameter>
+</function>
+</tool_call>` }
+      : { content: "Final architecture plan with implementation slices." };
+    return new Response(`${JSON.stringify({ message })}\n`, { status: 200, headers: { "content-type": "application/x-ndjson" } });
+  };
+
+  try {
+    const result = await runOllamaAgent({
+      ollamaUrl: "http://127.0.0.1:11434",
+      model: "test",
+      mode: "plan",
+      tools: fakeTools,
+      messages: [{ role: "user", content: "Plan the application." }],
+      streamText: false,
+      emit: (event) => events.push(event),
+    });
+    assert.equal(requests, 2);
+    assert.equal(executions.length, 1);
+    assert.equal(executions[0].name, "activity_update");
+    assert.equal(executions[0].args.title, "Repository Analysis Complete");
+    assert.equal(result.usedTools, true);
+    assert.match(result.answer, /Final architecture plan/);
+    assert.doesNotMatch(result.answer, /<function=/);
+    assert.ok(events.some((event) => event.type === "runtime.tool_protocol.recovered"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -178,23 +178,103 @@ export function readProjectPlan(root: string): ProjectPlan | null {
 
 export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
   const text = brief.toLowerCase();
-  const complex = /dashboard|marketplace|e.?commerce|commerce|booking|portal|application|\bapp\b|account|auth|checkout|cart|admin/.test(`${template} ${text}`);
+  const commerce = /e.?commerce|commerce|marketplace|shop|store|catalog|product|cart|checkout/.test(`${template} ${text}`);
+  const dashboard = /dashboard|portal|admin|operations|analytics/.test(`${template} ${text}`);
   const contentHeavy = /blog|content|news|docs|documentation|magazine/.test(`${template} ${text}`);
-  const backendRequired = /account|auth|login|database|persist|checkout|payment|booking|order|cart|upload|message|api|integration|dashboard/.test(text);
-  const slices: ProjectSlice[] = [
-    { id: "foundation", title: "Foundation and primary journey", outcome: "A polished application shell and the first complete user-visible journey are navigable in the preview.", scope: ["design tokens and layout shell", "navigation", "primary page or journey", "basic responsive and accessible behavior"], acceptanceCriteria: ["primary journey works with representative local data", "desktop and mobile layouts are usable", "visible controls in scope work"] },
-    { id: "content-flows", title: contentHeavy ? "Content structure and discovery" : "Core content and interactions", outcome: "The remaining core pages, content, and interactions required by the brief work coherently.", scope: ["remaining core screens", "interaction states", "loading, empty, and error states where relevant"], acceptanceCriteria: ["approved pages are reachable", "core interactions work", "relevant states are represented"] },
-  ];
-  if (complex) slices.push({ id: "secondary-flows", title: "Secondary flows and edge states", outcome: "Secondary user journeys and cross-screen behavior are complete enough for end-to-end browser review.", scope: ["secondary journeys", "navigation continuity", "edge and demonstration states"], acceptanceCriteria: ["key journeys can be exercised end to end", "no dead controls in approved scope"] });
-  slices.push({ id: "frontend-review", title: "Frontend completion review", outcome: "The approved frontend passes responsive, accessibility, visual, build, and browser completion gates.", scope: ["responsive review", "accessibility review", "visual polish", "browser verification", "data/action contract"], acceptanceCriteria: ["typecheck and build pass", "key browser journeys pass", "mobile and desktop reviews pass", "accessibility and visual reviews are complete"] });
+  const social = /social|creator|feed|follow|favorite|wishlist|review|trending|recommend/.test(text);
+  const seller = /seller|merchant|storefront|inventory|sku/.test(text);
+  const admin = /admin|moderation|role|permission/.test(text);
+  const accounts = /account|auth|login|sign.?up|profile|order|wishlist/.test(text);
+  const backendRequired = /account|auth|login|database|persist|checkout|payment|booking|order|cart|upload|message|api|integration|dashboard|seller|admin/.test(text);
+  const slices: ProjectSlice[] = [];
+
+  if (commerce) {
+    slices.push(
+      {
+        id: "commerce-foundation",
+        title: "Commerce foundation and discovery shell",
+        outcome: "A polished responsive marketplace shell, mobile navigation, home/discovery entry points, and representative seeded content are usable in the preview.",
+        scope: ["design tokens and application shell", "mobile and desktop navigation", "home composition", "discovery feed shell", "seeded product, seller, and category presentation"],
+        acceptanceCriteria: ["home and discovery are navigable", "desktop and mobile layouts are intentional", "visible navigation and discovery controls work", "representative data makes the marketplace feel populated"],
+      },
+      {
+        id: "catalog-product",
+        title: "Catalog, search, and product purchase surface",
+        outcome: "Users can discover products through search and filtering, open complete product details, select valid variants, and reach purchase actions.",
+        scope: ["search and suggestions", "filters and sorting", "product detail", "media gallery", "variant and inventory states", "seller and review summaries", "related-product presentation"],
+        acceptanceCriteria: ["search/filter/sort modify results", "variant selection changes the selected SKU", "out-of-stock states are enforced in the UI", "product pages work across target viewport sizes"],
+      },
+      {
+        id: "cart-checkout",
+        title: "Cart and checkout journey",
+        outcome: "A user can add variant-specific items, edit a persistent cart, and complete a validated development checkout journey through confirmation.",
+        scope: ["cart persistence and seller grouping", "quantity/remove/save-for-later interactions", "discount/shipping/tax presentation", "multi-step checkout", "validation and failure states", "order confirmation frontend contract"],
+        acceptanceCriteria: ["cart survives refreshes", "totals derive from shared commerce logic rather than hard-coded UI values", "checkout validates required fields", "unavailable inventory cannot proceed", "development payment mode is clearly identified"],
+      },
+    );
+
+    if (accounts) slices.push({
+      id: "account-orders",
+      title: "Authentication-facing account and order experiences",
+      outcome: "Account, wishlist, recently viewed, addresses, and order-center experiences are complete and wired to explicit persistence/auth contracts for the backend phase.",
+      scope: ["login/signup/reset surfaces", "protected-area states", "profile and addresses", "wishlist and recently viewed", "order center and order detail", "review-product entry points"],
+      acceptanceCriteria: ["authenticated and unauthenticated states are explicit", "wishlist/cart handoffs work", "order states and timelines render coherently", "backend-required actions are documented in the data/action contract"],
+    });
+
+    if (social) slices.push({
+      id: "social-commerce",
+      title: "Social-commerce discovery and engagement",
+      outcome: "Discovery feels creator-driven rather than like a conventional product grid, with working follows, favorites, shares, popularity signals, and deterministic recommendation behavior represented in the frontend contract.",
+      scope: ["For You/Trending/New/Deals/Following modes", "creator recommendations", "multiple discovery presentation types", "favorites and share interactions", "seller follows", "recommendation explanation and ranking contract"],
+      acceptanceCriteria: ["feed modes visibly change content", "engagement actions have clear state transitions", "desktop adapts the feed rather than stretching mobile UI", "ranking signals are documented and reproducible"],
+    });
+
+    if (seller) slices.push({
+      id: "seller-experience",
+      title: "Seller storefront and management workspace",
+      outcome: "Seller storefronts feel distinct and seller-management flows cover products, variants, inventory, orders, promotions, analytics, and store customization.",
+      scope: ["seller storefront", "seller dashboard", "product create/edit/archive", "variant/SKU/inventory management", "orders and customer views", "promotions and analytics", "store customization"],
+      acceptanceCriteria: ["seller routes are navigable and role-aware", "product-management forms validate representative data", "analytics derive from seeded/shared data", "publish/unpublish states are represented end to end"],
+    });
+
+    if (admin) slices.push({
+      id: "admin-experience",
+      title: "Administrator marketplace controls",
+      outcome: "The administrator area provides separate role-aware views over users, sellers, products, orders, reviews, categories, promotions, and marketplace statistics.",
+      scope: ["admin shell and navigation", "marketplace overview", "users/sellers/products/orders/reviews", "categories and promotions", "at least one legitimate administrative action", "permission-denied states"],
+      acceptanceCriteria: ["admin pages are distinct from seller tooling", "role boundaries are explicit in UI and backend contract", "the administrative action updates representative state", "unauthorized states are handled intentionally"],
+    });
+  } else {
+    slices.push(
+      { id: "foundation", title: "Foundation and primary journey", outcome: "A polished application shell and the first complete user-visible journey are navigable in the preview.", scope: ["design tokens and layout shell", "navigation", "primary page or journey", "basic responsive and accessible behavior"], acceptanceCriteria: ["primary journey works with representative local data", "desktop and mobile layouts are usable", "visible controls in scope work"] },
+      { id: "content-flows", title: contentHeavy ? "Content structure and discovery" : "Core content and interactions", outcome: "The remaining core pages, content, and interactions required by the brief work coherently.", scope: ["remaining core screens", "interaction states", "loading, empty, and error states where relevant"], acceptanceCriteria: ["approved pages are reachable", "core interactions work", "relevant states are represented"] },
+    );
+    if (dashboard) slices.push({ id: "secondary-flows", title: "Secondary flows and edge states", outcome: "Secondary user journeys and cross-screen behavior are complete enough for end-to-end browser review.", scope: ["secondary journeys", "navigation continuity", "edge and demonstration states"], acceptanceCriteria: ["key journeys can be exercised end to end", "no dead controls in approved scope"] });
+  }
+
+  slices.push({
+    id: "frontend-review",
+    title: "Frontend completion review",
+    outcome: "The approved frontend passes responsive, accessibility, visual, build, browser, and interaction completion gates.",
+    scope: ["responsive review", "accessibility review", "visual polish", "browser verification", "loading/empty/error states", "data/action contract", "cross-slice consistency"],
+    acceptanceCriteria: ["typecheck and build pass", "key browser journeys pass", "mobile and desktop reviews pass", "accessibility and visual reviews are complete", "no obvious placeholder or dead-control quality remains"],
+  });
+
+  const pages = commerce
+    ? ["Home", "Discovery", "Search", "Product", "Cart", "Checkout", "Order confirmation", "Account", ...(seller ? ["Seller storefront", "Seller dashboard"] : []), ...(admin ? ["Admin"] : [])]
+    : ["Pages and routes required by the brief"];
+  const features = commerce
+    ? ["Product discovery", "Search and filtering", "Product variants", "Cart", "Checkout", "Orders", ...(social ? ["Social engagement", "Recommendations"] : []), ...(seller ? ["Seller management"] : []), ...(admin ? ["Administration"] : [])]
+    : ["Content, navigation, and interactions required by the brief"];
+
   const now = new Date().toISOString();
   return {
     version: 2, revision: 1, status: "proposed", phase: "frontend",
     siteGoal: brief.trim() || "Build the requested website.",
-    audience: "People described by the approved brief.",
-    pages: ["Pages and routes required by the brief"],
-    features: ["Content, navigation, and interactions required by the brief"],
-    visualDirection: "Follow the approved brief and Design Director direction; establish a coherent reusable visual system.",
+    audience: commerce ? "Shoppers discovering and purchasing products, plus any seller/admin roles required by the brief." : "People described by the approved brief.",
+    pages,
+    features,
+    visualDirection: commerce ? "Premium, mobile-first commercial product design with immersive discovery and trustworthy purchase flows." : "Follow the approved brief and Design Director direction; establish a coherent reusable visual system.",
     backendRequired, slices,
     acceptanceCriteria: [
       "Every approved page is navigable.",

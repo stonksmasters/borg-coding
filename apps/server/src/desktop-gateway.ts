@@ -16,7 +16,7 @@ import { AccessController } from "../../../packages/repository/src/access-contro
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
 import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
-import { readProjectPlan, readSliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { readProjectPlan, readSliceState, type ProjectPlan } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const gatewayPort = Number(process.env.BORG_GATEWAY_PORT ?? 4312);
 const coreUrl = process.env.BORG_CORE_URL ?? "http://127.0.0.1:4311";
@@ -72,6 +72,40 @@ function compactTitle(request: string): string {
   const clean = request.replace(/\s+/g, " ").trim();
   if (!clean) return "New chat";
   return clean.length > 64 ? `${clean.slice(0, 61)}…` : clean;
+}
+
+function formatProjectPlan(plan: ProjectPlan): string {
+  const slices = plan.slices.map((slice, index) => [
+    `## ${index + 1}. ${slice.title}`,
+    "",
+    `**Outcome:** ${slice.outcome}`,
+    "",
+    "**Scope**",
+    ...slice.scope.map((item) => `- ${item}`),
+    "",
+    "**Acceptance criteria**",
+    ...slice.acceptanceCriteria.map((item) => `- ${item}`),
+  ].join("\n")).join("\n\n");
+
+  return [
+    "# Frontend phase plan",
+    "",
+    `**Goal:** ${plan.siteGoal}`,
+    `**Audience:** ${plan.audience}`,
+    `**Visual direction:** ${plan.visualDirection}`,
+    `**Backend after frontend:** ${plan.backendRequired ? "Required" : "Not required"}`,
+    "",
+    "## Planned pages",
+    ...plan.pages.map((page) => `- ${page}`),
+    "",
+    "## Planned capabilities",
+    ...plan.features.map((feature) => `- ${feature}`),
+    "",
+    slices,
+    "",
+    "## Frontend completion criteria",
+    ...plan.acceptanceCriteria.map((item) => `- ${item}`),
+  ].join("\n");
 }
 
 function rootWorkflowSession(session: ChatSession): ChatSession {
@@ -369,6 +403,7 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
     let assistantText = "";
     let coreApproval: Record<string, unknown> | null = null;
     let projectPlanApproval = false;
+    let structuredProjectPlanText: string | null = null;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -387,8 +422,10 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
         if (event.type === "project.plan.approval.requested") {
           coreApproval = event.approval as Record<string, unknown> | null;
           projectPlanApproval = true;
+          const plan = event.projectPlan as ProjectPlan | undefined;
+          if (plan?.version === 2 && Array.isArray(plan.slices) && plan.slices.length) structuredProjectPlanText = formatProjectPlan(plan);
           if (taskId && coreApproval) {
-            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "Frontend phase plan is ready for approval. Approving it freezes the slice roadmap and authorizes the bounded frontend slice workflow.", metadata: { approval: coreApproval, projectPlan: event.projectPlan } });
+            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "status", text: "Frontend phase plan is ready for approval. Approving it freezes the slice roadmap and authorizes the bounded frontend slice workflow.", metadata: { approval: coreApproval, projectPlan: event.projectPlan } });
           }
           emitToClient(event);
           continue;
@@ -423,7 +460,11 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
       if (done) break;
     }
 
-    if (assistantText.trim()) appendMessage({ sessionId: session.id, taskId, role: "assistant", kind: session.activeMode === "ask" ? "prose" : "plan", text: assistantText.trim() });
+    if (projectPlanApproval && structuredProjectPlanText) {
+      appendMessage({ sessionId: session.id, taskId, role: "assistant", kind: "plan", text: structuredProjectPlanText });
+    } else if (assistantText.trim()) {
+      appendMessage({ sessionId: session.id, taskId, role: "assistant", kind: session.activeMode === "ask" ? "prose" : "plan", text: assistantText.trim() });
+    }
 
     if (!projectPlanApproval && (session.activeMode === "edit" || session.activeMode === "agent") && taskId && coreApproval) {
       await approveCoreTask(taskId);
@@ -640,7 +681,14 @@ const server = createServer((request, response) => {
       const body = await upstream.json().catch(() => ({})) as Record<string, unknown>;
       if (!upstream.ok) return send(response, upstream.status, body);
 
-      const projectPlanApproved = body.projectPlanApproved === true;
+      const persistedPlan = session.repositoryPath ? readProjectPlan(session.repositoryPath) : null;
+      const persistedSlice = session.repositoryPath ? readSliceState(session.repositoryPath) : null;
+      const persistedProjectPlanApproval = decision === "approve"
+        && session.workflowRole === "primary"
+        && persistedPlan?.status === "approved"
+        && persistedSlice?.status === "ready"
+        && persistedSlice.lastTaskId === taskId;
+      const projectPlanApproved = body.projectPlanApproved === true || persistedProjectPlanApproval;
       const escalated = decision === "approve" && session.activeMode === "plan" && !projectPlanApproved;
       const updatedSession = escalated ? chats.updateSession(session.id, { activeMode: "edit" }) ?? session : session;
       chats.deleteModeEscalation(taskId);
