@@ -1,4 +1,5 @@
 import { createServer, type ServerResponse } from "node:http";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -52,7 +53,7 @@ import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } f
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
-import { prepareSlice, markSliceReady, readProjectDocs, readSliceState, slicePlanningPrompt, slicePrompt, FRONTEND_SLICES, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readProjectDocs, readProjectPlan, readSliceState, slicePlanningPrompt, slicePrompt, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -104,6 +105,13 @@ const disciplineRouter = new DisciplineRouter();
 const teamPolicies = new TeamPolicyService();
 const maxRepairAttempts = 2;
 const maxDesignRefinements = 3;
+
+function commitBuildDocs(repositoryPath: string, message: string) {
+  execFileSync("git", ["-C", repositoryPath, "add", "--", ".localcode/build"], { stdio: "ignore" });
+  const staged = execFileSync("git", ["-C", repositoryPath, "diff", "--cached", "--name-only", "--", ".localcode/build"], { encoding: "utf8" }).trim();
+  if (!staged) return;
+  execFileSync("git", ["-C", repositoryPath, "-c", "user.name=BORG", "-c", "user.email=borg@local.invalid", "commit", "-m", message, "--", ".localcode/build"], { stdio: "ignore" });
+}
 
 function send(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, {
@@ -600,8 +608,8 @@ const server = createServer((request, response) => {
       template: websiteProject.template,
       originalBrief: websiteProject.originalBrief,
     }, websiteWorkflow) : "";
+    const projectPlan = websiteProject ? readProjectPlan(approvedWorktreePath) : null;
     const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED") ? readSliceState(approvedWorktreePath) : null;
-    const activeSlicePrompt = sliceState ? slicePrompt(sliceState) : "";
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
     const teamPolicy = teamPolicies.load(access.load().repositoryPath);
@@ -613,6 +621,8 @@ const server = createServer((request, response) => {
       verifier: specialistSystemInstructions(packs, "verifier"),
       reviewer: specialistSystemInstructions(packs, "reviewer"),
     };
+    const availableImplementationTools = tools.toolDefinitions("agent", taskContext, "implementer", activeDisciplines).map((tool) => tool.function.name);
+    const activeSlicePrompt = sliceState && projectPlan ? slicePrompt(projectPlan, sliceState, availableImplementationTools) : "";
     const verificationProfile = verificationProfileFor(packs);
     let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
@@ -625,12 +635,17 @@ const server = createServer((request, response) => {
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
         const { answer, usedTools } = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
-          limits: sliceState ? { toolRounds: 16, toolCalls: 36 } : undefined,
+          limits: sliceState ? { toolRounds: 12, toolCalls: 28 } : undefined,
           messages: [
             { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Use exact, small patches; inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, start or reuse the local app with browser_server_start, inspect and interact with it through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
         });
+        if (sliceState) {
+          const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
+          const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
+          if (!sourceProgress) throw new Error("Slice stopped because no source-file progress was made. Planning-doc changes alone do not count as implementation.");
+        }
         appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, attempt: task.attempts });
         finishRole(activeRoleAssignment, "completed", emit);
         recordHandoff({
@@ -879,8 +894,8 @@ const server = createServer((request, response) => {
           return;
         }
 
-        if (sliceState) {
-          const summary = `Verified ${FRONTEND_SLICES[sliceState.current].title}.\n\nChanged files:\n${(status.stdout ?? "").slice(0, 1200)}\n\nVerification: passed.\n\nReview: ${review.summary.slice(0, 1200)}`;
+        if (sliceState && projectPlan) {
+          const summary = `Verified ${currentSlice(projectPlan, sliceState).title}.\n\nChanged files:\n${(status.stdout ?? "").slice(0, 1200)}\n\nVerification: passed.\n\nReview: ${review.summary.slice(0, 1200)}`;
           const ready = markSliceReady(approvedWorktreePath, taskId, summary);
           if (ready) appendTaskEvent(taskId, "FRONTEND_SLICE_READY", { slice: ready.current, status: ready.status });
           status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
@@ -1022,9 +1037,11 @@ const server = createServer((request, response) => {
     const taskId = decodeURIComponent(approvalRoute[1]);
     const task = tasks.findTask(taskId);
     if (!task) return send(response, 404, { error: "Task not found" });
+    const currentApproval = tasks.findApproval(taskId);
     return send(response, 200, {
       task,
-      approval: tasks.findApproval(taskId),
+      approval: currentApproval,
+      projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_PROPOSED"),
       findings: tasks.listFindings(taskId),
       events: tasks.listEvents(taskId),
       roleAssignments: tasks.listRoleAssignments(taskId),
@@ -1043,18 +1060,28 @@ const server = createServer((request, response) => {
         return send(response, 409, { error: `Approval was already ${approval.status.toLowerCase()}.` });
       }
       if (task.state !== "AWAITING_APPROVAL") return send(response, 409, { error: "Task is not awaiting approval." });
+      const isProjectPlanApproval = tasks.listEvents(task.id).some((event) => event.type === "PROJECT_PLAN_PROPOSED");
       if (decision === "reject") {
         const rejected = { ...approval, status: "REJECTED" as const, decidedAt: new Date().toISOString() };
         tasks.saveApproval(rejected);
-        appendTaskEvent(task.id, "APPROVAL_REJECTED", { approvalId: approval.id });
+        appendTaskEvent(task.id, isProjectPlanApproval ? "PROJECT_PLAN_REVISION_REQUESTED" : "APPROVAL_REJECTED", { approvalId: approval.id });
         const repositoryPath = access.load().repositoryPath;
-        if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: "Implementation plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
+        if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: isProjectPlanApproval ? "Frontend phase plan requires revision." : "Implementation mini-plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
         task = transitionTask(task, "CANCELLED");
-        return send(response, 200, { task, approval: rejected });
+        return send(response, 200, { task, approval: rejected, projectPlanApproval: isProjectPlanApproval });
       }
       if (decision !== "approve") return send(response, 400, { error: "Decision must be approve or reject." });
       const repositoryPath = access.load().repositoryPath;
-      if (!repositoryPath) return send(response, 400, { error: "Approve a Git repository before creating a worktree." });
+      if (!repositoryPath) return send(response, 400, { error: "Approve a Git repository before continuing." });
+      if (isProjectPlanApproval) {
+        const approvedProject = approveProjectPlan(repositoryPath, task.id);
+        commitBuildDocs(repositoryPath, "Approve BORG frontend phase plan");
+        const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
+        tasks.saveApproval(approved);
+        appendTaskEvent(task.id, "PROJECT_PLAN_APPROVED", { approvalId: approval.id, revision: approvedProject.plan.revision });
+        task = transitionTask(task, "COMPLETE");
+        return send(response, 200, { task, approval: approved, projectPlanApproved: true, projectPlan: approvedProject.plan, slice: approvedProject.state });
+      }
       const worktree = await worktrees.create(repositoryPath, task.id);
       const sliceIntent = tasks.listEvents(task.id).findLast((event) => event.type === "FRONTEND_SLICE_SELECTED")?.payload as { action?: SliceAction; feedback?: string } | undefined;
       if (sliceIntent) {
@@ -1118,14 +1145,17 @@ const server = createServer((request, response) => {
       const selectedPath = access.load().repositoryPath;
       const selectedWebsite = selectedPath ? websiteInfo(selectedPath) : null;
       const previousSlice = selectedWebsite ? readSliceState(selectedWebsite.path) : null;
+      const projectPlan = selectedWebsite ? readProjectPlan(selectedWebsite.path) : null;
       const rawSliceAction = String(input.sliceAction ?? "initial");
-      const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && Boolean(selectedWebsite && (previousSlice || ["dashboard", "ecommerce"].includes(selectedWebsite.template) || /\b(app|application|full.stack|platform)\b/i.test(requestText)));
-      if (rawSliceAction === "backend" && previousSlice?.status !== "frontend_complete") throw new Error("Finish and review the frontend before beginning backend planning.");
+      const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
+      const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
+      const miniLoop = slicedApplication;
+      if (rawSliceAction === "backend" && (previousSlice?.status !== "frontend_complete" || projectPlan?.backendRequired !== true)) throw new Error("Backend planning is available only after an approved frontend completion gate for a site that requires backend work.");
       const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
-      if (slicedApplication && previousSlice?.status === "awaiting_feedback" && sliceAction === "initial") throw new Error("Review the finished frontend slice before starting another. Choose revise or approve and continue.");
-      if (slicedApplication && previousSlice?.status === "frontend_complete") throw new Error("Frontend slices are complete. Start a separate backend planning task using the build docs.");
+      if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready") throw new Error("Review the finished slice before starting another.");
+      if (slicedApplication && previousSlice?.status === "frontend_complete") throw new Error("Frontend is complete. Start backend planning only if the approved project plan requires it.");
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "advance") throw new Error("The current slice is not ready to advance.");
-      if (slicedApplication && !previousSlice && sliceAction !== "initial") throw new Error("There is no finished slice to review yet.");
+      if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "revise") throw new Error("There is no completed slice waiting for revision.");
       const teamPolicy = teamPolicies.load(access.load().repositoryPath);
       const route = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
       const packs = selectSpecialistPacks(route.disciplines);
@@ -1158,9 +1188,13 @@ const server = createServer((request, response) => {
       emit({ type: "specialist.packs.selected", packs: selectedPacks });
       task = transitionTask(task, "DISCOVERING", emit);
 
-      let repositoryContext = mode === "ask" ? "No repository context is available in ASK mode." : access.buildContext(slicedApplication || rawSliceAction === "backend" ? 12_000 : 80_000);
+      let repositoryContext = mode === "ask"
+        ? "No repository context is available in ASK mode."
+        : miniLoop
+          ? "MINI LOOP: use the approved phase plan, current slice, decisions, handoff, and targeted source reads. Do not rebuild the global repository map."
+          : access.buildContext(projectPlanning || rawSliceAction === "backend" ? 20_000 : 80_000);
       const approvedRepository = access.load().repositoryPath;
-      if (mode !== "ask" && approvedRepository) {
+      if (mode !== "ask" && approvedRepository && !miniLoop) {
         try {
           const refresh = await tools.refreshMemory();
           appendTaskEvent(task.id, "REPOSITORY_MEMORY_REFRESHED", refresh);
@@ -1188,11 +1222,23 @@ const server = createServer((request, response) => {
         emit({ type: "website.workflow.selected", workflow: websiteWorkflow, template: websiteProject?.template ?? null });
       }
       let sliceDirective = "";
-      if (slicedApplication && websiteProject) {
-        const plannedSlice: SliceState = previousSlice ? { ...previousSlice, current: sliceAction === "advance" ? previousSlice.current + 1 : previousSlice.current, status: "working" } : { version: 1, current: 0, status: "working", brief: websiteProject.originalBrief || requestText, lastTaskId: null, feedback: [] };
-        sliceDirective = slicePlanningPrompt(plannedSlice);
-        const docs = readProjectDocs(websiteProject.path).map((doc) => `${doc.path}\n${doc.content.slice(0, 4500)}`).join("\n\n").slice(0, 16_000);
-        repositoryContext += `\n\nExisting build docs:\n${docs || "No prior build docs. Plan the visual foundation only."}`;
+      if (projectPlanning && websiteProject) {
+        sliceDirective = projectPlanningPrompt(websiteProject.originalBrief || requestText);
+        if (projectPlan) {
+          const planningDocs = readProjectDocs(websiteProject.path)
+            .filter((doc) => ["brief.md", "plan.md", "decisions.md", "site-map.md"].some((name) => doc.path.endsWith(`/${name}`)))
+            .map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 14_000);
+          repositoryContext += `\n\nExisting proposed plan to revise explicitly:\n${planningDocs}`;
+        }
+      } else if (slicedApplication && websiteProject && projectPlan && previousSlice) {
+        const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
+        const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
+        sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
+        const relevantNames = ["brief.md", "plan.md", "current-slice.md", "decisions.md", "handoff.md", "known-issues.md", "data-contract.md"];
+        const docs = readProjectDocs(websiteProject.path)
+          .filter((doc) => relevantNames.some((name) => doc.path.endsWith(`/${name}`)))
+          .map((doc) => `${doc.path}\n${doc.content.slice(0, 3200)}`).join("\n\n").slice(0, 14_000);
+        repositoryContext += `\n\nApproved mini-loop context:\n${docs}`;
       }
       if (rawSliceAction === "backend" && websiteProject) {
         const docs = readProjectDocs(websiteProject.path);
@@ -1202,7 +1248,7 @@ const server = createServer((request, response) => {
         repositoryContext += `\n\nFRONTEND HANDOFF: Plan backend and database work in this new session using the frontend contracts and decisions below. Do not rebuild the frontend.\n${handoff}`;
       }
       const isGreenfieldDesign = isBorgWebsite && websiteWorkflow === "initial_generation";
-      const designRequired = mode !== "ask" && requiresDesignDirection({
+      const designRequired = mode !== "ask" && !miniLoop && requiresDesignDirection({
         request: requestText,
         disciplines: route.disciplines,
         isBorgWebsite,
@@ -1244,6 +1290,13 @@ const server = createServer((request, response) => {
         writeEvent(response, { type: "message.delta", taskId: task.id, text: answer });
         finishRole(architectAssignment, "completed", emit);
         appendTaskEvent(task.id, "MODEL_RESPONSE_COMPLETED", { runtime: "ollama", model: architectModel, role: "architect", answer, usedTools });
+        const proposedProjectPlan = projectPlanning && websiteProject
+          ? persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template), task.id)
+          : null;
+        if (proposedProjectPlan) {
+          appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan });
+          emit({ type: "project.plan.proposed", plan: proposedProjectPlan });
+        }
         if (mode === "plan" || mode === "edit" || mode === "agent") {
           recordHandoff({
             task,
@@ -1263,9 +1316,18 @@ const server = createServer((request, response) => {
           }, emit);
           const approval = createApproval({ id: randomUUID(), taskId: task.id });
           tasks.saveApproval(approval);
-          appendTaskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, mode });
+          appendTaskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, mode, kind: proposedProjectPlan ? "project_plan" : "execution" });
           task = transitionTask(task, "AWAITING_APPROVAL", emit);
-          if (mode === "plan") {
+          if (proposedProjectPlan) {
+            writeEvent(response, {
+              type: "project.plan.approval.requested",
+              taskId: task.id,
+              approval,
+              planText: answer,
+              projectPlan: proposedProjectPlan,
+              message: "Approve the tailored frontend phase plan. Approval freezes scope but does not authorize source-file mutation; slice 1 starts in a new session.",
+            });
+          } else if (mode === "plan") {
             writeEvent(response, {
               type: "mode.escalation.requested",
               taskId: task.id,
@@ -1273,10 +1335,10 @@ const server = createServer((request, response) => {
               fromMode: "plan",
               requestedMode: "edit",
               planText: answer,
-              message: "PLAN is read-only. Approve the plan to switch the session to EDIT and create an isolated Git worktree.",
+              message: "Approve this slice mini-plan to switch this slice session to EDIT.",
             });
           } else {
-            writeEvent(response, { type: "approval.requested", taskId: task.id, approval, message: "Review the plan, then approve or reject creation of an isolated Git worktree." });
+            writeEvent(response, { type: "approval.requested", taskId: task.id, approval, message: "Review the slice mini-plan, then approve or reject isolated worktree execution." });
           }
         } else task = transitionTask(task, "COMPLETE", emit);
         writeEvent(response, { type: "stream.completed", taskId: task.id });

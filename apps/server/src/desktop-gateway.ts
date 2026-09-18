@@ -120,13 +120,14 @@ function toolStatus() {
 
 async function loadSessionRuntime(session: ChatSession) {
   const latestTaskId = chats.latestTaskId(session.id);
-  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, runtimeAvailable: true };
+  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, projectPlanApproval: false, runtimeAvailable: true };
   try {
     const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(latestTaskId)}/approval`, { signal: AbortSignal.timeout(5_000) });
     if (!upstream.ok) throw new Error(`Core task state returned ${upstream.status}.`);
     const body = await upstream.json() as {
       task?: { id: string; state: string };
       approval?: { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null } | null;
+      projectPlanApproval?: boolean;
     };
     let restoredSession = session;
     let escalation = chats.findModeEscalation(latestTaskId);
@@ -144,10 +145,11 @@ async function loadSessionRuntime(session: ChatSession) {
       task: body.task ?? null,
       approval: body.approval ?? null,
       escalation: pending ? escalation : null,
+      projectPlanApproval: pending && body.projectPlanApproval === true,
       runtimeAvailable: true,
     };
   } catch {
-    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), runtimeAvailable: false };
+    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), projectPlanApproval: false, runtimeAvailable: false };
   }
 }
 
@@ -241,6 +243,7 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
     let taskId: string | null = null;
     let assistantText = "";
     let coreApproval: Record<string, unknown> | null = null;
+    let projectPlanApproval = false;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -256,6 +259,15 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
           if (taskId) chats.bindTask(session.id, taskId);
         }
         if (event.type === "message.delta") assistantText += String(event.text ?? "");
+        if (event.type === "project.plan.approval.requested") {
+          coreApproval = event.approval as Record<string, unknown> | null;
+          projectPlanApproval = true;
+          if (taskId && coreApproval) {
+            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "Frontend phase plan is ready for approval. Approving it freezes the slice roadmap but does not authorize source-file mutation.", metadata: { approval: coreApproval, projectPlan: event.projectPlan } });
+          }
+          writeEvent(response, event);
+          continue;
+        }
         if (event.type === "mode.escalation.requested") {
           coreApproval = event.approval as Record<string, unknown> | null;
           if (session.activeMode === "plan" && taskId && coreApproval) {
@@ -288,7 +300,7 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
 
     if (assistantText.trim()) appendMessage({ sessionId: session.id, taskId, role: "assistant", kind: session.activeMode === "ask" ? "prose" : "plan", text: assistantText.trim() });
 
-    if ((session.activeMode === "edit" || session.activeMode === "agent") && taskId && coreApproval) {
+    if (!projectPlanApproval && (session.activeMode === "edit" || session.activeMode === "agent") && taskId && coreApproval) {
       await approveCoreTask(taskId);
       writeEvent(response, { type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
       await pipeExecution(taskId, session, response, controller);
@@ -480,7 +492,8 @@ const server = createServer((request, response) => {
       const body = await upstream.json().catch(() => ({})) as Record<string, unknown>;
       if (!upstream.ok) return send(response, upstream.status, body);
 
-      const escalated = decision === "approve" && session.activeMode === "plan";
+      const projectPlanApproved = body.projectPlanApproved === true;
+      const escalated = decision === "approve" && session.activeMode === "plan" && !projectPlanApproved;
       const updatedSession = escalated ? chats.updateSession(session.id, { activeMode: "edit" }) ?? session : session;
       chats.deleteModeEscalation(taskId);
       appendMessage({
@@ -488,11 +501,13 @@ const server = createServer((request, response) => {
         taskId,
         role: "system",
         kind: decision === "approve" ? "status" : "plan",
-        text: escalated
-          ? "Mode escalated from PLAN to EDIT. Approved execution may continue."
-          : decision === "reject"
-            ? "Stayed in PLAN. No mutation authorization was granted."
-            : `${updatedSession.activeMode.toUpperCase()} authorization was confirmed.`,
+        text: projectPlanApproved
+          ? "Frontend phase plan approved. Source mutation remains locked; start slice 1 in a new session."
+          : escalated
+            ? "Mode escalated from PLAN to EDIT for the approved slice."
+            : decision === "reject"
+              ? "Stayed in PLAN. No mutation authorization was granted."
+              : `${updatedSession.activeMode.toUpperCase()} authorization was confirmed.`,
       });
       return send(response, 200, { ...body, session: updatedSession });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
