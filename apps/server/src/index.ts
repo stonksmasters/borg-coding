@@ -723,6 +723,7 @@ const server = createServer((request, response) => {
             return;
           }
           const policy = vision.status();
+          emit({ type: "stage.updated", stage: "Visual Direction", status: "active" });
           appendTaskEvent(taskId, "DESIGN_REVIEW_STARTED", { provider: policy.provider, model: policy.model, attempt: task.attempts });
           emit({ type: "design.review.started", provider: policy.provider, model: policy.model });
           designReview = await visualDirector.review({
@@ -1111,6 +1112,9 @@ const server = createServer((request, response) => {
       }
       const architectModel = teamPolicies.modelFor(teamPolicy, "architect", model, route.primary);
       const isBorgWebsite = Boolean(approvedRepository && websiteInfo(approvedRepository));
+      const isGreenfieldDesign = isBorgWebsite
+        && /\b(build|create|launch|new|homepage|landing page|website)\b/i.test(requestText)
+        && !/\b(redesign|update|change|fix|repair|existing)\b/i.test(requestText);
       const designRequired = mode !== "ask" && requiresDesignDirection({
         request: requestText,
         disciplines: route.disciplines,
@@ -1119,13 +1123,13 @@ const server = createServer((request, response) => {
       let designBrief: DesignBrief | null = null;
       if (designRequired) {
         emit({ type: "stage.updated", stage: "Design Direction", status: "active" });
-        appendTaskEvent(task.id, "DESIGN_BRIEF_STARTED", { model: architectModel, isGreenfield: isBorgWebsite });
+        appendTaskEvent(task.id, "DESIGN_BRIEF_STARTED", { model: architectModel, isGreenfield: isGreenfieldDesign });
         designBrief = await designDirector.createBrief({
           taskId: task.id,
           request: requestText,
           model: architectModel,
           repositoryContext,
-          isGreenfield: isBorgWebsite,
+          isGreenfield: isGreenfieldDesign,
         });
         appendTaskEvent(task.id, "DESIGN_BRIEF_CREATED", { brief: designBrief, model: architectModel });
         emit({ type: "design.brief.created", brief: designBrief });
