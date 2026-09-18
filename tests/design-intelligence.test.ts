@@ -54,6 +54,11 @@ test("design direction is required for greenfield BORG sites and visual website 
     isBorgWebsite: false,
   }), false);
   assert.equal(requiresDesignDirection({
+    request: "Fix the click handler on this button",
+    disciplines: ["frontend"],
+    isBorgWebsite: true,
+  }), false);
+  assert.equal(requiresDesignDirection({
     request: "Build a database migration",
     disciplines: ["backend", "database"],
     isBorgWebsite: false,
