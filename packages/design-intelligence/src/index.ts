@@ -135,7 +135,7 @@ export class DesignDirectorService {
     const body = await response.json().catch(() => ({})) as { message?: { content?: string }; error?: string };
     if (!response.ok || body.error) throw new Error(body.error ?? "Design Director failed (" + response.status + ").");
     const raw = RawBriefSchema.parse(JSON.parse(body.message?.content ?? ""));
-    const avoid = [...new Set([...raw.avoid, ...enforcedAvoid])].slice(0, 20);
+    const avoid = [...new Set([...enforcedAvoid, ...raw.avoid])].slice(0, 20);
     return DesignBriefSchema.parse({ ...raw, avoid, taskId: input.taskId, createdAt: new Date().toISOString() });
   }
 }
