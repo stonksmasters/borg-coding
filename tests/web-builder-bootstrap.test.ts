@@ -58,6 +58,10 @@ test("website bootstrap creates a committed React project and can be restored fr
     const worktreePath = join(root, "approved-worktree");
     execFileSync("git", ["worktree", "add", "-b", "preview-test", worktreePath], { cwd: project.path });
     assert.equal(websiteInfo(worktreePath)?.name, "Miller's Glass");
+    assert.equal(existsSync(join(worktreePath, "src", "features")), false, "Git worktrees do not preserve empty scaffold directories");
+    const worktreePrepared = prepareWebsiteWorkspace(worktreePath);
+    assert.ok(worktreePrepared.includes("src/features"));
+    assert.ok(existsSync(join(worktreePath, "src", "features")));
     await assert.rejects(() => createWebsiteProject("Miller's Glass", root, async () => {}), /already exists/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
