@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, ExternalLink, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
+import { isUnsupportedLanguageTool, stageProgress, toolProgress } from "./agent-progress";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -44,9 +45,10 @@ type StreamEvent = {
   output?: Record<string, unknown>;
   approval?: Approval;
   escalation?: Escalation;
-  status?: { stdout?: string };
   diff?: { stdout?: string };
   review?: { summary?: string };
+  stage?: string;
+  status?: string | { stdout?: string };
 };
 
 function statusLabel(config: ToolConfig | null) {
@@ -90,6 +92,8 @@ export function BorgWorkspaceV2() {
   const [toolsError, setToolsError] = useState("");
   const [savingTools, setSavingTools] = useState(false);
   const [sessionError, setSessionError] = useState("");
+  const [progress, setProgress] = useState<{ title: string; detail: string } | null>(null);
+  const [liveActivity, setLiveActivity] = useState<string[]>([]);
   const [websiteOpen, setWebsiteOpen] = useState(false);
   const [websiteName, setWebsiteName] = useState("");
   const [websiteBusy, setWebsiteBusy] = useState(false);
@@ -114,6 +118,9 @@ export function BorgWorkspaceV2() {
   const liveAssistantId = useRef<string | null>(null);
   const activeMode = activeSession?.activeMode ?? "plan";
   const actionLabel = useMemo(() => streaming ? "Stop" : "Send", [streaming]);
+  const activityMessages = useMemo(() => messages.filter((message) => message.role === "tool" || (message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
+  const visibleMessages = useMemo(() => messages.filter((message) => message.role !== "tool" && !(message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
+  const activityItems = useMemo(() => [...activityMessages.map((message) => message.text), ...liveActivity].slice(-60), [activityMessages, liveActivity]);
 
   const activatePreview = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST" });
@@ -148,6 +155,8 @@ export function BorgWorkspaceV2() {
     setActiveSession(result.session);
     setSessions((current) => current.map((session) => session.id === result.session.id ? result.session : session));
     setMessages(result.messages);
+    setProgress(null);
+    setLiveActivity([]);
     setActiveTaskId(result.latestTaskId);
     setApproval(pendingApproval);
     setEscalation(pendingEscalation);
@@ -295,10 +304,17 @@ export function BorgWorkspaceV2() {
         const id = liveAssistantId.current;
         setMessages((current) => current.map((message) => message.id === id ? { ...message, text: `${message.text}${text}` } : message));
       }
+    } else if (event.type === "stage.updated" && event.status === "active" && event.stage) {
+      const next = stageProgress(event.stage);
+      if (next) setProgress(next);
     } else if (event.type === "tool.started") {
-      setMessages((current) => [...current, transientMessage("tool", `Running ${event.tool ?? "tool"}${event.input?.path ? ` · ${String(event.input.path)}` : ""}`, "tool")]);
+      const tool = event.tool ?? "tool";
+      setProgress({ title: toolProgress(tool, event.input), detail: "BORG will show its proposed choices in the plan after this review." });
+      setLiveActivity((current) => [...current.slice(-39), `Running ${tool}${event.input?.path ? ` · ${String(event.input.path)}` : ""}`]);
     } else if (event.type === "tool.failed") {
-      setMessages((current) => [...current, transientMessage("system", `${event.tool ?? "Tool"} failed: ${event.message ?? "Unknown error"}`, "warning")]);
+      const detail = `${event.tool ?? "Tool"} failed: ${event.message ?? "Unknown error"}`;
+      setLiveActivity((current) => [...current.slice(-39), detail]);
+      if (!isUnsupportedLanguageTool(detail)) setMessages((current) => [...current, transientMessage("system", detail, "warning")]);
     } else if (event.type === "mode.escalation.requested" && event.approval && event.escalation) {
       setApproval(event.approval);
       setEscalation(event.escalation);
@@ -345,6 +361,8 @@ export function BorgWorkspaceV2() {
     abortRef.current = controller;
     liveAssistantId.current = null;
     setStreaming(true);
+    setProgress({ title: "Reading your request", detail: "BORG will review the project, then show its proposed design choices in the plan." });
+    setLiveActivity([]);
     setApproval(null);
     setEscalation(null);
     setDeliveryReady(false);
@@ -386,6 +404,7 @@ export function BorgWorkspaceV2() {
         setApproval(null);
         setEscalation(null);
         setStreaming(true);
+        setProgress(stageProgress("Implementation"));
         await activatePreview(activeSession.id);
         const executeResponse = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/execute`, { method: "POST" });
         await consumeStream(executeResponse);
@@ -652,7 +671,11 @@ export function BorgWorkspaceV2() {
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row"><div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-7 sm:px-10 lg:px-14"><div className="mx-auto max-w-3xl">
           <div className="mb-6 flex items-start justify-between gap-4"><div><p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#a7ff4f]">{activeTaskId ? `Task ${activeTaskId.slice(0, 8).toUpperCase()}` : "Persistent session"}</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">{activeSession?.title ?? "New chat"}</h1></div><span className="rounded-full border border-white/10 bg-white/4 px-3 py-1 text-xs text-slate-400">{taskState}</span></div>
           {sessionError && <div className="mb-5 rounded-lg border border-red-400/20 bg-red-400/8 px-4 py-3 text-sm text-red-200">{sessionError}</div>}
-          <div className="space-y-4">{messages.length ? messages.map((message) => <AssistantMessage key={message.id} message={message} />) : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">New persistent chat</p><p className="mt-1 text-sm text-slate-500">This conversation will survive restarts and stay associated with the selected mode and workspace.</p></div></div>}{streaming && <div className="flex items-center gap-2 pl-11 text-sm text-slate-500"><span className="size-1.5 animate-pulse rounded-full bg-[#a7ff4f]" />BORG is working…</div>}</div>
+          <div className="space-y-4">
+            {visibleMessages.length ? visibleMessages.map((message) => <AssistantMessage key={message.id} message={message} />) : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">New persistent chat</p><p className="mt-1 text-sm text-slate-500">This conversation will survive restarts and stay associated with the selected mode and workspace.</p></div></div>}
+            {streaming && <div role="status" aria-live="polite" className="rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4"><div className="flex items-start gap-3"><span className="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-[#a7ff4f]" /><div><p className="text-sm font-medium text-[#d9ffb5]">{progress?.title ?? "BORG is working"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{progress?.detail ?? "The proposed plan will appear here when it is ready."}</p></div></div></div>}
+            {activityItems.length > 0 && <details className="rounded-lg border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer select-none font-medium text-slate-400">Technical activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
+          </div>
         </div></div>{(previewUrl || previewError) && <div className="flex min-h-[320px] flex-1 flex-col border-t border-white/8 lg:min-h-0 lg:border-l lg:border-t-0"><div className="flex h-11 shrink-0 items-center justify-between border-b border-white/8 bg-[#0a0d12] px-3"><span className="text-xs font-medium text-slate-300">Live preview</span><div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} disabled={!previewUrl} className="text-slate-400"><RotateCcw className="size-3.5" />Refresh</Button>{previewUrl && <a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-white"><ExternalLink className="size-3.5" />Open</a>}</div></div>{previewUrl ? <iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="min-h-0 w-full flex-1 border-0 bg-white" /> : <div className="p-4 text-sm text-red-200">{previewError}</div>}</div>}</div>
 
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
