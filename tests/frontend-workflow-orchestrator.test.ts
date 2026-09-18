@@ -185,16 +185,29 @@ test("approving a frontend plan server-side starts slice 1, mutates source, and 
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ decision: "approve" }),
     });
-    const approvalBody = await approval.json() as { workflowStarted?: boolean; startedSession?: { activeMode?: string } };
+    const approvalBody = await approval.json() as { workflowStarted?: boolean; startedSession?: { activeMode?: string; parentSessionId?: string | null; workflowRole?: string } };
     assert.equal(approval.status, 200);
     assert.equal(approvalBody.workflowStarted, true);
     assert.equal(approvalBody.startedSession?.activeMode, "edit");
+    assert.equal(approvalBody.startedSession?.parentSessionId, "plan-session");
+    assert.equal(approvalBody.startedSession?.workflowRole, "frontend_slice");
 
     await waitFor(() => deliveryCalls === 1);
     assert.equal((chatRequest as Record<string, unknown> | null)?.mode, "edit");
     assert.equal((chatRequest as Record<string, unknown> | null)?.sliceAction, "initial");
     assert.match(readFileSync(join(src, "App.tsx"), "utf8"), /Slice 1 built/);
     assert.equal(deliveryCalls, 1);
+
+    const sessionsResponse = await fetch(`http://127.0.0.1:${gatewayPort}/api/sessions`);
+    const sessionsBody = await sessionsResponse.json() as { sessions: Array<{ id: string; parentSessionId: string | null; workflowRole: string }> };
+    assert.equal(sessionsBody.sessions.filter((session) => session.workflowRole === "primary").length, 1);
+    assert.equal(sessionsBody.sessions.filter((session) => session.workflowRole === "frontend_slice").length, 1);
+
+    const deleteResponse = await fetch(`http://127.0.0.1:${gatewayPort}/api/sessions/plan-session`, { method: "DELETE" });
+    assert.equal(deleteResponse.status, 200);
+    const afterDelete = await fetch(`http://127.0.0.1:${gatewayPort}/api/sessions`);
+    const afterDeleteBody = await afterDelete.json() as { sessions: unknown[] };
+    assert.equal(afterDeleteBody.sessions.length, 0);
   } finally {
     if (gateway) await stopChild(gateway);
     await new Promise<void>((resolveClose) => core.close(() => resolveClose()));
