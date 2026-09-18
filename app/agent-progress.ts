@@ -11,20 +11,26 @@ export function stageProgress(stage: string): { title: string; detail: string } 
 
 export function toolProgress(tool: string, input?: Record<string, unknown>): string {
   const path = typeof input?.path === "string" ? input.path : "";
-  if (tool === "repository_read" && path === "index.html") return "Reviewing the current homepage";
-  if (tool === "repository_read" && /(^|\/)main\.[jt]sx?$/.test(path)) return "Reviewing the page content and layout";
-  if (tool === "repository_read" && /\.css$/.test(path)) return "Reviewing the site's colors and styles";
-  if (tool === "repository_read" && path === "package.json") return "Checking how the website is set up";
-  if (["repository_list", "repository_read", "repository_search", "repository_file_symbols"].includes(tool)) return "Reviewing the current website and its files";
+  const query = typeof input?.query === "string" ? input.query.trim().slice(0, 90) : "";
+  if (tool === "repository_read") return path ? `Reading ${path}` : "Reading a repository file";
+  if (tool === "repository_list") return path && path !== "." ? `Reviewing files under ${path}` : "Reviewing the project structure";
+  if (tool === "repository_search") return query ? `Searching the codebase for “${query}”` : "Searching the codebase";
+  if (tool === "repository_file_symbols") return path ? `Mapping symbols in ${path}` : "Mapping file symbols";
+  if (["repository_symbols", "repository_definition", "repository_references", "repository_implementations", "repository_call_hierarchy", "repository_change_impact"].includes(tool)) return "Tracing the code paths affected by this work";
   if (["repository_language_status", "repository_diagnostics"].includes(tool)) return "Checking the project's structure and code health";
-  if (tool === "web_search") {
-    const query = typeof input?.query === "string" ? input.query.trim().slice(0, 90) : "";
-    return query ? `Looking up references for “${query}”` : "Looking up visual and content references";
-  }
+  if (tool === "web_search") return query ? `Looking up references for “${query}”` : "Looking up current references";
   if (tool === "web_fetch") return "Reading a reference page";
-  if (tool.startsWith("worktree_") || tool.startsWith("repository_write")) return "Updating the website in the approved worktree";
-  if (tool.startsWith("browser_")) return "Inspecting the rendered website";
-  return "Gathering information for the current task";
+  if (tool === "worktree_patch") return path ? `Updating ${path}` : "Updating the approved worktree";
+  if (tool === "worktree_read") return path ? `Checking ${path} in the approved worktree` : "Checking the approved worktree";
+  if (tool === "worktree_command") {
+    const command = typeof input?.command === "string" ? input.command : "";
+    return command ? `Running ${command} in the project` : "Running a project command";
+  }
+  if (tool === "git_status") return "Checking which files changed";
+  if (tool === "git_diff") return path ? `Reviewing the diff for ${path}` : "Reviewing the implementation diff";
+  if (tool === "verification_run") return `Running ${String(input?.profile ?? "quick")} verification`;
+  if (tool.startsWith("browser_")) return "Verifying the rendered application";
+  return "Continuing the current task";
 }
 
 export function isUnsupportedLanguageTool(message: string): boolean {
