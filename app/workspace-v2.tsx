@@ -38,6 +38,8 @@ const WEBSITE_EXAMPLES = [
 const BUILDER_STEPS = ["Understand", "Design", "Build", "Test", "Ready"] as const;
 type PermissionMode = "ask" | "plan" | "edit" | "agent";
 type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string; parentSessionId: string | null; workflowRole: "primary" | "frontend_slice" | "backend" };
+type WorkflowStatus = { taskState: string; sliceIndex: number | null; sliceTotal: number | null; sliceTitle: string | null; objective: string; currentAction: string; completed: string[]; pending: string[]; verificationPassed: boolean | null; repairAttempt: number; nextAction: string; activity: Array<{ type: string; occurredAt: string; detail: string }> };
+type ContextRecord = { id: string; role: string; model: string; sliceId: string | null; createdAt: string; inputSha256: string; manifest: Array<{ path: string; reason: string; characters: number; sha256: string }> };
 type ChatMessage = RenderableMessage & { sessionId: string; taskId: string | null; createdAt: string; metadata?: Record<string, unknown> };
 type AccessConfig = { repositoryPath: string | null; documents: string[]; repositoryName: string | null; documentNames: string[]; updatedAt: string };
 type ToolConfig = {
@@ -129,6 +131,9 @@ export function BorgWorkspaceV2() {
   const [progress, setProgress] = useState<{ title: string; detail: string } | null>(null);
   const [liveActivity, setLiveActivity] = useState<string[]>([]);
   const [activities, setActivities] = useState<AgentActivity[]>([]);
+  const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus | null>(null);
+  const [contextRecords, setContextRecords] = useState<ContextRecord[]>([]);
+  const [selectedContext, setSelectedContext] = useState<(ContextRecord & { inputText: string }) | null>(null);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
   const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "docs" | "terminal" | "design">("preview");
   const [buildDocs, setBuildDocs] = useState<BuildDoc[]>([]);
@@ -182,7 +187,7 @@ export function BorgWorkspaceV2() {
   const actionLabel = executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
   const currentProgress = progress
     ?? (taskState === "COMPLETE" && sliceState?.status === "awaiting_feedback"
-      ? { title: `Slice ${sliceState.current + 1} is ready for review`, detail: "The verified slice is checkpointed. Review Preview, Changes, Docs, and verification evidence before continuing." }
+      ? { title: `Slice ${sliceState.current + 1} is verified`, detail: "The slice is checkpointed and the next approved slice starts automatically. Review Preview, Changes, Docs, and verification evidence at any time." }
       : taskState === "COMPLETE" && sliceState?.status === "frontend_complete"
         ? { title: "Frontend complete", detail: "All approved frontend slices passed their completion gates." }
         : taskProgress(taskState));
@@ -226,6 +231,31 @@ export function BorgWorkspaceV2() {
     const result = await response.json() as { activities?: AgentActivity[] };
     setActivities(result.activities ?? []);
   }, []);
+
+  useEffect(() => {
+    if (!activeTaskId || !isWebsite) { setWorkflowStatus(null); setContextRecords([]); setSelectedContext(null); return; }
+    setSelectedContext(null);
+    let active = true;
+    const refresh = async () => {
+      const [statusResponse, contextsResponse] = await Promise.all([
+        fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/workflow-status`),
+        fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/contexts`),
+      ]);
+      if (!active) return;
+      if (statusResponse.ok) setWorkflowStatus((await statusResponse.json() as { status: WorkflowStatus }).status);
+      if (contextsResponse.ok) setContextRecords((await contextsResponse.json() as { contexts: ContextRecord[] }).contexts);
+    };
+    void refresh().catch(() => {});
+    const timer = setInterval(() => { void refresh().catch(() => {}); }, 3000);
+    return () => { active = false; clearInterval(timer); };
+  }, [activeTaskId, isWebsite]);
+
+  async function openModelContext(id: string) {
+    if (!activeTaskId) return;
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/contexts/${encodeURIComponent(id)}`);
+    if (!response.ok) return;
+    setSelectedContext((await response.json() as { context: ContextRecord & { inputText: string } }).context);
+  }
 
   const refreshChanges = useCallback(async (taskId: string, options?: { refreshPreviewOnChange?: boolean }) => {
     const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/changes`);
@@ -420,11 +450,14 @@ export function BorgWorkspaceV2() {
   }, [activeSession?.repositoryPath]);
 
   useEffect(() => {
-    if (!activeSession || activeSession.parentSessionId || !activeSession.repositoryPath || streaming || taskIsRunning(taskState) || sliceState?.status !== "ready") return;
-    const child = sessions
-      .filter((session) => session.parentSessionId === activeSession.id)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-    if (child) void loadSession(child.id).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to follow the active frontend build."));
+    if (!activeSession?.repositoryPath || streaming || taskIsRunning(taskState)) return;
+    const rootId = activeSession.parentSessionId ?? activeSession.id;
+    const children = sessions.filter((session) => session.parentSessionId === rootId && session.workflowRole === "frontend_slice")
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const latest = children[0];
+    if (latest && latest.id !== activeSession.id && (sliceState?.status === "ready" || sliceState?.status === "awaiting_feedback")) {
+      void loadSession(latest.id).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to follow the active frontend build."));
+    }
   }, [activeSession, loadSession, sessions, sliceState?.status, streaming, taskState]);
 
   useEffect(() => {
@@ -1186,6 +1219,18 @@ export function BorgWorkspaceV2() {
               <div className="flex items-start gap-3"><span className={`mt-1.5 size-2 shrink-0 rounded-full bg-[#a7ff4f] ${streaming || taskIsRunning(taskState) ? "animate-pulse" : ""}`} /><div><p className="text-sm font-medium text-[#d9ffb5]">{currentProgress?.title ?? (builderStep === 4 ? "Frontend ready for review" : "BORG is working")}</p><p className="mt-1 text-xs leading-5 text-slate-400">{currentProgress?.detail ?? "BORG is continuing the current website build."}</p></div></div>
               <div className="mt-4 grid grid-cols-5 gap-1">{BUILDER_STEPS.map((step, index) => <div key={step} className="min-w-0"><div className={`h-1 rounded-full ${index <= builderStep ? "bg-[#a7ff4f]" : "bg-white/8"}`} /><p className={`mt-1 truncate text-[9px] uppercase tracking-wide ${index <= builderStep ? "text-[#cfff9e]" : "text-slate-700"}`}>{step}</p></div>)}</div>
             </div>}
+            {workflowStatus && <section aria-label="Frontend execution status" className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-xs text-slate-400">
+              <p className="font-semibold uppercase tracking-wide text-[#a7ff4f]">Frontend{workflowStatus.sliceIndex !== null ? ` · Slice ${workflowStatus.sliceIndex + 1}/${workflowStatus.sliceTotal ?? "?"}` : ""}</p>
+              <p className="mt-2 text-sm font-medium text-slate-200">{workflowStatus.sliceTitle ?? "Project planning"}</p>
+              <p className="mt-2">Objective: {workflowStatus.objective}</p>
+              <p className="mt-1">Current action: {workflowStatus.currentAction}</p>
+              <p className="mt-1">Verification: {workflowStatus.verificationPassed === null ? "Pending" : workflowStatus.verificationPassed ? "Passed" : "Failed"} · Repair attempts: {workflowStatus.repairAttempt}</p>
+              <p className="mt-1">Next: {workflowStatus.nextAction}</p>
+              <div className="mt-3 grid grid-cols-2 gap-3"><div><p className="text-slate-300">Completed</p><p className="mt-1">{workflowStatus.completed.map((item) => item.replaceAll("_", " ").toLowerCase()).join(" · ") || "None yet"}</p></div><div><p className="text-slate-300">Pending</p><p className="mt-1">{workflowStatus.pending.map((item) => item.replaceAll("_", " ").toLowerCase()).join(" · ") || "None"}</p></div></div>
+              <details className="mt-3"><summary className="cursor-pointer text-slate-300">Timestamped activity ({workflowStatus.activity.length})</summary><div className="mt-2 max-h-44 overflow-y-auto space-y-1">{workflowStatus.activity.map((item, index) => <p key={`${item.occurredAt}:${index}`}>{new Date(item.occurredAt).toLocaleTimeString()} · {item.detail.replaceAll("_", " ")}</p>)}</div></details>
+              <details className="mt-3"><summary className="cursor-pointer text-slate-300">Model context ({contextRecords.length} requests)</summary><div className="mt-2 max-h-44 overflow-y-auto space-y-2">{contextRecords.map((record) => <button type="button" key={record.id} onClick={() => void openModelContext(record.id)} className="block w-full rounded border border-white/10 p-2 text-left hover:bg-white/5"><span className="text-slate-200">{record.role} · {record.model}</span><span className="block text-slate-500">{new Date(record.createdAt).toLocaleTimeString()} · {record.manifest.length} included items</span></button>)}</div></details>
+              {selectedContext && <details open className="mt-3 rounded border border-white/10 p-2"><summary className="cursor-pointer text-slate-200">Saved input · {selectedContext.role}</summary><div className="mt-2 space-y-1">{selectedContext.manifest.map((item, index) => <p key={`${item.path}:${index}`}>{item.path} — {item.reason} ({item.characters} characters)</p>)}</div><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[10px]">{selectedContext.inputText}</pre></details>}
+            </section>}
             <ActivityFeed activities={activities} />
             {activityItems.length > 0 && <details className="rounded-lg border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer select-none font-medium text-slate-400">Technical activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
           </div>
@@ -1241,8 +1286,8 @@ export function BorgWorkspaceV2() {
           {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planApproval ? "Approve frontend phase plan" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planApproval ? "Approval freezes the tailored slice roadmap and starts the frontend build. BORG will execute each slice in a bounded mini-loop inside isolated worktrees." : "This mini-plan is limited to the current approved slice. Approved frontend slices execute automatically inside the frozen phase plan."}</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planApproval ? "Revise plan" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planApproval ? "Approve plan" : "Build slice"}</Button></div></div>}
           {deliveryReady && activeSession?.workflowRole !== "frontend_slice" && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Website check complete</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}The verified result is ready in Preview. Save the change set when you are happy with it.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
           {taskState === "COMPLETE" && sliceState && !["working", "plan_pending"].includes(sliceState.status) && <div className="mx-auto mb-3 max-w-3xl rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
-            <p className="text-sm font-medium text-[#d9ffb5]">{sliceState.status === "ready" ? `Frontend plan approved — ${sliceState.currentTitle} is ready` : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? "Frontend complete — backend phase is available" : "Frontend complete — static site can be finalized") : `Slice ${sliceState.current + 1} of ${sliceState.total} complete — your feedback is needed`}</p>
-            <p className="mt-1 text-xs text-slate-400">{sliceState.status === "ready" ? "Slice 1 starts a lightweight mini-loop in a new session. BORG will not rediscover or re-plan the whole website." : "Review Preview, Changes, and Docs. The next step starts in a new session and carries forward the approved project state."}</p>
+            <p className="text-sm font-medium text-[#d9ffb5]">{sliceState.status === "ready" ? `Frontend plan approved — ${sliceState.currentTitle} is ready` : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? "Frontend complete — backend phase is available" : "Frontend complete — static site can be finalized") : `Slice ${sliceState.current + 1} of ${sliceState.total} complete — continuing automatically`}</p>
+            <p className="mt-1 text-xs text-slate-400">{sliceState.status === "ready" ? "Slice 1 starts a lightweight mini-loop in a new session. BORG will not rediscover or re-plan the whole website." : sliceState.status === "awaiting_feedback" ? "The verified slice is saved. BORG is starting the next approved slice; you can still review Preview, Changes, and Docs." : "Review Preview, Changes, and Docs. The frontend completion gate is ready for your decision."}</p>
             {sliceState.status !== "ready" && <Input value={sliceFeedback} onChange={(event) => setSliceFeedback(event.target.value)} placeholder="What worked, and what should change? “Looks good” is enough to continue." aria-label="Feedback on this slice" className="mt-3 border-white/10 bg-white/4 text-slate-100" />}
             <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setRightPanel("docs")} className="border-white/10 bg-transparent text-slate-300">Read docs</Button>{sliceState.status === "ready" ? <Button size="sm" disabled={sliceBusy} onClick={() => void startSliceSession("initial")} className="bg-[#a7ff4f] text-[#071007]">Start slice 1</Button> : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? <Button size="sm" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("backend")} className="bg-[#a7ff4f] text-[#071007]">Plan backend in new session</Button> : null) : <><Button size="sm" variant="outline" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("revise")} className="border-white/10 bg-transparent text-slate-300">Revise this slice</Button><Button size="sm" disabled={sliceBusy} onClick={() => void startSliceSession("advance")} className="bg-[#a7ff4f] text-[#071007]">Approve and start next slice</Button></>}</div>
           </div>}

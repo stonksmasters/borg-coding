@@ -56,6 +56,7 @@ export interface VisionReviewRequest {
   model: string;
   timeoutMs: number;
   blockingSeverity: typeof blockingSeverities[number];
+  onRequestBody?: (body: string) => void;
 }
 
 export interface VisionReviewResult {
@@ -242,21 +243,19 @@ export class OllamaVisionProvider implements VisionReviewProvider {
       `Return JSON matching this schema exactly:\n${JSON.stringify(responseJsonSchema)}`,
     ].join("\n\n");
 
+    const requestBody = JSON.stringify({
+      model: request.model,
+      stream: false,
+      think: false,
+      format: responseJsonSchema,
+      options: { temperature: 0 },
+      messages: [{ role: "user", content: prompt, images: request.images.map((image) => image.base64) }],
+    });
+    request.onRequestBody?.(requestBody);
     const response = await fetch(`${this.ollamaUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: request.model,
-        stream: false,
-        think: false,
-        format: responseJsonSchema,
-        options: { temperature: 0 },
-        messages: [{
-          role: "user",
-          content: prompt,
-          images: request.images.map((image) => image.base64),
-        }],
-      }),
+      body: requestBody,
       signal: AbortSignal.timeout(request.timeoutMs),
     });
     const body = await response.json().catch(() => ({})) as { message?: { content?: string }; error?: string };
@@ -313,6 +312,7 @@ export class VisionReviewService {
     request: string;
     worktreePath: string;
     browserEvidence: BrowserEvidenceReport | null | undefined;
+    onRequestBody?: (body: string) => void;
   }): Promise<VisionReviewResult> {
     const policy = this.load();
     if (!policy.enabled) return emptyResult(input.taskId, policy, "disabled", "Local vision review is disabled.");
@@ -343,6 +343,7 @@ export class VisionReviewService {
         model: policy.model,
         timeoutMs: policy.timeoutMs,
         blockingSeverity: policy.blockingSeverity,
+        onRequestBody: input.onRequestBody,
       });
     } catch (error) {
       if (error instanceof VisionUnavailableError) return {

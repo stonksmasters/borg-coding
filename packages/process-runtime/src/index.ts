@@ -174,6 +174,14 @@ export class ProcessRuntime {
       await this.stop(existing.snapshot.id);
     }
 
+    // A response before launch belongs to another process, never this task's server.
+    try {
+      await fetch(input.url, { signal: AbortSignal.timeout(1_000) });
+      throw new Error(`Development server URL is already in use: ${input.url}`);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Development server URL is already in use:")) throw error;
+    }
+
     const record = this.launch({ ...input, kind: "dev_server", timeoutMs: undefined });
     try {
       await waitForUrl(input.url, input.startupTimeoutMs ?? 30_000, () => record.snapshot);

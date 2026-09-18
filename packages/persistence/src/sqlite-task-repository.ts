@@ -45,6 +45,13 @@ export class SqliteTaskRepository {
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         type TEXT NOT NULL, payload TEXT NOT NULL, occurred_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS model_contexts (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        role TEXT NOT NULL, model TEXT NOT NULL, slice_id TEXT,
+        input_text TEXT NOT NULL, manifest_json TEXT NOT NULL,
+        input_sha256 TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_contexts_task_created ON model_contexts(task_id, created_at DESC);
       CREATE TABLE IF NOT EXISTS approvals (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
         status TEXT NOT NULL, requested_at TEXT NOT NULL, decided_at TEXT,
@@ -145,6 +152,21 @@ export class SqliteTaskRepository {
   listEvents(taskId: string): TaskEvent[] {
     const rows = this.database.prepare("SELECT id, task_id, type, payload, occurred_at FROM task_events WHERE task_id = ? ORDER BY sequence").all(taskId) as { id: string; task_id: string; type: string; payload: string; occurred_at: string }[];
     return rows.map((row) => TaskEventSchema.parse({ id: row.id, taskId: row.task_id, type: row.type, payload: JSON.parse(row.payload), occurredAt: row.occurred_at }));
+  }
+
+  saveModelContext(input: { id: string; taskId: string; role: string; model: string; sliceId: string | null; inputText: string; manifest: unknown[]; inputSha256: string; createdAt: string }): void {
+    this.database.prepare("INSERT INTO model_contexts (id, task_id, role, model, slice_id, input_text, manifest_json, input_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(input.id, input.taskId, input.role, input.model, input.sliceId, input.inputText, JSON.stringify(input.manifest), input.inputSha256, input.createdAt);
+  }
+
+  listModelContexts(taskId: string) {
+    return this.database.prepare("SELECT id, task_id, role, model, slice_id, manifest_json, input_sha256, created_at FROM model_contexts WHERE task_id = ? ORDER BY created_at DESC").all(taskId)
+      .map((row) => { const value = row as Record<string, string | null>; return { id: value.id, taskId: value.task_id, role: value.role, model: value.model, sliceId: value.slice_id, manifest: JSON.parse(value.manifest_json ?? "[]") as unknown[], inputSha256: value.input_sha256, createdAt: value.created_at }; });
+  }
+
+  findModelContext(taskId: string, id: string) {
+    const row = this.database.prepare("SELECT id, task_id, role, model, slice_id, input_text, manifest_json, input_sha256, created_at FROM model_contexts WHERE task_id = ? AND id = ?").get(taskId, id) as Record<string, string | null> | undefined;
+    return row ? { id: row.id, taskId: row.task_id, role: row.role, model: row.model, sliceId: row.slice_id, inputText: row.input_text, manifest: JSON.parse(row.manifest_json ?? "[]") as unknown[], inputSha256: row.input_sha256, createdAt: row.created_at } : null;
   }
 
   saveApproval(approval: Approval): void {

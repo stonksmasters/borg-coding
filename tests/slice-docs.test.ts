@@ -26,9 +26,11 @@ test("website types receive appropriately sized fallback phase plans", () => {
   const ecommerce = fallbackProjectPlan("An ecommerce store with cart and checkout.", "ecommerce");
   const dashboard = fallbackProjectPlan("An authenticated operations dashboard with stored records.", "dashboard");
 
-  assert.ok(landing.slices.length >= 2 && landing.slices.length <= 3);
-  assert.ok(content.slices.length >= 2 && content.slices.length <= 3);
-  assert.ok(ecommerce.slices.length > landing.slices.length);
+  assert.ok(landing.slices.length >= 4 && landing.slices.length <= 5);
+  assert.ok(content.slices.length >= 4 && content.slices.length <= 5);
+  assert.match(landing.slices[0].title, /hero/i);
+  assert.match(landing.slices[1].title, /homepage/i);
+  assert.ok(ecommerce.slices.length >= landing.slices.length);
   assert.ok(dashboard.slices.length > landing.slices.length);
   assert.equal(landing.backendRequired, false);
   assert.equal(ecommerce.backendRequired, true);

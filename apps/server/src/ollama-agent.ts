@@ -22,6 +22,7 @@ interface AgentOptions {
   streamText?: boolean;
   limits?: Partial<AgentLimits>;
   emit(event: Record<string, unknown>): void;
+  onRequestBody?(body: string): void;
 }
 
 interface AgentLimits {
@@ -117,6 +118,7 @@ async function runTurn(options: AgentOptions, allowTools = true): Promise<Ollama
     const toolCharacters = JSON.stringify(toolDefinitions).length;
     const messages = modelMessages(options.messages, Math.max(8_000, target - toolCharacters - 1_000));
     const requestBody = JSON.stringify({ model: options.model, stream: true, messages, tools: toolDefinitions });
+    options.onRequestBody?.(requestBody);
     options.emit({ type: "runtime.turn.started", attempt: attempt + 1, messages: messages.length, requestCharacters: requestBody.length, omittedMessages: options.messages.length - messages.length });
     let streamedText = false;
     try {
@@ -223,6 +225,12 @@ export async function runOllamaAgent(options: AgentOptions) {
       if (call.function.name === "activity_update") {
         try {
           const activity = await options.tools.execute(call, options.mode, options.taskContext, options.role, options.disciplines);
+          if (options.role === "architect") {
+            const update = activity as { phase?: string; title?: string; detail?: string };
+            if (!["planning", "inspecting"].includes(update.phase ?? "") || /\b(?:implemented|patched|modified|changed|created|fixed|updated|rewrote|added|removed)\b/i.test(`${update.title ?? ""} ${update.detail ?? ""}`)) {
+              throw new Error("Architect activity may describe planning and inspection only; no implementation has occurred.");
+            }
+          }
           options.emit({ type: "activity.updated", activity });
           options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ acknowledged: true, activity }) });
         } catch (error) {

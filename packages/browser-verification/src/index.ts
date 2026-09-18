@@ -247,6 +247,16 @@ export function assertLoopbackUrl(rawUrl: string, allowWebSocket = false): URL {
   return url;
 }
 
+export function resolveTaskBrowserUrl(rawUrl: string, serverUrl: string): string {
+  const server = assertLoopbackUrl(serverUrl);
+  const requested = rawUrl.trim() ? assertLoopbackUrl(rawUrl) : server;
+  const target = new URL(server.toString());
+  target.pathname = requested.pathname;
+  target.search = requested.search;
+  target.hash = requested.hash;
+  return target.toString();
+}
+
 function isInside(root: string, candidate: string): boolean {
   const fromRoot = relative(root, candidate);
   return fromRoot === "" || (!fromRoot.startsWith(`..${sep}`) && fromRoot !== ".." && !isAbsolute(fromRoot));
@@ -305,6 +315,11 @@ export class BrowserVerification {
   }
 
   private async startServer(input: Record<string, unknown>, context: BrowserTaskContext) {
+    const existing = this.processRuntime.findRunning(context.taskId, "dev_server");
+    if (existing?.status === "running" && existing.url) {
+      this.updateReport(context.taskId);
+      return this.serverEvidence(existing);
+    }
     const command = String(input.command ?? "").toLowerCase();
     if (!serverCommands.has(command)) throw new Error(`Development server command is not allowlisted: ${command}`);
     const args = Array.isArray(input.args) ? input.args.map(String) : [];
@@ -353,9 +368,15 @@ export class BrowserVerification {
     };
   }
 
+  private taskServerUrl(rawUrl: string, taskId: string): string {
+    const server = this.processRuntime.findRunning(taskId, "dev_server");
+    if (!server?.url || server.status !== "running") throw new Error("Start the task website server before browser verification.");
+    return resolveTaskBrowserUrl(rawUrl, server.url);
+  }
+
   private async open(input: Record<string, unknown>, context: BrowserTaskContext) {
     await this.close(context.taskId);
-    const url = assertLoopbackUrl(String(input.url ?? "")).toString();
+    const url = this.taskServerUrl(String(input.url ?? ""), context.taskId);
     const viewport = {
       width: numberInRange(input.width, 1440, 320, 2560),
       height: numberInRange(input.height, 900, 320, 2160),
@@ -469,7 +490,7 @@ export class BrowserVerification {
   }
 
   private async responsive(input: Record<string, unknown>, context: BrowserTaskContext) {
-    const url = assertLoopbackUrl(String(input.url ?? "")).toString();
+    const url = this.taskServerUrl(String(input.url ?? ""), context.taskId);
     const requested = Array.isArray(input.viewports) ? input.viewports : [];
     const viewports = (requested.length ? requested : [
       { name: "mobile", width: 390, height: 844 },

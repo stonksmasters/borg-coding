@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync as writeRawFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { initializeProjectModel } from "./project-model.ts";
 
 export type SliceAction = "initial" | "revise" | "advance";
 export type ProjectSlice = {
@@ -246,8 +247,9 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
     });
   } else {
     slices.push(
-      { id: "foundation", title: "Foundation and primary journey", outcome: "A polished application shell and the first complete user-visible journey are navigable in the preview.", scope: ["design tokens and layout shell", "navigation", "primary page or journey", "basic responsive and accessible behavior"], acceptanceCriteria: ["primary journey works with representative local data", "desktop and mobile layouts are usable", "visible controls in scope work"] },
-      { id: "content-flows", title: contentHeavy ? "Content structure and discovery" : "Core content and interactions", outcome: "The remaining core pages, content, and interactions required by the brief work coherently.", scope: ["remaining core screens", "interaction states", "loading, empty, and error states where relevant"], acceptanceCriteria: ["approved pages are reachable", "core interactions work", "relevant states are represented"] },
+      { id: "foundation", title: "Homepage shell and hero", outcome: "The homepage navigation, visual foundation, and hero are polished and usable in the preview.", scope: ["design tokens and layout shell", "header and navigation", "homepage hero", "basic responsive and accessible behavior"], acceptanceCriteria: ["hero communicates the primary offer", "desktop and mobile layouts are usable", "visible navigation controls work"] },
+      { id: "homepage-sections", title: contentHeavy ? "Homepage content and discovery sections" : "Homepage sections and calls to action", outcome: "The homepage sections below the hero form a complete, coherent page with working calls to action.", scope: ["approved homepage content sections", "reusable section components", "section imagery and copy", "calls to action and interaction states"], acceptanceCriteria: ["all approved homepage sections are present", "section components work across target viewports", "calls to action have a meaningful destination or state"] },
+      { id: "content-flows", title: contentHeavy ? "Content structure and discovery" : "Remaining pages and interactions", outcome: "The remaining core pages, content, and interactions required by the brief work coherently.", scope: ["remaining core screens", "interaction states", "loading, empty, and error states where relevant"], acceptanceCriteria: ["approved pages are reachable", "core interactions work", "relevant states are represented"] },
     );
     if (dashboard) slices.push({ id: "secondary-flows", title: "Secondary flows and edge states", outcome: "Secondary user journeys and cross-screen behavior are complete enough for end-to-end browser review.", scope: ["secondary journeys", "navigation continuity", "edge and demonstration states"], acceptanceCriteria: ["key journeys can be exercised end to end", "no dead controls in approved scope"] });
   }
@@ -321,7 +323,7 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
 }
 
 export function projectPlanningPrompt(brief: string): string {
-  return `OUTER WEBSITE PHASE PLAN. This is the one full planning loop for the frontend phase. Inspect the brief and approved repository context, then propose a tailored frontend slice plan. Do not implement anything. A simple landing page may need 2-3 slices; a marketplace or dashboard may need more. Every slice must have one concrete user-visible outcome and fit in one bounded implementation/verification session. Content and interactions come before dedicated final audits; basic responsive and accessible behavior is required from the first slice. End your response with exactly one machine-readable block using this shape:
+  return `OUTER WEBSITE PHASE PLAN. This is the one full planning loop for the frontend phase. Inspect the brief and approved repository context, then propose a tailored frontend slice plan. Do not implement anything. For a homepage, enumerate its actual sections and reusable components, then assign every section to an explicit slice scope. Put the shell and hero in the first slice, then plan the remaining homepage sections and interactions in subsequent bounded slices; do not hide the whole homepage under one generic slice. Include a final review slice. A marketplace or dashboard may need more slices. Every slice must have one concrete user-visible outcome and fit in one bounded implementation/verification session. Content and interactions come before dedicated final audits; basic responsive and accessible behavior is required from the first slice. End your response with exactly one machine-readable block using this shape:
 <borg-project-plan>{"siteGoal":"...","audience":"...","pages":["..."],"features":["..."],"visualDirection":"...","backendRequired":false,"slices":[{"id":"...","title":"...","outcome":"...","scope":["..."],"acceptanceCriteria":["..."]}],"acceptanceCriteria":["..."]}</borg-project-plan>
 The only project files authorized during PLAN are planning documents under .localcode/build/**/*.md, persisted by BORG after your response. Do not create source, component, style, asset, configuration, backend, API, auth, or database files; do not run builds, tests, previews, or verification. Brief: ${brief}`;
 }
@@ -331,9 +333,10 @@ export function persistProposedProjectPlan(root: string, brief: string, plan: Pr
   mkdirSync(dir, { recursive: true });
   const previousPlan = readProjectPlan(root);
   const proposed = { ...plan, revision: previousPlan ? previousPlan.revision + 1 : Math.max(1, plan.revision), status: "proposed" as const, approvedAt: null };
-  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are the durable source of truth. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
+  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are the durable source of truth. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
   writeFileSync(join(dir, "brief.md"), `# Product brief\n\n${brief.trim()}\n`);
   writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.pages.map((page) => `- ${page}`).join("\n")}\n`);
+  initializeProjectModel(root, proposed);
   writeFileSync(join(dir, "plan.md"), planMarkdown(proposed));
   writeFileSync(join(dir, "current-slice.md"), "# Current slice\n\nWaiting for approval of the frontend phase plan.\n");
   writeFileSync(join(dir, "progress.md"), `# Progress\n\nPhase: **Frontend**\n\nPlan revision: ${proposed.revision}\n\nStatus: awaiting plan approval\n`);
@@ -353,6 +356,7 @@ export function approveProjectPlan(root: string, taskId: string) {
   const state = readSliceState(root);
   if (!plan) throw new Error("No proposed project plan exists.");
   const approved: ProjectPlan = { ...plan, status: "approved", approvedAt: new Date().toISOString() };
+  initializeProjectModel(root, approved);
   writeFileSync(join(docsDirectory(root), "plan.md"), planMarkdown(approved));
   const next = stateFromPlan(approved, state?.brief || approved.siteGoal, "ready", taskId, state);
   writeState(root, next);
@@ -412,7 +416,7 @@ export function markSliceReady(root: string, taskId: string, summary: string): S
   const slice = currentSlice(plan, state);
   writeFileSync(join(dir, "progress.md"), `${safeRead(join(dir, "progress.md"))}\n## ${slice.title}\n\nStatus: ${next.status.replaceAll("_", " ")}\n\n${summary.slice(0, 3000)}\n`);
   writeFileSync(join(dir, "verification.md"), `${safeRead(join(dir, "verification.md"))}\n## ${slice.title} — ${taskId}\n\n${summary.slice(0, 5000)}\n`);
-  writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nCompleted: **${slice.title}**\n\n${summary.slice(0, 3000)}\n\n${complete ? (plan.backendRequired ? "Frontend completion gate is ready for user review. Backend planning may begin only after approval." : "Frontend completion gate is ready for user review. No backend phase is required by the approved brief.") : "Ask for feedback. The next slice or revision starts in a new mini-loop session using this handoff."}\n`);
+  writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nCompleted: **${slice.title}**\n\n${summary.slice(0, 3000)}\n\n${complete ? (plan.backendRequired ? "Frontend completion gate is ready for user review. Backend planning may begin only after approval." : "Frontend completion gate is ready for user review. No backend phase is required by the approved brief.") : "After the verified checkpoint, continue automatically with the next approved slice in a new mini-loop session using this handoff."}\n`);
   writeFileSync(join(dir, "history.md"), `${safeRead(join(dir, "history.md"))}\n## ${slice.title} — ${taskId}\n\n${summary.slice(0, 3000)}\n`);
   if (complete) {
     const completedPlan: ProjectPlan = { ...plan, status: "frontend_complete" };
@@ -422,7 +426,7 @@ export function markSliceReady(root: string, taskId: string, summary: string): S
     currentSlice: state.current,
     totalSlices: plan.slices.length,
     taskId,
-    detail: complete ? "All approved frontend slices are complete." : `${slice.title} is verified, reviewed, and checkpoint-ready for feedback.`,
+    detail: complete ? "All approved frontend slices are complete." : `${slice.title} is verified and ready for an automatic checkpoint and next slice.`,
   });
   return next;
 }
@@ -445,5 +449,5 @@ export function slicePlanningPrompt(plan: ProjectPlan, state: SliceState): strin
 
 export function slicePrompt(plan: ProjectPlan, state: SliceState, availableTools: string[] = []): string {
   const slice = currentSlice(plan, state);
-  return `MINI LOOP — IMPLEMENT SLICE ${state.current + 1}/${plan.slices.length}: ${slice.title}. Outcome: ${slice.outcome} Scope: ${slice.scope.join("; ")}. Acceptance: ${slice.acceptanceCriteria.join("; ")}. Do not create a new project plan or reread the whole repository. Read only relevant files and the compact build docs/handoff. Implement this slice, keep basic responsive and accessible behavior working, run type/build/relevant interaction checks plus real browser review, update durable docs with evidence, then stop for user feedback. Backend/API/auth/database work is forbidden during the frontend phase except documenting the data/action contract. Available implementation tools: ${availableTools.length ? availableTools.join(", ") : "use only the tools actually provided by the runtime"}.`;
+  return `MINI LOOP — IMPLEMENT SLICE ${state.current + 1}/${plan.slices.length}: ${slice.title}. Outcome: ${slice.outcome} Scope: ${slice.scope.join("; ")}. Acceptance: ${slice.acceptanceCriteria.join("; ")}. Do not create a new project plan or reread the whole repository. Read only relevant files and the compact build docs/handoff. Implement this slice, keep basic responsive and accessible behavior working, run type/build/relevant interaction checks plus real browser review, and update durable docs with evidence. The desktop runtime checkpoints verified slices and starts the next approved slice automatically. Backend/API/auth/database work is forbidden during the frontend phase except documenting the data/action contract. Available implementation tools: ${availableTools.length ? availableTools.join(", ") : "use only the tools actually provided by the runtime"}.`;
 }

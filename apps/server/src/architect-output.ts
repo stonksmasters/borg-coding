@@ -28,3 +28,7 @@ export function assertArchitectOutput(answer: string): void {
   const result = validateArchitectOutput(answer);
   if (!result.valid) throw new Error(`Architect output rejected: ${result.reason}`);
 }
+
+export function architectRepairPrompt(reason: string): string {
+  return `Your previous response was rejected because it ${reason}. No source files have been changed, and no build, browser, or verification commands have run. You are still the read-only Architect. Return only a concise implementation plan for the approved slice: files to change, steps, and acceptance checks for the Implementer. Do not describe work as completed or call tools.`;
+}

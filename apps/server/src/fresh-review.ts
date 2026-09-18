@@ -35,18 +35,20 @@ export function parseFreshReview(taskId: string, value: string): FreshReview {
 
 export async function runFreshReview(options: {
   ollamaUrl: string; model: string; taskId: string; request: string;
-  diff: string; verification: unknown; specialistInstructions?: string;
+  diff: string; verification: unknown; specialistInstructions?: string; onRequestBody?: (body: string) => void;
 }): Promise<FreshReview> {
+  const requestBody = JSON.stringify({
+    model: options.model, stream: false, format: "json",
+    messages: [
+      { role: "system", content: `You are BORG's fresh-context code reviewer. You did not implement this change. Review only the supplied request, verified diff, and verification evidence. Return strict JSON with verdict ('pass' or 'repair'), summary, and findings. Each finding must contain discipline, severity (info, low, medium, high, or critical), category, title, description, and optional file, line, evidence, remediation. Use repair only for high or critical correctness, security, data-loss, or requirement failures. Do not invent evidence.\n\nActive specialist capability packs:\n${options.specialistInstructions ?? "General review policy applies."}` },
+      { role: "user", content: `Original request:\n${options.request.slice(0, 8_000)}\n\nVerification evidence:\n${JSON.stringify(options.verification).slice(0, 12_000)}\n\nVerified Git diff:\n${options.diff.slice(0, 30_000)}${options.diff.length > 30_000 ? "\n[Diff truncated; report that the review covers only the visible portion.]" : ""}` },
+    ],
+  });
+  options.onRequestBody?.(requestBody);
   const response = await fetch(`${options.ollamaUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: options.model, stream: false, format: "json",
-      messages: [
-        { role: "system", content: `You are BORG's fresh-context code reviewer. You did not implement this change. Review only the supplied request, verified diff, and verification evidence. Return strict JSON with verdict ('pass' or 'repair'), summary, and findings. Each finding must contain discipline, severity (info, low, medium, high, or critical), category, title, description, and optional file, line, evidence, remediation. Use repair only for high or critical correctness, security, data-loss, or requirement failures. Do not invent evidence.\n\nActive specialist capability packs:\n${options.specialistInstructions ?? "General review policy applies."}` },
-        { role: "user", content: `Original request:\n${options.request.slice(0, 8_000)}\n\nVerification evidence:\n${JSON.stringify(options.verification).slice(0, 12_000)}\n\nVerified Git diff:\n${options.diff.slice(0, 30_000)}${options.diff.length > 30_000 ? "\n[Diff truncated; report that the review covers only the visible portion.]" : ""}` },
-      ],
-    }),
+    body: requestBody,
     signal: AbortSignal.timeout(Math.max(60_000, Math.min(900_000, Number(process.env.BORG_REVIEW_TIMEOUT_MS ?? 600_000)))),
   });
   if (!response.ok) throw new Error(`Fresh review failed (${response.status}).`);

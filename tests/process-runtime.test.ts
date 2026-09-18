@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../packages/process-runtime/src/index.ts";
@@ -90,6 +91,26 @@ test("dev server is not reported running before its URL is ready", async () => {
     assert.ok(states.slice(0, -1).every((status) => status === "starting"));
     await runtime.stop(ready.id);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("dev server rejects a URL already served by another process", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-process-occupied-"));
+  const server = createServer((_request, response) => response.end("BORG"));
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const runtime = new ProcessRuntime();
+  try {
+    await assert.rejects(runtime.ensureServer({
+      taskId: "occupied", kind: "dev_server", label: "preview", command: "node",
+      args: ["-e", "setTimeout(() => {}, 30000)"], cwd: root,
+      url: `http://127.0.0.1:${address.port}`, startupTimeoutMs: 2_000,
+    }), /already in use/);
+    assert.equal(runtime.findRunning("occupied", "dev_server"), null);
+  } finally {
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("process runtime cannot stop a different task by task-scoped lookup", async () => {

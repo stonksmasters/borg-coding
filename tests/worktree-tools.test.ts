@@ -49,9 +49,14 @@ test("worktree mutation requires approval and remains inside the recorded task w
     const command = await tools.execute("worktree_command", { command: "node", args: ["-e", "process.stdout.write('bounded')"], timeout_seconds: 5 }, context) as { exitCode: number; stdout: string };
     assert.equal(command.exitCode, 0);
     assert.equal(command.stdout, "bounded");
+    await assert.rejects(() => tools.execute("worktree_command", { command: "npm", args: ["run", "dev"] }, context), /browser_server_start/);
 
     const verification = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
     assert.equal(verification.passed, true);
+    writeFileSync(join(worktree.path, "package.json"), JSON.stringify({ scripts: { build: "node -e \"process.exit(0)\"" } }));
+    const buildOnlyProfile = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean; results: Array<{ label: string }> };
+    assert.equal(buildOnlyProfile.passed, true);
+    assert.equal(buildOnlyProfile.results[0]?.label, "npm run build");
 
     await assert.rejects(() => tools.execute("worktree_read", { path: "../README.md" }, context), /Unsafe|relative/);
     execFileSync("git", ["-C", repository, "worktree", "remove", "--force", worktree.path], { stdio: "ignore" });

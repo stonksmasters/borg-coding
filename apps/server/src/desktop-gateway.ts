@@ -340,7 +340,8 @@ async function launchFrontendWorkflowSession(parent: ChatSession, action: "initi
   if (!root.repositoryPath) throw new Error("The website session is not attached to a repository.");
   const currentAccess = access.load();
   if (currentAccess.repositoryPath !== root.repositoryPath) access.save({ repositoryPath: root.repositoryPath, documents: currentAccess.documents });
-  const key = `${root.repositoryPath.toLowerCase()}::${action}`;
+  const selectedSlice = readSliceState(root.repositoryPath);
+  const key = `${root.repositoryPath.toLowerCase()}::${action}::${selectedSlice?.current ?? -1}::${selectedSlice?.lastTaskId ?? "none"}`;
   const active = frontendLaunches.get(key);
   if (active) return active.session;
 
@@ -470,7 +471,17 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
       await approveCoreTask(taskId);
       emitToClient({ type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
       await pipeExecution(taskId, session, emitToClient, controller);
-      if (sliceAction && sliceAction !== "backend") await saveVerifiedFrontendSlice(taskId, session, emitToClient);
+      if (sliceAction && sliceAction !== "backend") {
+        const checkpointed = await saveVerifiedFrontendSlice(taskId, session, emitToClient);
+        if (checkpointed && session.repositoryPath) {
+          const slice = readSliceState(session.repositoryPath);
+          const plan = readProjectPlan(session.repositoryPath);
+          if (plan?.status === "approved" && slice?.status === "awaiting_feedback" && slice.lastTaskId === taskId && slice.current + 1 < plan.slices.length) {
+            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "status", text: `Starting slice ${slice.current + 2} of ${plan.slices.length}: ${plan.slices[slice.current + 1].title}.` });
+            await launchFrontendWorkflowSession(session, "advance");
+          }
+        }
+      }
       emitToClient({ type: "stream.completed", taskId });
     }
   } finally {
@@ -734,7 +745,14 @@ async function recoverApprovedFrontendPlans() {
       if (!parent.repositoryPath || !websiteInfo(parent.repositoryPath)) continue;
       const plan = readProjectPlan(parent.repositoryPath);
       const slice = readSliceState(parent.repositoryPath);
-      if (plan?.status !== "approved" || slice?.status !== "ready") continue;
+      if (plan?.status !== "approved" || !slice) continue;
+      if (slice.status === "awaiting_feedback" && slice.current + 1 < plan.slices.length) {
+        const latest = sessions.filter((candidate) => candidate.repositoryPath?.toLowerCase() === parent.repositoryPath!.toLowerCase() && candidate.workflowRole === "frontend_slice")
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        if (latest && chats.latestTaskId(latest.id) === slice.lastTaskId) await launchFrontendWorkflowSession(parent, "advance");
+        continue;
+      }
+      if (slice.status !== "ready") continue;
       const existing = sessions.find((candidate) => candidate.repositoryPath?.toLowerCase() === parent.repositoryPath!.toLowerCase()
         && candidate.activeMode === "edit"
         && candidate.title.includes("Slice 1")

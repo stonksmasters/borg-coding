@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BrowserVerification } from "../../browser-verification/src/index.ts";
@@ -66,7 +66,7 @@ export const worktreeToolDefinitions = {
     type: "function",
     function: {
       name: "worktree_command",
-      description: "Run a bounded allowlisted command inside the approved task worktree without a shell.",
+      description: "Run a bounded command that exits inside the approved task worktree without a shell. Use browser_server_start for persistent development servers; never run npm dev/start/serve/preview here.",
       parameters: {
         type: "object", required: ["command"],
         properties: {
@@ -214,8 +214,12 @@ export class WorktreeTools {
   private resolveWritable(root: string, relativePath: unknown): string {
     const path = resolve(root, safeRelativePath(relativePath));
     if (!isInside(root, path)) throw new Error("Worktree path escapes the approved root.");
-    const parent = realpathSync(dirname(path));
-    if (!isInside(root, parent)) throw new Error("Worktree path escapes through a parent link.");
+    let parent = dirname(path);
+    while (!existsSync(parent)) {
+      if (parent === root || parent === dirname(parent)) throw new Error("Worktree parent is unavailable.");
+      parent = dirname(parent);
+    }
+    if (!statSync(parent).isDirectory() || !isInside(root, realpathSync(parent))) throw new Error("Worktree path escapes through a parent link.");
     if (existsSync(path) && !isInside(root, realpathSync(path))) throw new Error("Worktree path escapes through a link.");
     return path;
   }
@@ -268,6 +272,7 @@ export class WorktreeTools {
     if (occurrences !== expected) throw new Error(`Patch expected ${expected} replacement(s) but found ${occurrences}.`);
     const updated = matchText ? current.split(matchText).join(replacementText) : newText;
     if (Buffer.byteLength(updated, "utf8") > MAX_FILE_BYTES) throw new Error("Patched file exceeds the size limit.");
+    if (created) mkdirSync(dirname(path), { recursive: true });
     const temporaryPath = `${path}.borg-${randomUUID()}.tmp`;
     try {
       writeFileSync(temporaryPath, updated, "utf8");
@@ -281,6 +286,10 @@ export class WorktreeTools {
   private async command(root: string, input: Record<string, unknown>, context: TaskToolContext) {
     const command = String(input.command ?? "").toLowerCase();
     const args = Array.isArray(input.args) ? input.args.map(String) : [];
+    const npmScript = command === "npm" && (args[0]?.toLowerCase() === "run" ? args[1] : args[0]);
+    if (npmScript && ["dev", "start", "serve", "preview"].includes(npmScript.toLowerCase())) {
+      throw new Error("Persistent development servers must use browser_server_start, which reuses the task preview URL.");
+    }
     const cwd = input.cwd ? this.resolveExisting(root, input.cwd) : root;
     if (!statSync(cwd).isDirectory()) throw new Error("Command cwd must be a directory.");
     const kind: ProcessKind = args.some((value) => /(^|:)test$/.test(value)) ? "test"
@@ -317,8 +326,9 @@ export class WorktreeTools {
       const pkg = JSON.parse(readFileSync(packagePath, "utf8")) as { scripts?: Record<string, string> };
       const scripts = pkg.scripts ?? {};
       for (const name of ["check", "lint", "test"]) if (scripts[name]) commands.quick.push({ command: "npm", args: ["run", name], label: `npm run ${name}` });
+      if (!commands.quick.length && scripts.build) commands.quick.push({ command: "npm", args: ["run", "build"], label: "npm run build" });
       commands.full.push(...commands.quick);
-      if (scripts.build) commands.full.push({ command: "npm", args: ["run", "build"], label: "npm run build" });
+      if (scripts.build && !commands.quick.some((item) => item.args[1] === "build")) commands.full.push({ command: "npm", args: ["run", "build"], label: "npm run build" });
     } else if (existsSync(join(root, "Cargo.toml"))) {
       commands.quick.push({ command: "cargo", args: ["test"], label: "cargo test" });
       commands.full.push({ command: "cargo", args: ["check"], label: "cargo check" }, ...commands.quick);
