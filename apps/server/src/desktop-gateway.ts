@@ -220,7 +220,7 @@ async function approveCoreTask(taskId: string) {
   return body;
 }
 
-async function streamChat(session: ChatSession, prompt: string, response: ServerResponse) {
+async function streamChat(session: ChatSession, prompt: string, response: ServerResponse, sliceAction?: string) {
   const controller = new AbortController();
   activeStreams.set(session.id, controller);
   try {
@@ -230,7 +230,7 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
     const upstream = await fetch(`${coreUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode }),
+      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode, sliceAction }),
       signal: controller.signal,
     });
     if (!upstream.ok || !upstream.body) throw new Error(`Planning stream failed (${upstream.status}).`);
@@ -359,7 +359,7 @@ const server = createServer((request, response) => {
         previews.stop(website.path);
         const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(runtime.latestTaskId)}/preview`, {
           method: "POST",
-          signal: AbortSignal.timeout(65_000),
+          signal: AbortSignal.timeout(195_000),
         });
         const body = await upstream.json().catch(() => ({})) as { preview?: typeof preview; error?: string };
         if (!upstream.ok || !body.preview) throw new Error(body.error ?? `Task preview failed (${upstream.status}).`);
@@ -458,7 +458,7 @@ const server = createServer((request, response) => {
       if (!session) throw new Error("A valid chat session is required.");
       if (!prompt) throw new Error("Request cannot be empty.");
       writeEvent(response, { type: "session.mode", sessionId, mode: session.activeMode });
-      await streamChat(session, prompt, response);
+      await streamChat(session, prompt, response, typeof input.sliceAction === "string" ? input.sliceAction : undefined);
     }).catch((error) => writeEvent(response, { type: "stream.failed", message: error instanceof Error ? error.message : "Invalid chat request" }))
       .finally(() => response.end());
     return;

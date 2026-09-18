@@ -72,6 +72,26 @@ test("process runtime reuses one task dev server and supports explicit stop", as
   }
 });
 
+test("dev server is not reported running before its URL is ready", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-process-readiness-"));
+  const events: ProcessRuntimeEvent[] = [];
+  try {
+    const runtime = new ProcessRuntime({ onEvent: (event) => events.push(event) });
+    const port = await findAvailableLoopbackPort();
+    const url = `http://127.0.0.1:${port}`;
+    const ready = await runtime.ensureServer({
+      taskId: "readiness", kind: "dev_server", label: "preview", command: "node",
+      args: ["-e", `setTimeout(() => require('http').createServer((req,res)=>res.end('ok')).listen(${port},'127.0.0.1'), 300)`],
+      cwd: root, url, startupTimeoutMs: 10_000,
+    });
+    const states = events.filter((event) => event.type === "process.state").map((event) => event.process.status);
+    assert.equal(ready.status, "running");
+    assert.equal(states.at(-1), "running");
+    assert.ok(states.slice(0, -1).every((status) => status === "starting"));
+    await runtime.stop(ready.id);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("process runtime cannot stop a different task by task-scoped lookup", async () => {
   const root = mkdtempSync(join(tmpdir(), "borg-process-owner-"));
   try {

@@ -10,7 +10,7 @@ export function PlanPanel({ plan }: { plan: string | null }) {
       <div>
         <ClipboardList className="mx-auto mb-3 size-6 text-slate-600" />
         <p className="text-sm font-medium text-slate-300">No plan yet</p>
-        <p className="mt-1 max-w-sm text-xs leading-5 text-slate-500">BORG's implementation plan will stay available here once planning completes.</p>
+        <p className="mt-1 max-w-sm text-xs leading-5 text-slate-500">BORG&apos;s implementation plan will stay available here once planning completes.</p>
       </div>
     </div>;
   }

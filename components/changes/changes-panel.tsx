@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 export type FileChange = {
   path: string;
@@ -40,9 +40,6 @@ function Patch({ patch }: { patch: string }) {
 
 export function ChangesPanel({ changes }: { changes: ChangeSet }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(changes.files[0]?.path ?? null);
-  useEffect(() => {
-    if (!changes.files.some((file) => file.path === selectedPath)) setSelectedPath(changes.files[0]?.path ?? null);
-  }, [changes.files, selectedPath]);
   const selected = useMemo(() => changes.files.find((file) => file.path === selectedPath) ?? changes.files[0] ?? null, [changes.files, selectedPath]);
 
   if (!changes.files.length) return <div className="grid min-h-0 flex-1 place-items-center p-8 text-center"><div><p className="text-sm font-medium text-slate-300">No worktree changes</p><p className="mt-1 text-xs leading-5 text-slate-500">Files will appear here as the runtime confirms edits through Git.</p></div></div>;

@@ -80,6 +80,11 @@ test("continuation policy preserves mode authority and never replays interrupted
   assert.equal(planDecision.resumeAction, "await_approval");
   assert.equal(planCheckpoint.mode, "plan");
 
+  const alreadyApproved = evaluateContinuation(planCheckpoint, "APPROVED", "dirty", "Uncommitted changes exist.");
+  assert.equal(alreadyApproved.resultingState, "RECOVERY_REQUIRED");
+  assert.equal(alreadyApproved.resumeAction, "inspect_worktree");
+  assert.match(alreadyApproved.detail, /do not roll back files/i);
+
   const editCheckpoint = checkpoint("task-edit", "IMPLEMENTING", "edit");
   const interrupted = evaluateContinuation(editCheckpoint, "APPROVED", "dirty", "Uncommitted changes exist.");
   assert.equal(interrupted.status, "recovery_required");

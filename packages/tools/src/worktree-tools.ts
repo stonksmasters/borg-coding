@@ -257,9 +257,16 @@ export class WorktreeTools {
       if (oldText) throw new Error("A new file requires empty old_text.");
       created = true;
     }
-    const occurrences = oldText ? current.split(oldText).length - 1 : 1;
+    const lineEnding = current.includes("\r\n") ? "\r\n" : "\n";
+    const matchText = oldText && !current.includes(oldText)
+      ? oldText.replace(/\r\n|\n/g, lineEnding)
+      : oldText;
+    const replacementText = matchText === oldText
+      ? newText
+      : newText.replace(/\r\n|\n/g, lineEnding);
+    const occurrences = matchText ? current.split(matchText).length - 1 : 1;
     if (occurrences !== expected) throw new Error(`Patch expected ${expected} replacement(s) but found ${occurrences}.`);
-    const updated = oldText ? current.split(oldText).join(newText) : newText;
+    const updated = matchText ? current.split(matchText).join(replacementText) : newText;
     if (Buffer.byteLength(updated, "utf8") > MAX_FILE_BYTES) throw new Error("Patched file exceeds the size limit.");
     const temporaryPath = `${path}.borg-${randomUUID()}.tmp`;
     try {

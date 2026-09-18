@@ -31,6 +31,44 @@ interface AgentLimits {
   identicalCalls: number;
 }
 
+const MODEL_REQUEST_CHARACTERS = 72_000;
+
+function trimContent(message: OllamaMessage, maximum: number): OllamaMessage {
+  if (message.content.length <= maximum) return message;
+  const marker = "\n[Earlier content omitted; read the project docs or worktree for details.]\n";
+  const room = Math.max(0, maximum - marker.length);
+  const head = Math.floor(room * 0.65);
+  return { ...message, content: message.content.slice(0, head) + marker + message.content.slice(-Math.max(0, room - head)) };
+}
+
+export function modelMessages(messages: OllamaMessage[], maximumCharacters: number): OllamaMessage[] {
+  if (JSON.stringify(messages).length <= maximumCharacters) return messages;
+  const pinned = messages.slice(0, 2).map((message, index) => trimContent(message, Math.min(index === 0 ? 14_000 : 8_000, Math.floor(maximumCharacters * 0.3))));
+  const suffix: OllamaMessage[] = [];
+  let remaining = maximumCharacters - JSON.stringify(pinned).length - 500;
+  for (let index = messages.length - 1; index >= pinned.length; index -= 1) {
+    if (remaining < 1000) break;
+    const candidate = trimContent(messages[index], Math.min(12_000, remaining - 200));
+    const size = JSON.stringify(candidate).length;
+    if (size > remaining) break;
+    suffix.unshift(candidate);
+    remaining -= size;
+  }
+  const result = [
+    ...pinned,
+    { role: "system", content: "Earlier model and tool turns were omitted to fit the local model context. Inspect the worktree or call read tools again when earlier details are needed; do not assume an omitted action succeeded." },
+    ...suffix,
+  ] as OllamaMessage[];
+  while (JSON.stringify(result).length > maximumCharacters && result.length > 3) result.splice(3, 1);
+  if (result[3]?.role === "tool") result[3] = { role: "system", content: `Latest tool result from earlier context:\n${result[3].content}` };
+  while (JSON.stringify(result).length > maximumCharacters && result.length > 3) result.splice(3, 1);
+  return result;
+}
+
+function isTransientModelFailure(message: string): boolean {
+  return /\bterminated\b|fetch failed|network error|Ollama returned 50[0234]/i.test(message);
+}
+
 function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.floor(parsed))) : fallback;
@@ -47,42 +85,63 @@ function agentLimits(overrides?: Partial<AgentLimits>): AgentLimits {
 
 async function runTurn(options: AgentOptions, allowTools = true): Promise<OllamaMessage> {
   const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode, options.taskContext, options.role, options.disciplines) : [];
-  const response = await fetch(`${options.ollamaUrl}/api/chat`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: options.model, stream: true, messages: options.messages, tools: toolDefinitions }),
-  });
-  if (!response.ok || !response.body) throw new Error(`Ollama returned ${response.status}`);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const target = attempt ? 40_000 : MODEL_REQUEST_CHARACTERS;
+    const toolCharacters = JSON.stringify(toolDefinitions).length;
+    const messages = modelMessages(options.messages, Math.max(8_000, target - toolCharacters - 1_000));
+    const requestBody = JSON.stringify({ model: options.model, stream: true, messages, tools: toolDefinitions });
+    options.emit({ type: "runtime.turn.started", attempt: attempt + 1, messages: messages.length, requestCharacters: requestBody.length, omittedMessages: options.messages.length - messages.length });
+    let streamedText = false;
+    try {
+      const response = await fetch(`${options.ollamaUrl}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: requestBody,
+      });
+      if (!response.ok || !response.body) throw new Error(`Ollama returned ${response.status}`);
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let content = "";
-  const toolCalls: ToolCall[] = [];
-  let responseStageStarted = false;
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const chunk = JSON.parse(line) as { message?: { content?: string; tool_calls?: ToolCall[] }; error?: string };
-      if (chunk.error) throw new Error(chunk.error);
-      const text = chunk.message?.content ?? "";
-      if (text) {
-        if (!responseStageStarted) {
-          options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "active" });
-          responseStageStarted = true;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let content = "";
+      const toolCalls: ToolCall[] = [];
+      let responseStageStarted = false;
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const chunk = JSON.parse(line) as { message?: { content?: string; tool_calls?: ToolCall[] }; error?: string };
+          if (chunk.error) throw new Error(chunk.error);
+          const text = chunk.message?.content ?? "";
+          if (text) {
+            streamedText = true;
+            if (!responseStageStarted) {
+              options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "active" });
+              responseStageStarted = true;
+            }
+            content += text;
+            if (options.streamText !== false) options.emit({ type: "message.delta", text });
+          }
+          if (chunk.message?.tool_calls?.length) toolCalls.push(...chunk.message.tool_calls);
         }
-        content += text;
-        if (options.streamText !== false) options.emit({ type: "message.delta", text });
+        if (done) break;
       }
-      if (chunk.message?.tool_calls?.length) toolCalls.push(...chunk.message.tool_calls);
+      return { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const cause = error instanceof Error && error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : null;
+      options.emit({ type: "runtime.turn.failed", attempt: attempt + 1, message, cause, streamedText });
+      if (attempt === 0 && !streamedText && isTransientModelFailure(message)) {
+        options.emit({ type: "runtime.turn.retrying", message: "The local model turn stopped before returning text. Retrying once with a smaller context." });
+        continue;
+      }
+      throw error;
     }
-    if (done) break;
   }
-  return { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+  throw new Error("Ollama model turn failed after retry.");
 }
 
 export async function runOllamaAgent(options: AgentOptions) {

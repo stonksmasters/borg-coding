@@ -275,7 +275,8 @@ export class ProcessRuntime {
     child.once("spawn", () => {
       if (finalized) return;
       record.snapshot.pid = child.pid ?? null;
-      record.snapshot.status = "running";
+      // A dev server is only running once its URL responds, not when its process spawns.
+      if (input.kind !== "dev_server") record.snapshot.status = "running";
       this.emit({ type: "process.state", taskId: input.taskId, process: this.copy(record.snapshot), occurredAt: new Date().toISOString() });
     });
     child.once("error", (error) => finalize(null, error));

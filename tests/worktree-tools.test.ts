@@ -33,6 +33,12 @@ test("worktree mutation requires approval and remains inside the recorded task w
     assert.equal(patched.replacements, 1);
     const read = await tools.execute("worktree_read", { path: "README.md" }, context) as { content: string };
     assert.match(read.content, /Changed/);
+    writeFileSync(join(worktree.path, "windows.txt"), "first\r\nsecond\r\n");
+    await tools.execute("worktree_patch", {
+      path: "windows.txt", old_text: "first\nsecond", new_text: "updated\nsecond",
+    }, context);
+    const windowsRead = await tools.execute("worktree_read", { path: "windows.txt" }, context) as { content: string };
+    assert.equal(windowsRead.content, "updated\r\nsecond\r\n");
     assert.equal(execFileSync("git", ["-C", repository, "status", "--short"], { encoding: "utf8" }), "");
 
     const status = await tools.execute("git_status", {}, context) as { stdout: string };

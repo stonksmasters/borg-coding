@@ -38,3 +38,25 @@ test("delivery exports a complete patch and can commit without changing the prim
   execFileSync("git", ["-C", repository, "worktree", "remove", "--force", second.path]);
   rmSync(root, { recursive: true, force: true });
 });
+
+test("saving a reviewed slice advances the project for the next session", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-slice-delivery-"));
+  try {
+    const repository = join(root, "repository");
+    mkdirSync(repository);
+    execFileSync("git", ["init", repository]);
+    execFileSync("git", ["-C", repository, "config", "user.email", "test@example.com"]);
+    execFileSync("git", ["-C", repository, "config", "user.name", "Test"]);
+    writeFileSync(join(repository, "README.md"), "base\n");
+    execFileSync("git", ["-C", repository, "add", "."]);
+    execFileSync("git", ["-C", repository, "commit", "-m", "base"]);
+    const worktrees = join(root, "worktrees");
+    const first = await new GitWorktreeManager(worktrees).create(repository, "slice-one");
+    writeFileSync(join(first.path, "README.md"), "slice one\n");
+    const delivery = new WorktreeDelivery(worktrees, join(root, "deliveries"));
+    await delivery.deliver("slice-one", first.path, "commit", undefined, { repositoryPath: repository, expectedBaseCommit: first.baseCommit });
+    assert.equal(readFileSync(join(repository, "README.md"), "utf8").replaceAll("\r\n", "\n"), "slice one\n");
+    const second = await new GitWorktreeManager(worktrees).create(repository, "slice-two");
+    assert.equal(readFileSync(join(second.path, "README.md"), "utf8").replaceAll("\r\n", "\n"), "slice one\n");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

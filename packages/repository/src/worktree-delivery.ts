@@ -37,8 +37,19 @@ export class WorktreeDelivery {
     }
   }
 
-  async deliver(taskId: string, worktreePath: string, method: "export" | "commit", message?: string) {
+  async deliver(taskId: string, worktreePath: string, method: "export" | "commit", message?: string, promote?: { repositoryPath: string; expectedBaseCommit: string }) {
     const root = this.validate(taskId, worktreePath);
+    const projectRoot = promote ? realpathSync(resolve(promote.repositoryPath)) : null;
+    if (projectRoot) {
+      if (method !== "commit") throw new Error("A reviewed slice must be saved to the project before the next slice can start.");
+      const projectGit = await this.git(projectRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+      const worktreeGit = await this.git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+      if (resolve(projectGit).toLowerCase() !== resolve(worktreeGit).toLowerCase()) throw new Error("The slice worktree does not belong to this project.");
+      const head = await this.git(projectRoot, ["rev-parse", "HEAD"]);
+      if (head !== promote!.expectedBaseCommit) throw new Error("The project changed since this slice started. Review the project before saving this version.");
+      const status = await this.git(projectRoot, ["status", "--porcelain"]);
+      if (status) throw new Error("The project has uncommitted changes. Review them before saving this slice.");
+    }
     await this.git(root, ["add", "-A"]);
     const patch = await this.git(root, ["diff", "--cached", "--binary", "--no-ext-diff", "HEAD"]);
     if (!patch) throw new Error("There are no verified changes to deliver.");
@@ -52,6 +63,7 @@ export class WorktreeDelivery {
     const subject = (message?.trim() || `BORG: task ${taskId}`).replace(/[\r\n]+/g, " ").slice(0, 120);
     await this.git(root, ["-c", "user.name=BORG Code", "-c", "user.email=borg@local", "commit", "-m", subject]);
     const commit = await this.git(root, ["rev-parse", "HEAD"]);
+    if (projectRoot) await this.git(projectRoot, ["merge", "--ff-only", commit]);
     return { method, commit, worktreePath: root };
   }
 }
