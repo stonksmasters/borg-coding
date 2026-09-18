@@ -44,12 +44,13 @@ test("specialist packs are versioned and materially change policy", () => {
   const backend = selectSpecialistPacks(["backend"]);
   const securityAndQa = selectSpecialistPacks(["security", "qa"]);
 
-  assert.deepEqual(specialistPackRefs(frontend), [{ id: "frontend.web", version: 1, discipline: "frontend" }]);
+  assert.deepEqual(specialistPackRefs(frontend), [{ id: "frontend.web", version: 2, discipline: "frontend" }]);
   assert.equal(specialistAllowsTool(["frontend"], "browser_capture"), true);
   assert.equal(specialistAllowsTool(["backend"], "browser_capture"), false);
   assert.equal(verificationProfileFor(frontend), "quick");
   assert.equal(verificationProfileFor(securityAndQa), "full");
   assert.equal(minimumRiskFor(securityAndQa), "R3");
+  assert.match(specialistSystemInstructions(frontend, "implementer"), /Design Brief/i);
   assert.match(specialistSystemInstructions(frontend, "implementer"), /responsive screenshots/i);
   assert.match(specialistSystemInstructions(backend, "reviewer"), /compatibility/i);
 });
