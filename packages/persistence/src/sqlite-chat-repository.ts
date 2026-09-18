@@ -111,6 +111,8 @@ export class SqliteChatRepository {
     workspaceId?: string;
     provider?: string;
     model?: string;
+    parentSessionId?: string | null;
+    workflowRole?: ChatSession["workflowRole"];
   }): ChatSession | null {
     const current = this.findSession(id);
     if (!current) return null;
