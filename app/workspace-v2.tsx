@@ -342,7 +342,7 @@ export function BorgWorkspaceV2() {
     if (!response.ok) throw new Error("Unable to load chat history.");
     let result = await response.json() as { sessions: ChatSession[] };
     if (!result.sessions.length) {
-      const createdResponse = await fetch(`${API}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activeMode: "plan" }) });
+      const createdResponse = await fetch(`${API}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activeMode: "plan", repositoryPath: null }) });
       const created = await createdResponse.json() as { session: ChatSession };
       result = { sessions: [created.session] };
     }
@@ -488,7 +488,7 @@ export function BorgWorkspaceV2() {
   async function createSession() {
     setSessionError("");
     try {
-      const response = await fetch(`${API}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activeMode: "plan" }) });
+      const response = await fetch(`${API}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activeMode: "plan", repositoryPath: null }) });
       if (!response.ok) throw new Error("Unable to create chat.");
       const result = await response.json() as { session: ChatSession };
       await refreshSessions(result.session.id);
