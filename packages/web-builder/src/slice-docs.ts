@@ -170,7 +170,7 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
       pages: list(raw.pages, fallback.pages),
       features: list(raw.features, fallback.features),
       visualDirection: clean(raw.visualDirection, fallback.visualDirection),
-      backendRequired: raw.backendRequired === true,
+      backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallback.backendRequired,
       slices,
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
@@ -186,7 +186,8 @@ The only project files authorized during PLAN are planning documents under .loca
 export function persistProposedProjectPlan(root: string, brief: string, plan: ProjectPlan, taskId: string) {
   const dir = docsDirectory(root);
   mkdirSync(dir, { recursive: true });
-  const proposed = { ...plan, status: "proposed" as const, approvedAt: null };
+  const previousPlan = readProjectPlan(root);
+  const proposed = { ...plan, revision: previousPlan ? previousPlan.revision + 1 : Math.max(1, plan.revision), status: "proposed" as const, approvedAt: null };
   writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Site map](site-map.md)\n- [Frontend phase plan](plan.md)\n- [Current slice](current-slice.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are the durable source of truth. Slice sessions load the approved plan and targeted handoff instead of replaying prior conversations.\n");
   writeFileSync(join(dir, "brief.md"), `# Product brief\n\n${brief.trim()}\n`);
   writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.pages.map((page) => `- ${page}`).join("\n")}\n`);
