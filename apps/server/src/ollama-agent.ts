@@ -69,6 +69,33 @@ function isTransientModelFailure(message: string): boolean {
   return /\bterminated\b|fetch failed|network error|Ollama returned 50[0234]/i.test(message);
 }
 
+function parseTextToolValue(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^(?:true|false|null|-?\d+(?:\.\d+)?)$/.test(trimmed) || /^[\[{]/.test(trimmed)) {
+    try { return JSON.parse(trimmed); } catch { }
+  }
+  return trimmed;
+}
+
+export function parseTextToolCalls(content: string): ToolCall[] {
+  const calls: ToolCall[] = [];
+  const callPattern = /<function=([a-zA-Z0-9_.:-]+)>\s*([\s\S]*?)<\/function>\s*(?:<\/tool_call>)?/g;
+  for (const match of content.matchAll(callPattern)) {
+    const args: Record<string, unknown> = {};
+    const parameterPattern = /<parameter=([a-zA-Z0-9_.:-]+)>\s*([\s\S]*?)<\/parameter>/g;
+    for (const parameter of match[2].matchAll(parameterPattern)) args[parameter[1]] = parseTextToolValue(parameter[2]);
+    calls.push({ function: { name: match[1], arguments: args } });
+  }
+  return calls;
+}
+
+function stripTextToolCalls(content: string): string {
+  return content
+    .replace(/<function=[a-zA-Z0-9_.:-]+>\s*[\s\S]*?<\/function>\s*(?:<\/tool_call>)?/g, "")
+    .trim();
+}
+
 function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.floor(parsed))) : fallback;
@@ -161,9 +188,23 @@ export async function runOllamaAgent(options: AgentOptions) {
   const availableToolNames = toolDefinitions.map((tool) => tool.function.name);
   for (let round = 0; round < limits.toolRounds; round += 1) {
     const assistant = await runTurn(options);
-    options.messages.push(assistant);
-    answer += assistant.content;
-    const calls = assistant.tool_calls ?? [];
+    const nativeCalls = assistant.tool_calls ?? [];
+    const recoveredCalls = nativeCalls.length
+      ? []
+      : parseTextToolCalls(assistant.content).filter((call) => availableToolNames.includes(call.function.name));
+    const calls = nativeCalls.length ? nativeCalls : recoveredCalls;
+    const visibleContent = recoveredCalls.length ? stripTextToolCalls(assistant.content) : assistant.content;
+    options.messages.push(recoveredCalls.length ? { ...assistant, content: visibleContent, tool_calls: recoveredCalls } : assistant);
+    if (visibleContent) answer += visibleContent;
+
+    if (recoveredCalls.length) {
+      options.emit({
+        type: "runtime.tool_protocol.recovered",
+        tools: recoveredCalls.map((call) => call.function.name),
+        message: "Recovered a model tool call that was emitted as text instead of structured tool-call data.",
+      });
+    }
+
     if (!calls.length) {
       if (toolDefinitions.length) options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "complete" });
       return { answer, usedTools };
