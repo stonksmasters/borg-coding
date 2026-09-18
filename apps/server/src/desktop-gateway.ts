@@ -15,7 +15,7 @@ import { SqliteChatRepository } from "../../../packages/persistence/src/sqlite-c
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
-import { createWebsiteProject, websiteInfo, WebsitePreviewManager } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
 
 const gatewayPort = Number(process.env.BORG_GATEWAY_PORT ?? 4312);
 const coreUrl = process.env.BORG_CORE_URL ?? "http://127.0.0.1:4311";
@@ -335,9 +335,10 @@ const server = createServer((request, response) => {
     void readJson(request).then(async (input) => {
       const name = typeof input.name === "string" ? input.name.trim() : "";
       const brief = typeof input.brief === "string" ? input.brief.trim() : "";
-      const template = typeof input.template === "string" ? input.template : undefined;
+      const requestedTemplate = typeof input.template === "string" ? input.template : "";
+      const template: WebsiteTemplate = websiteTemplates.includes(requestedTemplate as WebsiteTemplate) ? requestedTemplate as WebsiteTemplate : "saas-landing";
       if (!name) return send(response, 400, { error: "Website name is required." });
-      const project = await createWebsiteProject(name, undefined, undefined, { template: template as never, originalBrief: brief });
+      const project = await createWebsiteProject(name, undefined, undefined, { template, originalBrief: brief });
       const savedAccess = access.save({ repositoryPath: project.path, documents: [] });
       const session = createChatSession({ id: randomUUID(), title: project.name, activeMode: "plan", repositoryPath: savedAccess.repositoryPath, workspaceId: project.slug, provider: "ollama", model: process.env.BORG_MODEL ?? "qwen3-coder:30b" });
       chats.saveSession(session);
