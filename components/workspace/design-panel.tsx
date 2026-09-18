@@ -124,6 +124,17 @@ export function DesignPanel({
         </div>
       </section>
 
+      <section className="grid gap-5 lg:grid-cols-2">
+        <div>
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Motion philosophy</h3>
+          <div className="mt-3 space-y-2">{brief.motion.length ? brief.motion.map((item, index) => <p key={index} className="text-xs leading-5 text-slate-400">• {item}</p>) : <p className="text-xs text-slate-600">No decorative motion required.</p>}</div>
+        </div>
+        <div>
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Quality bar</h3>
+          <div className="mt-3 space-y-2">{brief.qualityBar.map((item, index) => <p key={index} className="text-xs leading-5 text-slate-400">✓ {item}</p>)}</div>
+        </div>
+      </section>
+
       <section>
         <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Do not do this</h3>
         <div className="mt-3 grid gap-2 md:grid-cols-2">{brief.avoid.map((item, index) => <p key={index} className="rounded-md border border-red-300/8 bg-red-300/[0.025] px-3 py-2 text-[11px] leading-5 text-red-100/70">{item}</p>)}</div>
@@ -142,6 +153,15 @@ export function DesignPanel({
             <div className="flex items-center gap-2"><span className={`size-1.5 rounded-full ${item.verdict === "pass" ? "bg-[#a7ff4f]" : "bg-amber-200"}`} /><span className="text-[11px] font-medium capitalize text-slate-300">{item.dimension.replaceAll("-", " ")}</span></div>
             <div><p className="text-[11px] leading-5 text-slate-400">{item.evidence}</p>{item.verdict === "repair" && <p className="mt-1 text-[11px] leading-5 text-amber-100/80">Refine: {item.recommendation}</p>}</div>
           </div>)}
+        </div>}
+        {review.findings.length > 0 && <div className="mt-5 border-t border-white/8 pt-4">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Concrete findings</p>
+          <div className="mt-3 space-y-3">{review.findings.map((finding, index) => <div key={index} className="rounded-md border border-amber-200/10 bg-amber-200/[0.025] p-3">
+            <div className="flex flex-wrap items-center gap-2"><span className="rounded bg-amber-200/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-100">{finding.severity}</span><span className="text-xs font-medium text-slate-200">{finding.title}</span></div>
+            <p className="mt-2 text-[11px] leading-5 text-slate-400">{finding.description}</p>
+            {finding.evidence && <p className="mt-2 text-[11px] leading-5 text-slate-500"><span className="text-slate-600">Evidence: </span>{finding.evidence}</p>}
+            {finding.remediation && <p className="mt-1 text-[11px] leading-5 text-amber-100/80"><span className="text-amber-100/50">Refine: </span>{finding.remediation}</p>}
+          </div>)}</div>
         </div>}
       </section>}
     </div>
