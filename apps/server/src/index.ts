@@ -51,7 +51,7 @@ import { deriveWorkflowStatus } from "./workflow-status.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
-import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { prepareWebsiteWorkspace, websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
@@ -438,6 +438,15 @@ function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => vo
   return updated;
 }
 
+function scheduleImplementationRetry(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
+  createCheckpointSnapshot(task, "pre_repair");
+  const updated = { ...task, attempts: task.attempts + 1, updatedAt: new Date().toISOString() };
+  tasks.saveTask(updated);
+  appendTaskEvent(task.id, "IMPLEMENTATION_RETRY_SCHEDULED", { attempt: updated.attempts, maximum: maxRepairAttempts, reason });
+  emit({ type: "repair.scheduled", attempt: updated.attempts, maximum: maxRepairAttempts, message: reason });
+  return updated;
+}
+
 recoverInterruptedTasks();
 
 const server = createServer((request, response) => {
@@ -649,6 +658,7 @@ const server = createServer((request, response) => {
     };
     const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
     const websiteProject = websiteInfo(approvedWorktreePath);
+    if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
     const persistedDesignBrief = websiteProject ? readPersistedDesignBrief(approvedWorktreePath) : null;
     const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
     const designBrief = latestDesignBrief(taskId) ?? (parsedPersistedDesignBrief?.success ? parsedPersistedDesignBrief.data : null);
@@ -683,6 +693,7 @@ const server = createServer((request, response) => {
       const compiledSlice = sliceState ? compileFrontendContext({ root: approvedWorktreePath, phase: "frontend", sliceIndex: sliceState.current }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       while (task) {
+        if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
         const repairPrompt = repairEvidence
@@ -693,14 +704,32 @@ const server = createServer((request, response) => {
           limits: sliceState ? { toolRounds: 12, toolCalls: 28 } : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledSlice?.sliceId ?? null, compiledSlice?.manifest ?? [], body) : undefined,
           messages: [
-            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Use exact, small patches; inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
         });
         if (sliceState) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
           const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
-          if (!sourceProgress) throw new Error("Slice stopped because no source-file progress was made. Planning-doc changes alone do not count as implementation.");
+          if (!sourceProgress) {
+            if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
+            activeRoleAssignment = null;
+            const toolFailures = tasks.listEvents(taskId)
+              .filter((event) => event.type === "TOOL_FAILED")
+              .slice(-5)
+              .map((event) => {
+                const payload = event.payload as Record<string, unknown>;
+                return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
+              });
+            appendTaskEvent(taskId, "IMPLEMENTATION_NO_PROGRESS", { attempt: task.attempts, toolFailures });
+            if (task.attempts >= maxRepairAttempts) {
+              throw new Error(`Slice made no source-file progress after ${maxRepairAttempts + 1} bounded implementation attempts. Recent tool failures: ${toolFailures.join(" | ") || "none recorded"}`);
+            }
+            if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
+            repairEvidence = `The previous implementation attempt produced no source-file changes. Stay inside the current approved slice and do not rediscover or re-plan the project. BORG has re-prepared the canonical workspace directories. For every new file, use worktree_write; it creates missing parent directories automatically. Use worktree_patch only for existing files. Recent tool failures:\n${toolFailures.length ? toolFailures.join("\n") : "No specific tool failure was recorded; inspect the current slice context and make the smallest concrete source change."}`;
+            task = scheduleImplementationRetry(task, emit, "Implementation produced no source-file changes; retrying the same approved slice without re-planning.");
+            continue;
+          }
         }
         appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, attempt: task.attempts });
         finishRole(activeRoleAssignment, "completed", emit);

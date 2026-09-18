@@ -662,7 +662,7 @@ export function BorgWorkspaceV2() {
       setProgress({ title, detail: path ? `Working in ${path}.` : "BORG is continuing this part of the task." });
       setLiveActivity((current) => [...current.slice(-39), `${title} · ${tool}`]);
     } else if (event.type === "tool.completed") {
-      if (event.taskId && ["worktree_patch", "worktree_command", "git_diff", "git_status"].includes(event.tool ?? "")) {
+      if (event.taskId && ["worktree_write", "worktree_patch", "worktree_command", "git_diff", "git_status"].includes(event.tool ?? "")) {
         void refreshChanges(event.taskId, { refreshPreviewOnChange: true });
         void refreshDocs(event.taskId);
       }

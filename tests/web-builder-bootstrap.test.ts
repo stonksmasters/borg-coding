@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createWebsiteProject, websiteInfo, websiteSlug } from "../packages/web-builder/src/project-bootstrap.ts";
+import { createWebsiteProject, prepareWebsiteWorkspace, websiteInfo, websiteSlug, websiteWorkspaceDirectories } from "../packages/web-builder/src/project-bootstrap.ts";
 import { websiteGenerationContext } from "../packages/web-builder/src/generation-context.ts";
 
 test("website bootstrap creates a committed React project and can be restored from its path", async () => {
@@ -18,6 +18,12 @@ test("website bootstrap creates a committed React project and can be restored fr
     assert.ok(existsSync(join(project.path, "src", "design", "tokens.css")));
     assert.ok(existsSync(join(project.path, "server", "db.ts")));
     assert.ok(existsSync(join(project.path, "server", "local-api.ts")));
+    for (const directory of websiteWorkspaceDirectories) assert.ok(existsSync(join(project.path, directory)), `missing workspace directory: ${directory}`);
+    rmSync(join(project.path, "src", "features"), { recursive: true, force: true });
+    assert.equal(existsSync(join(project.path, "src", "features")), false);
+    const repaired = prepareWebsiteWorkspace(project.path);
+    assert.ok(repaired.includes("src/features"));
+    assert.ok(existsSync(join(project.path, "src", "features")));
     assert.equal(websiteInfo(project.path)?.name, "Miller's Glass");
     const manifest = JSON.parse(readFileSync(join(project.path, ".borg-website.json"), "utf8")) as {
       framework: string;
@@ -52,6 +58,10 @@ test("website bootstrap creates a committed React project and can be restored fr
     const worktreePath = join(root, "approved-worktree");
     execFileSync("git", ["worktree", "add", "-b", "preview-test", worktreePath], { cwd: project.path });
     assert.equal(websiteInfo(worktreePath)?.name, "Miller's Glass");
+    assert.equal(existsSync(join(worktreePath, "src", "features")), false, "Git worktrees do not preserve empty scaffold directories");
+    const worktreePrepared = prepareWebsiteWorkspace(worktreePath);
+    assert.ok(worktreePrepared.includes("src/features"));
+    assert.ok(existsSync(join(worktreePath, "src", "features")));
     await assert.rejects(() => createWebsiteProject("Miller's Glass", root, async () => {}), /already exists/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

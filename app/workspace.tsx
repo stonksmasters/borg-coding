@@ -307,6 +307,7 @@ export function BorgWorkspace() {
         : event.tool === "repository_read" ? `Reading repository file ${String(event.input?.path ?? "")}`
         : event.tool === "repository_search" ? `Searching repository for “${String(event.input?.query ?? "") }”`
         : event.tool === "worktree_read" ? `Reading worktree file ${String(event.input?.path ?? "")}`
+        : event.tool === "worktree_write" ? `Writing worktree file ${String(event.input?.path ?? "")}`
         : event.tool === "worktree_patch" ? `Patching worktree file ${String(event.input?.path ?? "")}`
         : event.tool === "worktree_command" ? `Running bounded command ${String(event.input?.command ?? "")}`
         : event.tool === "git_status" ? "Inspecting worktree Git status"
@@ -318,6 +319,7 @@ export function BorgWorkspace() {
       const results = event.output?.results;
       const detail = results?.length ? `Sources found:\n${results.map((result) => `${result.title}\n${result.url}`).join("\n\n")}`
         : event.tool?.startsWith("repository_") ? `Repository inspection completed: ${event.tool.replace("repository_", "")}.`
+        : event.tool === "worktree_write" ? `Wrote ${String(event.output?.path ?? "the approved worktree")}.`
         : event.tool === "worktree_patch" ? `Patched ${String(event.output?.path ?? "the approved worktree")}.`
         : event.tool === "verification_run" ? `Verification ${event.output?.passed ? "passed" : "failed"}.`
         : event.tool?.startsWith("git_") ? `Git inspection completed: ${event.tool.replace("git_", "")}.`

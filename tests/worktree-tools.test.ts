@@ -31,6 +31,17 @@ test("worktree mutation requires approval and remains inside the recorded task w
 
     const patched = await tools.execute("worktree_patch", { path: "README.md", old_text: "Original", new_text: "Changed" }, context) as { replacements: number };
     assert.equal(patched.replacements, 1);
+    const nestedWrite = await tools.execute("worktree_write", { path: "src/features/cart/components/CartDrawer.tsx", content: "export const CartDrawer = () => null;\n" }, context) as { path: string; created: boolean };
+    assert.equal(nestedWrite.created, true);
+    assert.equal(nestedWrite.path.replaceAll("\\", "/"), "src/features/cart/components/CartDrawer.tsx");
+    const nestedRead = await tools.execute("worktree_read", { path: "src/features/cart/components/CartDrawer.tsx" }, context) as { content: string };
+    assert.match(nestedRead.content, /CartDrawer/);
+    await assert.rejects(() => tools.execute("worktree_write", { path: "src/features/cart/components/CartDrawer.tsx", content: "duplicate" }, context), /already exists/);
+    const overwritten = await tools.execute("worktree_write", { path: "src/features/cart/components/CartDrawer.tsx", content: "export const CartDrawer = () => 'updated';\n", overwrite: true }, context) as { overwritten: boolean };
+    assert.equal(overwritten.overwritten, true);
+    await tools.execute("worktree_patch", { path: "src/pages/account/ProfilePage.tsx", old_text: "", new_text: "export default function ProfilePage() { return null; }\n" }, context);
+    const nestedPatchRead = await tools.execute("worktree_read", { path: "src/pages/account/ProfilePage.tsx" }, context) as { content: string };
+    assert.match(nestedPatchRead.content, /ProfilePage/);
     const read = await tools.execute("worktree_read", { path: "README.md" }, context) as { content: string };
     assert.match(read.content, /Changed/);
     writeFileSync(join(worktree.path, "windows.txt"), "first\r\nsecond\r\n");
@@ -58,6 +69,7 @@ test("worktree mutation requires approval and remains inside the recorded task w
     assert.equal(buildOnlyProfile.passed, true);
     assert.equal(buildOnlyProfile.results[0]?.label, "npm run build");
 
+    await assert.rejects(() => tools.execute("worktree_write", { path: "../../outside.ts", content: "escape" }, context), /Unsafe|relative|escapes/);
     await assert.rejects(() => tools.execute("worktree_read", { path: "../README.md" }, context), /Unsafe|relative/);
     execFileSync("git", ["-C", repository, "worktree", "remove", "--force", worktree.path], { stdio: "ignore" });
   } finally {
