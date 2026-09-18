@@ -841,6 +841,7 @@ export function BorgWorkspaceV2() {
             <Sparkles className="size-4" />{websiteBusy ? "Creating…" : "Create website"}
           </Button>
         </DialogFooter>
+      </DialogContent>
       </Dialog>
     <Dialog open={accessOpen} onOpenChange={setAccessOpen}>
       <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-xl">
