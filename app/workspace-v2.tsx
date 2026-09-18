@@ -111,14 +111,25 @@ export function BorgWorkspaceV2() {
   const loadSession = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}`);
     if (!response.ok) throw new Error("Unable to load chat session.");
-    const result = await response.json() as { session: ChatSession; messages: ChatMessage[]; latestTaskId: string | null };
+    const result = await response.json() as {
+      session: ChatSession;
+      messages: ChatMessage[];
+      latestTaskId: string | null;
+      task: { id: string; state: string } | null;
+      approval: Approval | null;
+      escalation: Escalation | null;
+      runtimeAvailable: boolean;
+    };
+    const pendingApproval = result.approval?.status === "REQUESTED" ? result.approval : null;
+    const pendingEscalation = result.task?.state === "AWAITING_APPROVAL" ? result.escalation : null;
     setActiveSession(result.session);
+    setSessions((current) => current.map((session) => session.id === result.session.id ? result.session : session));
     setMessages(result.messages);
     setActiveTaskId(result.latestTaskId);
-    setApproval(null);
-    setEscalation(null);
-    setDeliveryReady(false);
-    setTaskState(result.latestTaskId ? "RESTORED" : "READY");
+    setApproval(pendingApproval);
+    setEscalation(pendingEscalation);
+    setDeliveryReady(result.task?.state === "DELIVERY_READY");
+    setTaskState(result.task?.state ?? (result.latestTaskId && !result.runtimeAvailable ? "RUNTIME UNAVAILABLE" : "READY"));
     return result;
   }, []);
 
