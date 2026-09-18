@@ -79,6 +79,32 @@ function rootWorkflowSession(session: ChatSession): ChatSession {
   return chats.findSession(session.parentSessionId) ?? session;
 }
 
+function migrateLegacyWorkflowSessions() {
+  const all = chats.listSessions();
+  const groups = new Map<string, ChatSession[]>();
+  for (const session of all) {
+    if (!session.repositoryPath) continue;
+    const key = session.repositoryPath.toLowerCase();
+    groups.set(key, [...(groups.get(key) ?? []), session]);
+  }
+  const internalTitle = / · (Slice 1|Next slice|Revision|Backend planning)$/;
+  for (const group of groups.values()) {
+    const unparented = group.filter((session) => !session.parentSessionId);
+    if (unparented.length < 2) continue;
+    const root = [...unparented].filter((session) => !internalTitle.test(session.title)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]
+      ?? [...unparented].sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    for (const session of unparented) {
+      if (session.id === root.id || !internalTitle.test(session.title)) continue;
+      chats.updateSession(session.id, {
+        parentSessionId: root.id,
+        workflowRole: session.title.endsWith(" · Backend planning") ? "backend" : "frontend_slice",
+      });
+    }
+  }
+}
+
+migrateLegacyWorkflowSessions();
+
 function describeToolEvent(event: Record<string, unknown>): string | null {
   const type = String(event.type ?? "");
   const tool = String(event.tool ?? "tool");
@@ -487,7 +513,7 @@ const server = createServer((request, response) => {
   }
   if (request.method === "POST" && request.url === "/api/sessions") {
     void readJson(request).then((input) => {
-      const repositoryPath = access.load().repositoryPath;
+      const repositoryPath = input.repositoryPath === null ? null : access.load().repositoryPath;
       const requestedMode = String(input.activeMode ?? "plan").toLowerCase() as PermissionMode;
       const activeMode = permissionModes.includes(requestedMode) ? requestedMode : "plan";
       const session = createChatSession({
