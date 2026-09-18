@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, ExternalLink, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
+import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, ExternalLink, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Monitor, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Smartphone, Sparkles, Tablet, Trash2, Wrench, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
 import { ActivityFeed, type AgentActivity } from "@/components/agent/activity-feed";
 import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel";
@@ -18,7 +18,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Switch } from "@/components/ui/switch";
 
-const API = "http://127.0.0.1:4312";
+const API = (process.env.NEXT_PUBLIC_BORG_API_URL ?? "http://127.0.0.1:4312").replace(/\/$/, "");
+const WEBSITE_TEMPLATES = [
+  { id: "saas-landing", label: "SaaS landing", detail: "Product story, proof, pricing, and conversion." },
+  { id: "portfolio", label: "Portfolio", detail: "Personal brand, selected work, and contact." },
+  { id: "ecommerce", label: "Ecommerce", detail: "Products, collections, merchandising, and purchase paths." },
+  { id: "dashboard", label: "Dashboard", detail: "Application navigation, data, and useful workflows." },
+  { id: "waitlist", label: "Waitlist", detail: "Focused launch page with one excellent signup journey." },
+] as const;
+type WebsiteTemplate = typeof WEBSITE_TEMPLATES[number]["id"];
+const WEBSITE_EXAMPLES = [
+  "Build a dark SaaS landing page for an AI note-taking app with a premium hero, pricing, testimonials, and a waitlist form.",
+  "Build a bold ecommerce homepage for a modern outdoor brand with featured products, collections, social proof, and a newsletter.",
+  "Build a polished personal portfolio for a senior software engineer with selected projects, experience, an about section, and contact CTA.",
+  "Build an internal operations dashboard with a sidebar, KPI cards, activity table, useful empty states, and responsive navigation.",
+  "Build a booking website for a premium local service business with services, trust signals, availability CTA, FAQ, and lead form.",
+] as const;
+const BUILDER_STEPS = ["Understand", "Design", "Build", "Test", "Ready"] as const;
 type PermissionMode = "ask" | "plan" | "edit" | "agent";
 type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string };
 type ChatMessage = RenderableMessage & { sessionId: string; taskId: string | null; createdAt: string; metadata?: Record<string, unknown> };
@@ -119,11 +135,14 @@ export function BorgWorkspaceV2() {
   const [processEvents, setProcessEvents] = useState<TaskProcessEvent[]>([]);
   const [websiteOpen, setWebsiteOpen] = useState(false);
   const [websiteName, setWebsiteName] = useState("");
+  const [websiteBrief, setWebsiteBrief] = useState("");
+  const [websiteTemplate, setWebsiteTemplate] = useState<WebsiteTemplate>("saas-landing");
   const [websiteBusy, setWebsiteBusy] = useState(false);
   const [websiteError, setWebsiteError] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [previewVersion, setPreviewVersion] = useState(0);
+  const [previewViewport, setPreviewViewport] = useState<"desktop" | "tablet" | "mobile">("desktop");
   const [checkpointOpen, setCheckpointOpen] = useState(false);
   const [checkpointName, setCheckpointName] = useState("");
   const [checkpoints, setCheckpoints] = useState<TaskCheckpoint[]>([]);
@@ -141,6 +160,9 @@ export function BorgWorkspaceV2() {
   const liveAssistantId = useRef<string | null>(null);
   const changeFingerprintRef = useRef<string | null>(null);
   const activeMode = activeSession?.activeMode ?? "plan";
+  const isWebsite = Boolean(activeSession?.repositoryPath);
+  const websiteSessions = useMemo(() => sessions.filter((session) => Boolean(session.repositoryPath)), [sessions]);
+  const legacySessions = useMemo(() => sessions.filter((session) => !session.repositoryPath), [sessions]);
   const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
   const canStop = streaming && !executionIsRunning(taskState);
   const actionLabel = executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
@@ -154,6 +176,13 @@ export function BorgWorkspaceV2() {
   }, [escalation, messages]);
   const runningProcesses = useMemo(() => processes.filter((process) => process.status === "starting" || process.status === "running"), [processes]);
   const previewProcess = useMemo(() => processes.find((process) => process.kind === "dev_server" && (process.status === "starting" || process.status === "running")) ?? processes.findLast((process) => process.kind === "dev_server") ?? null, [processes]);
+  const builderStep = useMemo(() => {
+    if (["DELIVERY_READY", "COMPLETE"].includes(taskState)) return 4;
+    if (["VERIFYING", "REVIEWING", "REPAIRING"].includes(taskState)) return 3;
+    if (["IMPLEMENTING"].includes(taskState)) return 2;
+    if (designBrief || ["AWAITING_APPROVAL"].includes(taskState)) return 1;
+    return 0;
+  }, [designBrief, taskState]);
 
   const activatePreview = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST" });
