@@ -110,19 +110,33 @@ const specialistPacks: Readonly<Record<EngineeringDiscipline, SpecialistCapabili
     escalationRules: ["Block when high-impact behavior cannot be verified deterministically."],
   },
   frontend: {
-    id: "frontend.web", version: 1, label: "Frontend Engineering", discipline: "frontend",
+    id: "frontend.web", version: 2, label: "Frontend Engineering", discipline: "frontend",
     instructions: roleInstructions(
-      ["Identify affected routes, components, state boundaries, responsive behavior, and accessibility expectations."],
-      ["Preserve design-system conventions; verify behavior through DOM interaction, console/network evidence, responsive screenshots, and accessibility checks."],
-      ["Require browser evidence for changed user-facing behavior and reject serious accessibility, console, network, or visual failures."],
-      ["Review interaction states, responsive layouts, accessibility, visual regressions, and client/server boundaries."],
+      [
+        "Identify affected routes, components, state boundaries, responsive behavior, accessibility expectations, and whether the request requires deliberate visual art direction.",
+        "For greenfield or redesign work, plan composition and page rhythm before component details; avoid treating card grids as the default information architecture.",
+      ],
+      [
+        "Treat any persisted Design Brief as a hard product requirement. Implement its hierarchy, composition, typography, palette direction, content voice, mobile strategy, and explicit avoid-list rather than using generic AI website defaults.",
+        "Build a coherent design language with reusable tokens and primitives. Prefer deliberate editorial composition, meaningful focal points, varied section weight, strong typography hierarchy, credible copy, and restrained motion.",
+        "Do not fabricate testimonials, logos, ratings, awards, client counts, revenue, performance metrics, or other social proof. Do not use lorem ipsum or vague filler copy.",
+        "Mobile must be intentionally art-directed rather than merely stacking desktop sections. Verify behavior through DOM interaction, console/network evidence, responsive screenshots, and accessibility checks.",
+      ],
+      [
+        "Require browser evidence for changed user-facing behavior and reject serious accessibility, console, network, visual, or responsive failures.",
+        "For design-directed tasks, preserve mobile and desktop screenshots suitable for the independent Visual Director quality gate.",
+      ],
+      [
+        "Review interaction states, responsive layouts, accessibility, visual regressions, client/server boundaries, hierarchy, typography, section rhythm, composition, content credibility, and visible design-system consistency.",
+        "Do not approve a design-directed interface merely because it is functional; verified visual quality is a separate requirement.",
+      ],
     ),
     toolCapabilities: browserTools,
     requiredEvidence: ["Browser evidence exists and passes.", "Responsive and accessibility evidence covers the changed interface.", "The final Git diff is inspected."],
     verificationProfile: "quick", requiresBrowserEvidence: true, minimumRisk: "R1",
     riskRules: ["Treat authentication UI, destructive actions, and sensitive-data rendering as security-sensitive."],
-    failureCategories: ["interaction", "responsive", "accessibility", "visual-regression", "client-runtime"],
-    escalationRules: ["Block when the changed interface cannot be exercised locally or required browser evidence is missing."],
+    failureCategories: ["interaction", "responsive", "accessibility", "visual-regression", "visual-quality", "content-credibility", "client-runtime"],
+    escalationRules: ["Block when the changed interface cannot be exercised locally or required browser evidence is missing.", "Design-directed work cannot claim premium completion without independent aesthetic evidence."],
   },
   backend: {
     id: "backend.services", version: 1, label: "Backend Engineering", discipline: "backend",
