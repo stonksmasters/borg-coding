@@ -9,17 +9,34 @@ import { createWebsiteProject, websiteInfo, websiteSlug } from "../packages/web-
 test("website bootstrap creates a committed React project and can be restored from its path", async () => {
   const root = mkdtempSync(join(tmpdir(), "borg-websites-"));
   try {
-    const project = await createWebsiteProject("Miller's Glass", root, async () => {});
+    const project = await createWebsiteProject("Miller's Glass", root, async () => {}, { template: "portfolio", originalBrief: "Build a premium glass studio portfolio." });
     assert.equal(project.slug, "miller-s-glass");
     assert.ok(existsSync(join(project.path, ".git")));
     assert.ok(existsSync(join(project.path, "src", "main.tsx")));
     assert.ok(existsSync(join(project.path, "src", "App.tsx")));
     assert.ok(existsSync(join(project.path, "src", "design", "tokens.css")));
     assert.equal(websiteInfo(project.path)?.name, "Miller's Glass");
-    const manifest = JSON.parse(readFileSync(join(project.path, ".borg-website.json"), "utf8")) as { framework: string; starterVersion?: number; designPipeline?: string };
+    const manifest = JSON.parse(readFileSync(join(project.path, ".borg-website.json"), "utf8")) as {
+      framework: string;
+      starterVersion?: number;
+      designPipeline?: string;
+      template?: string;
+      status?: string;
+      originalBrief?: string | null;
+      createdAt?: string;
+      lastOpenedAt?: string;
+    };
     assert.equal(manifest.framework, "vite-react");
-    assert.equal(manifest.starterVersion, 2);
+    assert.equal(manifest.starterVersion, 3);
     assert.equal(manifest.designPipeline, "premium-v1");
+    assert.equal(manifest.template, "portfolio");
+    assert.equal(manifest.status, "new");
+    assert.equal(manifest.originalBrief, "Build a premium glass studio portfolio.");
+    assert.ok(manifest.createdAt);
+    assert.equal(manifest.lastOpenedAt, manifest.createdAt);
+    const info = websiteInfo(project.path);
+    assert.equal(info?.template, "portfolio");
+    assert.equal(info?.originalBrief, "Build a premium glass studio portfolio.");
     const packageJson = JSON.parse(readFileSync(join(project.path, "package.json"), "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
     assert.ok(packageJson.dependencies?.["lucide-react"]);
     assert.ok(packageJson.dependencies?.motion);
