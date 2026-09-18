@@ -635,7 +635,25 @@ async function recoverApprovedFrontendPlans() {
         && candidate.activeMode === "edit"
         && candidate.title.includes("Slice 1")
         && chats.latestTaskId(candidate.id));
-      if (!existing) await launchFrontendWorkflowSession(parent, "initial");
+      if (!existing) {
+        await launchFrontendWorkflowSession(parent, "initial");
+        continue;
+      }
+      const runtime = await loadSessionRuntime(existing);
+      if (!runtime.latestTaskId) continue;
+      if (runtime.task?.state === "AWAITING_APPROVAL" && runtime.approval?.status === "REQUESTED") {
+        await approveCoreTask(runtime.latestTaskId);
+        const controller = new AbortController();
+        activeStreams.set(existing.id, controller);
+        try {
+          await pipeExecution(runtime.latestTaskId, existing, () => undefined, controller);
+          await saveVerifiedFrontendSlice(runtime.latestTaskId, existing, () => undefined);
+        } finally {
+          if (activeStreams.get(existing.id) === controller) activeStreams.delete(existing.id);
+        }
+      } else if (runtime.task?.state === "DELIVERY_READY") {
+        await saveVerifiedFrontendSlice(runtime.latestTaskId, existing, () => undefined);
+      }
     } catch (error) {
       console.error("[frontend-workflow] recovery failed", error);
     }
