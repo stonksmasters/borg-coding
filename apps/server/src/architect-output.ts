@@ -15,6 +15,9 @@ export interface ArchitectOutputValidation {
 export function validateArchitectOutput(answer: string): ArchitectOutputValidation {
   const value = answer.trim();
   if (!value) return { valid: false, reason: "Architect returned an empty plan." };
+  if (/<function=[a-zA-Z0-9_.:-]+>|<parameter=[a-zA-Z0-9_.:-]+>|<\/tool_call>/i.test(value)) {
+    return { valid: false, reason: "Architect returned raw tool-call protocol instead of a plan." };
+  }
   for (const claim of fabricatedImplementationClaims) {
     if (claim.pattern.test(value)) return { valid: false, reason: claim.label };
   }
