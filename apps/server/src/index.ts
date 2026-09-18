@@ -683,7 +683,6 @@ const server = createServer((request, response) => {
       return report;
     };
     const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
-    const initialPreflight = performPreflight("execution_start");
     const websiteProject = websiteInfo(approvedWorktreePath);
     const persistedDesignBrief = websiteProject ? readPersistedDesignBrief(approvedWorktreePath) : null;
     const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
@@ -716,10 +715,11 @@ const server = createServer((request, response) => {
     let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
       let repairEvidence = "";
+      performPreflight("execution_start");
       const compiledSlice = sliceState ? compileFrontendContext({ root: approvedWorktreePath, phase: "frontend", sliceIndex: sliceState.current }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       while (task) {
-        const attemptPreflight = task.attempts === 0 ? initialPreflight : performPreflight("retry_start");
+        if (task.attempts > 0) performPreflight("retry_start");
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
         const repairPrompt = repairEvidence
