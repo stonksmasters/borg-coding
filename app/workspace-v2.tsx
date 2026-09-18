@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, ExternalLink, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
+import { BookmarkPlus, Bot, Check, CircleStop, ExternalLink, FolderGit2, Globe2, History, KeyRound, MessageSquare, Monitor, Pencil, Play, Plus, RotateCcw, ShieldAlert, ShieldCheck, Smartphone, Sparkles, Tablet, Trash2, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
 import { ActivityFeed, type AgentActivity } from "@/components/agent/activity-feed";
 import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel";
@@ -18,7 +18,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Switch } from "@/components/ui/switch";
 
-const API = "http://127.0.0.1:4312";
+const API = (process.env.NEXT_PUBLIC_BORG_API_URL ?? "http://127.0.0.1:4312").replace(/\/$/, "");
+const WEBSITE_TEMPLATES = [
+  { id: "saas-landing", label: "SaaS landing", detail: "Product story, proof, pricing, and conversion." },
+  { id: "portfolio", label: "Portfolio", detail: "Personal brand, selected work, and contact." },
+  { id: "ecommerce", label: "Ecommerce", detail: "Products, collections, merchandising, and purchase paths." },
+  { id: "dashboard", label: "Dashboard", detail: "Application navigation, data, and useful workflows." },
+  { id: "waitlist", label: "Waitlist", detail: "Focused launch page with one excellent signup journey." },
+] as const;
+type WebsiteTemplate = typeof WEBSITE_TEMPLATES[number]["id"];
+const WEBSITE_EXAMPLES = [
+  "Build a dark SaaS landing page for an AI note-taking app with a premium hero, pricing, testimonials, and a waitlist form.",
+  "Build a bold ecommerce homepage for a modern outdoor brand with featured products, collections, social proof, and a newsletter.",
+  "Build a polished personal portfolio for a senior software engineer with selected projects, experience, an about section, and contact CTA.",
+  "Build an internal operations dashboard with a sidebar, KPI cards, activity table, useful empty states, and responsive navigation.",
+  "Build a booking website for a premium local service business with services, trust signals, availability CTA, FAQ, and lead form.",
+] as const;
+const BUILDER_STEPS = ["Understand", "Design", "Build", "Test", "Ready"] as const;
 type PermissionMode = "ask" | "plan" | "edit" | "agent";
 type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string };
 type ChatMessage = RenderableMessage & { sessionId: string; taskId: string | null; createdAt: string; metadata?: Record<string, unknown> };
@@ -84,7 +100,7 @@ export function BorgWorkspaceV2() {
   const [request, setRequest] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [serverAvailable, setServerAvailable] = useState(false);
-  const [runtimeConnected, setRuntimeConnected] = useState(false);
+  const [, setRuntimeConnected] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskState, setTaskState] = useState("READY");
   const [approval, setApproval] = useState<Approval | null>(null);
@@ -92,7 +108,7 @@ export function BorgWorkspaceV2() {
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [deliveryReady, setDeliveryReady] = useState(false);
   const [deliveryBusy, setDeliveryBusy] = useState(false);
-  const [accessConfig, setAccessConfig] = useState<AccessConfig | null>(null);
+  const [, setAccessConfig] = useState<AccessConfig | null>(null);
   const [accessOpen, setAccessOpen] = useState(false);
   const [repositoryDraft, setRepositoryDraft] = useState("");
   const [documentsDraft, setDocumentsDraft] = useState("");
@@ -119,11 +135,14 @@ export function BorgWorkspaceV2() {
   const [processEvents, setProcessEvents] = useState<TaskProcessEvent[]>([]);
   const [websiteOpen, setWebsiteOpen] = useState(false);
   const [websiteName, setWebsiteName] = useState("");
+  const [websiteBrief, setWebsiteBrief] = useState("");
+  const [websiteTemplate, setWebsiteTemplate] = useState<WebsiteTemplate>("saas-landing");
   const [websiteBusy, setWebsiteBusy] = useState(false);
   const [websiteError, setWebsiteError] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [previewVersion, setPreviewVersion] = useState(0);
+  const [previewViewport, setPreviewViewport] = useState<"desktop" | "tablet" | "mobile">("desktop");
   const [checkpointOpen, setCheckpointOpen] = useState(false);
   const [checkpointName, setCheckpointName] = useState("");
   const [checkpoints, setCheckpoints] = useState<TaskCheckpoint[]>([]);
@@ -141,6 +160,9 @@ export function BorgWorkspaceV2() {
   const liveAssistantId = useRef<string | null>(null);
   const changeFingerprintRef = useRef<string | null>(null);
   const activeMode = activeSession?.activeMode ?? "plan";
+  const isWebsite = Boolean(activeSession?.repositoryPath);
+  const websiteSessions = useMemo(() => sessions.filter((session) => Boolean(session.repositoryPath)), [sessions]);
+  const legacySessions = useMemo(() => sessions.filter((session) => !session.repositoryPath), [sessions]);
   const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
   const canStop = streaming && !executionIsRunning(taskState);
   const actionLabel = executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
@@ -154,6 +176,13 @@ export function BorgWorkspaceV2() {
   }, [escalation, messages]);
   const runningProcesses = useMemo(() => processes.filter((process) => process.status === "starting" || process.status === "running"), [processes]);
   const previewProcess = useMemo(() => processes.find((process) => process.kind === "dev_server" && (process.status === "starting" || process.status === "running")) ?? processes.findLast((process) => process.kind === "dev_server") ?? null, [processes]);
+  const builderStep = useMemo(() => {
+    if (["DELIVERY_READY", "COMPLETE"].includes(taskState)) return 4;
+    if (["VERIFYING", "REVIEWING", "REPAIRING"].includes(taskState)) return 3;
+    if (["IMPLEMENTING"].includes(taskState)) return 2;
+    if (designBrief || ["AWAITING_APPROVAL"].includes(taskState)) return 1;
+    return 0;
+  }, [designBrief, taskState]);
 
   const activatePreview = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST" });
@@ -401,14 +430,25 @@ export function BorgWorkspaceV2() {
   }
 
   async function createWebsite() {
+    const name = websiteName.trim();
+    const brief = websiteBrief.trim();
+    if (!name || !brief) return;
     setWebsiteBusy(true);
     setWebsiteError("");
     try {
-      const response = await fetch(`${API}/api/websites`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: websiteName }) });
+      const response = await fetch(`${API}/api/websites`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, brief, template: websiteTemplate }),
+      });
       const result = await response.json() as { session?: ChatSession; error?: string };
       if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to create website.");
       setWebsiteOpen(false);
       setWebsiteName("");
+      setWebsiteBrief("");
+      setWebsiteTemplate("saas-landing");
+      setRequest(brief);
+      setRightPanel("preview");
       await refreshSessions(result.session.id);
     } catch (error) { setWebsiteError(error instanceof Error ? error.message : "Unable to create website."); }
     finally { setWebsiteBusy(false); }
@@ -766,13 +806,43 @@ export function BorgWorkspaceV2() {
 
   return <SidebarProvider>
     <Dialog open={websiteOpen} onOpenChange={setWebsiteOpen}>
-      <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-md">
-        <DialogHeader><DialogTitle>New website</DialogTitle><DialogDescription>BORG creates a local React website, installs its dependencies, and opens a live preview.</DialogDescription></DialogHeader>
-        <label className="block py-2"><span className="mb-2 block text-sm font-medium text-slate-300">Website name</span><Input value={websiteName} onChange={(event) => setWebsiteName(event.target.value)} placeholder="My new website" className="border-white/10 bg-white/4 text-slate-100" /></label>
-        {websiteError && <p className="text-sm text-red-200">{websiteError}</p>}
-        <DialogFooter><Button variant="outline" onClick={() => setWebsiteOpen(false)} className="border-white/10 bg-transparent text-slate-300">Cancel</Button><Button disabled={websiteBusy || !websiteName.trim()} onClick={() => void createWebsite()} className="bg-[#a7ff4f] text-[#071007]">{websiteBusy ? "Creating…" : "Create website"}</Button></DialogFooter>
+      <DialogContent className="max-h-[90vh] overflow-y-auto border-white/10 bg-[#11161e] text-slate-100 sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="text-xl">Create a website</DialogTitle>
+          <DialogDescription>Give BORG the product direction up front. It will create the local project and keep this brief attached to the website.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-5 py-2">
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-slate-300">Website name</span>
+            <Input value={websiteName} onChange={(event) => setWebsiteName(event.target.value)} placeholder="Acme AI" className="border-white/10 bg-white/4 text-slate-100" />
+          </label>
+          <div>
+            <span className="mb-2 block text-sm font-medium text-slate-300">Starting point</span>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {WEBSITE_TEMPLATES.map((template) => <button key={template.id} type="button" onClick={() => setWebsiteTemplate(template.id)} className={`rounded-lg border p-3 text-left transition ${websiteTemplate === template.id ? "border-[#a7ff4f]/45 bg-[#a7ff4f]/8" : "border-white/10 bg-white/[0.025] hover:bg-white/5"}`}>
+                <span className="block text-sm font-medium text-slate-200">{template.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">{template.detail}</span>
+              </button>)}
+            </div>
+          </div>
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-slate-300">What do you want to build?</span>
+            <textarea value={websiteBrief} onChange={(event) => setWebsiteBrief(event.target.value)} rows={6} placeholder="Describe the business, audience, pages, features, and visual direction. You can keep it simple." className="w-full resize-y rounded-lg border border-white/10 bg-white/4 px-3 py-3 text-sm leading-6 text-slate-100 outline-none placeholder:text-slate-600 focus:border-[#a7ff4f]/40" />
+          </label>
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-slate-600">Try an example</p>
+            <div className="flex flex-wrap gap-2">{WEBSITE_EXAMPLES.slice(0, 3).map((example) => <button key={example} type="button" onClick={() => setWebsiteBrief(example)} className="rounded-full border border-white/10 bg-white/[0.025] px-3 py-1.5 text-xs text-slate-400 hover:border-white/20 hover:text-slate-200">{example.split(" ").slice(0, 5).join(" ")}…</button>)}</div>
+          </div>
+          {websiteError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{websiteError}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setWebsiteOpen(false)} className="border-white/10 bg-transparent text-slate-300">Cancel</Button>
+          <Button disabled={websiteBusy || !websiteName.trim() || !websiteBrief.trim()} onClick={() => void createWebsite()} className="bg-[#a7ff4f] text-[#071007]">
+            <Sparkles className="size-4" />{websiteBusy ? "Creating…" : "Create website"}
+          </Button>
+        </DialogFooter>
       </DialogContent>
-    </Dialog>
+      </Dialog>
     <Dialog open={accessOpen} onOpenChange={setAccessOpen}>
       <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-xl">
         <DialogHeader><DialogTitle>Repository access</DialogTitle><DialogDescription>The active repository is shared by chat sessions and remains inside the local BORG runtime.</DialogDescription></DialogHeader>
@@ -861,45 +931,125 @@ export function BorgWorkspaceV2() {
 
     <Sidebar className="border-r border-white/8 bg-[#0a0d12]" collapsible="offcanvas">
       <SidebarHeader className="border-b border-white/8 px-4 py-4">
-        <div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-lg bg-[#a7ff4f] text-[#071007]"><Bot className="size-5" /></div><div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG CODE</p><p className="text-xs text-slate-500">PERSISTENT WORKSTATION</p></div></div>
-        <Button onClick={() => void createSession()} className="mt-4 w-full justify-start gap-2 bg-white/7 text-slate-200 hover:bg-white/10"><Plus className="size-4" />New Chat</Button>
-        <Button onClick={() => setWebsiteOpen(true)} className="mt-2 w-full justify-start gap-2 bg-[#a7ff4f] text-[#071007] hover:bg-[#b9ff74]"><Globe2 className="size-4" />New Website</Button>
+        <div className="flex items-center gap-3">
+          <div className="grid size-9 place-items-center rounded-lg bg-[#a7ff4f] text-[#071007]"><Bot className="size-5" /></div>
+          <div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG</p><p className="text-xs text-slate-500">LOCAL WEBSITE BUILDER</p></div>
+        </div>
+        <Button onClick={() => setWebsiteOpen(true)} className="mt-4 w-full justify-start gap-2 bg-[#a7ff4f] text-[#071007] hover:bg-[#b9ff74]"><Plus className="size-4" />New Website</Button>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup><SidebarGroupLabel className="text-slate-500">Chats</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>{sessions.map((session) => <SidebarMenuItem key={session.id}><div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeSession?.id === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><MessageSquare /><span className="truncate">{session.title}</span><span className="ml-auto text-[10px] uppercase text-slate-600">{session.activeMode}</span></SidebarMenuButton><button type="button" onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div></SidebarMenuItem>)}</SidebarMenu></SidebarGroupContent></SidebarGroup>
-        <SidebarGroup><SidebarGroupLabel className="text-slate-500">Workspace</SidebarGroupLabel><SidebarGroupContent><SidebarMenu><SidebarMenuItem><SidebarMenuButton onClick={() => setAccessOpen(true)} isActive={Boolean(accessConfig?.repositoryPath)} className="text-slate-300 hover:bg-white/7 hover:text-white"><FolderGit2 /><span>{accessConfig?.repositoryName ?? "Choose repository"}</span></SidebarMenuButton></SidebarMenuItem>{accessConfig?.documentNames.map((name) => <SidebarMenuItem key={name}><SidebarMenuButton onClick={() => setAccessOpen(true)} className="text-slate-400"><FileText /><span>{name}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu><Button variant="ghost" size="sm" onClick={() => setAccessOpen(true)} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><Settings2 className="size-3.5" />Manage access</Button></SidebarGroupContent></SidebarGroup>
-        <SidebarGroup><SidebarGroupLabel className="text-slate-500">Tools</SidebarGroupLabel><SidebarGroupContent><SidebarMenu><SidebarMenuItem><SidebarMenuButton onClick={() => setToolsOpen(true)} isActive={toolConfig?.configurationState === "available"} className="text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span>Internet</span><span className="ml-auto text-xs text-slate-500">{statusLabel(toolConfig)}</span></SidebarMenuButton></SidebarMenuItem></SidebarMenu><Button variant="ghost" size="sm" onClick={() => setToolsOpen(true)} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><Wrench className="size-3.5" />Manage tools</Button></SidebarGroupContent></SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-slate-500">My Websites</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {websiteSessions.map((session) => <SidebarMenuItem key={session.id}><div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeSession?.id === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div></SidebarMenuItem>)}
+            </SidebarMenu>
+            {!websiteSessions.length && <button type="button" onClick={() => setWebsiteOpen(true)} className="w-full rounded-lg border border-dashed border-white/10 px-3 py-4 text-left text-xs leading-5 text-slate-500 hover:border-white/20 hover:text-slate-300">Create your first website to start building with BORG.</button>}
+            {activeTaskId && <Button variant="ghost" size="sm" onClick={() => setRightPanel("changes")} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><History className="size-3.5" />Recent changes{changes.files.length ? ` (${changes.files.length})` : ""}</Button>}
+          </SidebarGroupContent>
+        </SidebarGroup>
+        {legacySessions.length > 0 && <SidebarGroup>
+          <details className="px-2">
+            <summary className="cursor-pointer select-none px-2 py-2 text-xs font-medium text-slate-600">Developer sessions</summary>
+            <SidebarMenu>{legacySessions.map((session) => <SidebarMenuItem key={session.id}><SidebarMenuButton isActive={activeSession?.id === session.id} onClick={() => void loadSession(session.id)} className="text-slate-400 hover:bg-white/7 hover:text-white"><MessageSquare /><span className="truncate">{session.title}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu>
+            <Button variant="ghost" size="sm" onClick={() => void createSession()} className="mt-1 w-full justify-start gap-2 text-xs text-slate-600"><Plus className="size-3.5" />New developer chat</Button>
+          </details>
+        </SidebarGroup>}
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-slate-500">Settings</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem><SidebarMenuButton onClick={() => setToolsOpen(true)} isActive={toolConfig?.configurationState === "available"} className="text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span>Internet & model tools</span><span className="ml-auto text-[10px] text-slate-600">{statusLabel(toolConfig)}</span></SidebarMenuButton></SidebarMenuItem>
+              <SidebarMenuItem><SidebarMenuButton onClick={() => setAccessOpen(true)} className="text-slate-400 hover:bg-white/7 hover:text-white"><FolderGit2 /><span>Advanced repository access</span></SidebarMenuButton></SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="border-t border-white/8 p-4"><div className="flex items-center gap-2 text-xs text-slate-400"><span className={`size-2 rounded-full ${serverAvailable ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : "bg-slate-600"}`} />{serverAvailable ? "Desktop gateway connected" : "Desktop gateway offline"}</div></SidebarFooter>
+      <SidebarFooter className="border-t border-white/8 p-4"><div className="flex items-center gap-2 text-xs text-slate-400"><span className={`size-2 rounded-full ${serverAvailable ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : "bg-slate-600"}`} />{serverAvailable ? "BORG ready" : "BORG offline"}</div></SidebarFooter>
     </Sidebar>
 
     <SidebarInset className="h-svh min-h-0 min-w-0 overflow-hidden bg-[#0d1117] text-slate-100">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeSession?.title ?? "New chat"}</span></div></div><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setReviewOpen(true)} className={`border-white/10 bg-white/4 ${blockingFindingIds.length ? "text-red-200" : "text-slate-300"}`}><ShieldAlert className="size-3.5" /><span className="hidden sm:inline">Review{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</span></Button><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Checkpoints</span></Button><Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${activeSession?.model ?? "qwen3-coder:30b"} · ${activeSession?.provider ?? "ollama"}` : "Runtime not connected"}</div></div></header>
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <SidebarTrigger className="text-slate-400" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-slate-200">{activeSession?.title ?? "Choose a website"}</p>
+            <p className="hidden truncate text-[11px] text-slate-600 sm:block">{previewUrl ?? (isWebsite ? "Local website project" : "Developer workspace")}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isWebsite && <Button size="sm" variant="outline" onClick={() => setRightPanel("preview")} className="hidden border-white/10 bg-white/4 text-slate-300 sm:inline-flex"><Monitor className="size-3.5" />Preview</Button>}
+          <Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setRightPanel("changes")} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Changes</span></Button>
+          <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}>
+            <SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger>
+            <SelectContent className="border-white/10 bg-[#151a22] text-slate-100">
+              <SelectItem value="plan">Safe mode</SelectItem>
+              <SelectItem value="edit">Build mode</SelectItem>
+              <SelectItem value="agent">Autopilot</SelectItem>
+              <SelectItem value="ask">Ask only</SelectItem>
+            </SelectContent>
+          </Select>
+          <details className="relative">
+            <summary className="list-none cursor-pointer rounded-md border border-white/10 bg-white/4 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Advanced</summary>
+            <div className="absolute right-0 z-50 mt-2 w-48 rounded-lg border border-white/10 bg-[#11161e] p-2 shadow-2xl">
+              <button type="button" disabled={!activeTaskId} onClick={() => setReviewOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"><ShieldAlert className="size-3.5" />Review history{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</button>
+              <button type="button" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"><History className="size-3.5" />Checkpoints</button>
+              <button type="button" onClick={() => setAccessOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200"><FolderGit2 className="size-3.5" />Repository access</button>
+            </div>
+          </details>
+        </div>
+      </header>
 
       <section className="flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1 flex-col lg:flex-row"><div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-7 sm:px-10 lg:px-14"><div className="mx-auto max-w-3xl">
-          <div className="mb-6 flex items-start justify-between gap-4"><div><p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#a7ff4f]">{activeTaskId ? `Task ${activeTaskId.slice(0, 8).toUpperCase()}` : "Persistent session"}</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">{activeSession?.title ?? "New chat"}</h1></div><span className="rounded-full border border-white/10 bg-white/4 px-3 py-1 text-xs text-slate-400">{taskState}</span></div>
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row"><div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-7 sm:px-8 lg:basis-[35%] lg:flex-none lg:px-8"><div className="mx-auto max-w-3xl">
+          <div className="mb-6 flex items-start justify-between gap-4"><div><p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#a7ff4f]">{isWebsite ? "Website workspace" : "Developer workspace"}</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">{activeSession?.title ?? "Choose a website"}</h1></div>{activeTaskId && <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1 text-xs capitalize text-slate-400">{taskState.replaceAll("_", " ").toLowerCase()}</span>}</div>
           {sessionError && <div className="mb-5 rounded-lg border border-red-400/20 bg-red-400/8 px-4 py-3 text-sm text-red-200">{sessionError}</div>}
           <div className="space-y-4">
-            {visibleMessages.length ? visibleMessages.map((message) => <AssistantMessage key={message.id} message={message} />) : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">New persistent chat</p><p className="mt-1 text-sm text-slate-500">This conversation will survive restarts and stay associated with the selected mode and workspace.</p></div></div>}
-            {(streaming || taskIsRunning(taskState)) && <div role="status" aria-live="polite" className="rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4"><div className="flex items-start gap-3"><span className="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-[#a7ff4f]" /><div><p className="text-sm font-medium text-[#d9ffb5]">{currentProgress?.title ?? "BORG is working"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{currentProgress?.detail ?? "BORG is continuing the current task."}</p></div></div></div>}
+            {visibleMessages.length ? visibleMessages.map((message) => <AssistantMessage key={message.id} message={message} />) : isWebsite ? <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
+              <div className="flex size-10 items-center justify-center rounded-xl bg-[#a7ff4f]/10 text-[#a7ff4f]"><Sparkles className="size-5" /></div>
+              <h2 className="mt-5 text-xl font-semibold tracking-tight text-white">What do you want to build?</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-500">Describe the result in normal language. BORG will turn it into a design direction, show you what it plans to build, and wait for your Build approval before changing files.</p>
+              <div className="mt-5 grid gap-2">
+                {WEBSITE_EXAMPLES.map((example) => <button key={example} type="button" onClick={() => setRequest(example)} className="rounded-lg border border-white/8 bg-black/10 px-3 py-2.5 text-left text-xs leading-5 text-slate-400 transition hover:border-white/15 hover:bg-white/[0.03] hover:text-slate-200">{example}</button>)}
+              </div>
+            </div> : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">Developer session</p><p className="mt-1 text-sm text-slate-500">Use this advanced workspace for repository tasks that are not tied to a BORG website.</p></div></div>}
+            {activeTaskId && isWebsite && <div role="status" aria-live="polite" className="rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
+              <div className="flex items-start gap-3"><span className={`mt-1.5 size-2 shrink-0 rounded-full bg-[#a7ff4f] ${streaming || taskIsRunning(taskState) ? "animate-pulse" : ""}`} /><div><p className="text-sm font-medium text-[#d9ffb5]">{currentProgress?.title ?? (builderStep === 4 ? "Website ready for review" : "BORG is working")}</p><p className="mt-1 text-xs leading-5 text-slate-400">{currentProgress?.detail ?? "BORG is continuing the current website build."}</p></div></div>
+              <div className="mt-4 grid grid-cols-5 gap-1">{BUILDER_STEPS.map((step, index) => <div key={step} className="min-w-0"><div className={`h-1 rounded-full ${index <= builderStep ? "bg-[#a7ff4f]" : "bg-white/8"}`} /><p className={`mt-1 truncate text-[9px] uppercase tracking-wide ${index <= builderStep ? "text-[#cfff9e]" : "text-slate-700"}`}>{step}</p></div>)}</div>
+            </div>}
             <ActivityFeed activities={activities} />
             {activityItems.length > 0 && <details className="rounded-lg border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer select-none font-medium text-slate-400">Technical activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
           </div>
-        </div></div>{(activeTaskId || previewUrl || previewError || latestPlan || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden overscroll-contain border-t border-white/8 lg:min-h-0 lg:basis-1/2 lg:border-l lg:border-t-0">
-          <div className="flex h-11 shrink-0 items-center justify-between border-b border-white/8 bg-[#0a0d12] px-3">
+        </div></div>{(activeTaskId || previewUrl || previewError || latestPlan || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden overscroll-contain border-t border-white/8 lg:min-h-0 lg:basis-[65%] lg:flex-none lg:border-l lg:border-t-0">
+          <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-1.5">
             <div className="flex items-center gap-1">
               <button type="button" disabled={!previewUrl && !previewError} onClick={() => setRightPanel("preview")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "preview" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
-              <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "plan" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
               <button type="button" onClick={() => setRightPanel("changes")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "changes" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Changes{changes.files.length ? ` (${changes.files.length})` : ""}</button>
-              <button type="button" disabled={!designBrief} onClick={() => setRightPanel("design")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "design" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Design{designReview?.status === "repair" ? " •" : ""}</button>
-              <button type="button" onClick={() => setRightPanel("terminal")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "terminal" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
+              <details className="relative">
+                <summary className="list-none cursor-pointer rounded px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-white/5 hover:text-slate-300">Advanced</summary>
+                <div className="absolute left-0 z-40 mt-2 w-40 rounded-lg border border-white/10 bg-[#11161e] p-1.5 shadow-2xl">
+                  <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Plan</button>
+                  <button type="button" disabled={!designBrief} onClick={() => setRightPanel("design")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Design review{designReview?.status === "repair" ? " •" : ""}</button>
+                  <button type="button" onClick={() => setRightPanel("terminal")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
+                </div>
+              </details>
             </div>
-            {rightPanel === "preview" && <div className="flex items-center gap-2">
-              {previewProcess && <span className={`hidden items-center gap-1.5 text-[10px] sm:inline-flex ${previewProcess.status === "running" ? "text-[#a7ff4f]" : previewProcess.status === "failed" ? "text-red-300" : "text-slate-500"}`}><span className={`size-1.5 rounded-full ${previewProcess.status === "running" ? "bg-[#a7ff4f]" : previewProcess.status === "starting" ? "animate-pulse bg-sky-300" : previewProcess.status === "failed" ? "bg-red-300" : "bg-slate-600"}`} />{previewProcess.status === "running" ? "Running" : previewProcess.status.replaceAll("_", " ")}</span>}
-              {previewUrl && <><Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} className="text-slate-400"><RotateCcw className="size-3.5" />Refresh</Button><a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-white"><ExternalLink className="size-3.5" />Open</a></>}
+            {rightPanel === "preview" && <div className="flex items-center gap-1">
+              {previewUrl && <>
+                <button type="button" aria-label="Desktop preview" onClick={() => setPreviewViewport("desktop")} className={`rounded p-1.5 ${previewViewport === "desktop" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Monitor className="size-3.5" /></button>
+                <button type="button" aria-label="Tablet preview" onClick={() => setPreviewViewport("tablet")} className={`rounded p-1.5 ${previewViewport === "tablet" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Tablet className="size-3.5" /></button>
+                <button type="button" aria-label="Mobile preview" onClick={() => setPreviewViewport("mobile")} className={`rounded p-1.5 ${previewViewport === "mobile" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Smartphone className="size-3.5" /></button>
+                <span className="mx-1 h-4 w-px bg-white/10" />
+                <Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} className="h-7 gap-1 px-2 text-xs text-slate-500"><RotateCcw className="size-3.5" /><span className="hidden sm:inline">Refresh</span></Button>
+                <a href={previewUrl} target="_blank" rel="noreferrer" aria-label="Open preview in a new window" className="inline-flex rounded p-1.5 text-slate-500 hover:bg-white/5 hover:text-white"><ExternalLink className="size-3.5" /></a>
+              </>}
             </div>}
           </div>
+          {rightPanel === "preview" && previewUrl && <div className="flex h-9 shrink-0 items-center gap-2 border-b border-white/8 bg-[#0c1016] px-3 text-[10px] text-slate-600">
+            <span className={`size-1.5 rounded-full ${previewProcess?.status === "failed" ? "bg-red-300" : "bg-[#a7ff4f]"}`} />
+            <span className="min-w-0 flex-1 truncate font-mono">{previewUrl}</span>
+            <span>{previewVersion > 0 ? "Preview updated" : previewProcess?.status === "starting" ? "Starting…" : "Live"}</span>
+          </div>}
           <div className="flex min-h-0 flex-1 overflow-hidden">
             {rightPanel === "plan"
               ? <PlanPanel plan={latestPlan} />
@@ -910,16 +1060,16 @@ export function BorgWorkspaceV2() {
                   : rightPanel === "terminal"
                     ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
                     : previewUrl
-                    ? <iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full min-h-0 w-full flex-1 border-0 bg-white" />
-                    : <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 text-sm text-red-200">{previewError || "Preview is not available for this task yet."}</div>}
+                    ? <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#151a22] p-2 sm:p-3"><div className={`h-full min-h-[520px] overflow-hidden rounded-md border border-white/10 bg-white shadow-2xl transition-[width] duration-200 ${previewViewport === "mobile" ? "w-[390px] max-w-full" : previewViewport === "tablet" ? "w-[820px] max-w-full" : "w-full"}`}><iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full w-full border-0 bg-white" /></div></div>
+                    : <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto overscroll-contain p-6 text-center"><div><Monitor className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">{previewError || "The live preview will appear here as soon as the website is ready."}</p></div></div>}
           </div>
         </div>}</div>
 
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
-          {approval && escalation && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3"><div className="max-w-xl"><p className="text-sm font-medium text-amber-100">PLAN reached a mutation boundary</p><p className="mt-1 text-xs leading-5 text-slate-400">PLAN remains read-only. Switch this session to EDIT to create the isolated worktree and execute the proposed plan, or stay in PLAN with no mutations.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />Stay in Plan</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Check className="size-4" />{approvalBusy ? "Switching…" : "Switch to Edit & Continue"}</Button></div></div>}
-          {deliveryReady && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Verified changes ready</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files · +${changes.additions} -${changes.deletions}. ` : ""}Choose a delivery action for the isolated worktree.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => void deliver("export")} className="border-white/10 bg-transparent text-slate-300">Export patch</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Commit changes</Button></div></div>}
+          {approval && escalation && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">Ready to build</p><p className="mt-1 text-xs leading-5 text-slate-400">BORG has understood the request and prepared the implementation direction. Build will create the changes in the isolated local website, launch the preview, and run verification before presenting the result.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />Keep planning</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Starting…" : "Build website"}</Button></div></div>}
+          {deliveryReady && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Website check complete</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}The verified result is ready in Preview. Save the change set when you are happy with it.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
           <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); if (taskBusy) return; const value = request; setRequest(""); void runTask(value); }}>
-            <Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={taskBusy || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={`Ask BORG in ${activeMode.toUpperCase()} mode…`} />
+            <Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={taskBusy || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={isWebsite ? "Describe a change to this website…" : `Ask BORG in ${activeMode.toUpperCase()} mode…`} />
             <Button type={canStop ? "button" : "submit"} disabled={taskBusy && !canStop} onClick={() => { if (canStop) { abortRef.current?.abort(); setStreaming(false); setTaskState("CANCELLED"); } }} className={`h-11 gap-2 px-5 ${taskBusy ? "bg-white/8 text-slate-200" : "bg-[#a7ff4f] text-[#071007]"}`}>{canStop ? <CircleStop className="size-4" /> : <Play className="size-4" />}{actionLabel}</Button>
           </form>
         </div>

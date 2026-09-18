@@ -10,6 +10,22 @@ import { execFile } from "node:child_process";
 const execFileAsync = promisify(execFile);
 const marker = ".borg-website.json";
 
+export const websiteTemplates = ["saas-landing", "portfolio", "ecommerce", "dashboard", "waitlist"] as const;
+export type WebsiteTemplate = typeof websiteTemplates[number];
+export type WebsiteProjectStatus = "new" | "generating" | "ready" | "needs_attention" | "archived";
+export type WebsiteProjectOptions = {
+  template?: WebsiteTemplate;
+  originalBrief?: string;
+};
+
+const templateCopy: Record<WebsiteTemplate, { kicker: string; description: string }> = {
+  "saas-landing": { kicker: "SAAS / PRODUCT", description: "A polished product canvas with room for a decisive hero, product proof, pricing, and conversion-focused calls to action." },
+  portfolio: { kicker: "PORTFOLIO / STORY", description: "A portfolio canvas built to foreground personality, selected work, credibility, and a clear path to contact." },
+  ecommerce: { kicker: "COMMERCE / CATALOG", description: "A commerce canvas prepared for product storytelling, collection discovery, merchandising, and confident purchase paths." },
+  dashboard: { kicker: "PRODUCT / WORKSPACE", description: "An application canvas prepared for navigation, dense information, useful empty states, and responsive operational workflows." },
+  waitlist: { kicker: "LAUNCH / WAITLIST", description: "A focused launch canvas designed around a crisp value proposition, trust signals, and one excellent signup journey." },
+};
+
 export function websiteRoot() {
   return resolve(process.env.BORG_WEBSITES_DIR ?? join(homedir(), "Documents", "BORG Websites"));
 }
@@ -29,15 +45,18 @@ async function run(command: string, args: string[], cwd: string, timeout = 120_0
   return `${stdout}\n${stderr}`.trim();
 }
 
-export async function createWebsiteProject(name: string, root = websiteRoot(), install?: (projectPath: string) => Promise<void>) {
+export async function createWebsiteProject(name: string, root = websiteRoot(), install?: (projectPath: string) => Promise<void>, options: WebsiteProjectOptions = {}) {
   const slug = websiteSlug(name);
   const projectPath = resolve(root, slug);
   if (existsSync(projectPath)) throw new Error(`A website named “${slug}” already exists.`);
   mkdirSync(root, { recursive: true });
-  for (const directory of ["src", "src/components", "src/sections", "src/design", "src/assets", "src/lib"]) {
+  for (const directory of ["src", "src/components", "src/sections", "src/design", "src/assets", "src/lib", "server"]) {
     mkdirSync(join(projectPath, directory), { recursive: true });
   }
   const title = name.trim();
+  const template = websiteTemplates.includes(options.template as WebsiteTemplate) ? options.template as WebsiteTemplate : "saas-landing";
+  const starter = templateCopy[template];
+  const createdAt = new Date().toISOString();
   const files: Record<string, string> = {
     "package.json": JSON.stringify({
       name: slug,
@@ -46,27 +65,119 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
       type: "module",
       scripts: { dev: "vite --host 127.0.0.1", build: "tsc --noEmit && vite build" },
       dependencies: { "lucide-react": "^0.468.0", motion: "^12.23.24", react: "19.2.6", "react-dom": "19.2.6" },
-      devDependencies: { "@tailwindcss/vite": "^4.1.14", "@vitejs/plugin-react": "6.0.2", tailwindcss: "^4.1.14", vite: "8.0.13", typescript: "5.9.3", "@types/react": "19.2.14", "@types/react-dom": "19.2.3" },
+      devDependencies: { "@tailwindcss/vite": "^4.1.14", "@vitejs/plugin-react": "6.0.2", tailwindcss: "^4.1.14", vite: "8.0.13", typescript: "5.9.3", "@types/node": "^22.19.19", "@types/react": "19.2.14", "@types/react-dom": "19.2.3" },
     }, null, 2) + "\n",
     "index.html": `<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="theme-color" content="#0b0d0f" /><title>${title.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;")}</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>\n`,
-    "vite.config.ts": "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\nimport tailwindcss from '@tailwindcss/vite';\n\nexport default defineConfig({ plugins: [react(), tailwindcss()] });\n",
-    "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ES2022", useDefineForClassFields: true, lib: ["ES2022", "DOM", "DOM.Iterable"], module: "ESNext", skipLibCheck: true, moduleResolution: "Bundler", allowImportingTsExtensions: true, resolveJsonModule: true, isolatedModules: true, noEmit: true, jsx: "react-jsx", strict: true }, include: ["src", "vite.config.ts"] }, null, 2) + "\n",
-    ".gitignore": "node_modules\ndist\n.env\n.env.*\n.borg/evidence\n",
+    "vite.config.ts": "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\nimport tailwindcss from '@tailwindcss/vite';\nimport { borgLocalApi } from './server/local-api';\n\nexport default defineConfig({ plugins: [react(), tailwindcss(), borgLocalApi()] });\n",
+    "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ES2022", useDefineForClassFields: true, lib: ["ES2022", "DOM", "DOM.Iterable"], types: ["node", "vite/client"], module: "ESNext", skipLibCheck: true, moduleResolution: "Bundler", allowImportingTsExtensions: true, resolveJsonModule: true, isolatedModules: true, noEmit: true, jsx: "react-jsx", strict: true }, include: ["src", "server", "vite.config.ts"] }, null, 2) + "\n",
+    ".gitignore": "node_modules\ndist\n.env\n.env.*\n.borg/evidence\n.borg/data.sqlite*\n",
     "src/main.tsx": "import React from 'react';\nimport { createRoot } from 'react-dom/client';\nimport App from './App';\nimport './style.css';\n\ncreateRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);\n",
+    "server/db.ts": `import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+const dataDir = resolve(".borg");
+mkdirSync(dataDir, { recursive: true });
+const database = new DatabaseSync(resolve(dataDir, "data.sqlite"));
+
+database.exec(\`
+  CREATE TABLE IF NOT EXISTS submissions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )
+\`);
+
+export type LocalSubmission = {
+  id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export function createSubmission(kind: string, payload: Record<string, unknown>): LocalSubmission {
+  const submission = { id: randomUUID(), kind, payload, createdAt: new Date().toISOString() };
+  database.prepare("INSERT INTO submissions (id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)")
+    .run(submission.id, submission.kind, JSON.stringify(submission.payload), submission.createdAt);
+  return submission;
+}
+
+export function listSubmissions(limit = 50): LocalSubmission[] {
+  const rows = database.prepare("SELECT id, kind, payload_json, created_at FROM submissions ORDER BY created_at DESC LIMIT ?")
+    .all(Math.max(1, Math.min(limit, 100))) as Array<{ id: string; kind: string; payload_json: string; created_at: string }>;
+  return rows.map((row) => ({ id: row.id, kind: row.kind, payload: JSON.parse(row.payload_json) as Record<string, unknown>, createdAt: row.created_at }));
+}
+`,
+    "server/local-api.ts": `import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Plugin } from "vite";
+import { createSubmission, listSubmissions } from "./db";
+
+const MAX_BODY_BYTES = 1_000_000;
+
+function send(response: ServerResponse, status: number, body: unknown) {
+  response.statusCode = status;
+  response.setHeader("content-type", "application/json; charset=utf-8");
+  response.end(JSON.stringify(body));
+}
+
+async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+  let body = "";
+  for await (const chunk of request) {
+    body += String(chunk);
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES) throw new Error("Request body is too large.");
+  }
+  if (!body.trim()) return {};
+  const parsed = JSON.parse(body) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("JSON body must be an object.");
+  return parsed as Record<string, unknown>;
+}
+
+export function borgLocalApi(): Plugin {
+  return {
+    name: "borg-local-api",
+    configureServer(server) {
+      server.middlewares.use(async (request, response, next) => {
+        const url = new URL(request.url ?? "/", "http://127.0.0.1");
+        if (!url.pathname.startsWith("/api/")) return next();
+
+        try {
+          if (request.method === "GET" && url.pathname === "/api/health") return send(response, 200, { status: "ok" });
+          if (request.method === "GET" && url.pathname === "/api/submissions") {
+            const limit = Number(url.searchParams.get("limit") ?? 50);
+            return send(response, 200, { submissions: listSubmissions(Number.isFinite(limit) ? limit : 50) });
+          }
+          if (request.method === "POST" && url.pathname === "/api/submissions") {
+            const input = await readJson(request);
+            const kind = typeof input.kind === "string" && input.kind.trim() ? input.kind.trim().slice(0, 80) : "form";
+            const payload = input.payload && typeof input.payload === "object" && !Array.isArray(input.payload) ? input.payload as Record<string, unknown> : input;
+            return send(response, 201, { submission: createSubmission(kind, payload) });
+          }
+          return send(response, 404, { error: "API route not found." });
+        } catch (error) {
+          return send(response, 400, { error: error instanceof Error ? error.message : "Invalid API request." });
+        }
+      });
+    },
+  };
+}
+`,
     "src/App.tsx": `import { ArrowUpRight } from "lucide-react";
 import { motion } from "motion/react";
 
 export default function App() {
+  const starter = ${JSON.stringify(starter)};
   return (
     <main className="site-shell">
       <section className="starter-hero">
-        <div className="starter-kicker">BORG / DESIGN CANVAS</div>
+        <div className="starter-kicker">{starter.kicker}</div>
         <div className="starter-grid">
           <div>
             <motion.h1 initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.55 }}>
               ${title.replaceAll("{", "").replaceAll("}", "")}
             </motion.h1>
-            <p className="starter-copy">A production-ready canvas is prepared. BORG will replace this starter with the approved design direction before delivery.</p>
+            <p className="starter-copy">{starter.description}</p>
           </div>
           <div className="starter-meta">
             <span>React 19</span><span>Tailwind 4</span><span>Motion</span><span>Design tokens</span>
@@ -115,7 +226,7 @@ img { display: block; max-width: 100%; }
   .starter-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 `,
-    [marker]: JSON.stringify({ id: randomUUID(), name: title, slug, framework: "vite-react", starterVersion: 2, designPipeline: "premium-v1", createdAt: new Date().toISOString() }, null, 2) + "\n",
+    [marker]: JSON.stringify({ id: randomUUID(), name: title, slug, framework: "vite-react", template, starterVersion: 3, designPipeline: "premium-v1", status: "new", originalBrief: options.originalBrief?.trim() || null, createdAt, lastOpenedAt: createdAt }, null, 2) + "\n",
   };
   for (const [relativePath, contents] of Object.entries(files)) writeFileSync(join(projectPath, relativePath), contents, "utf8");
   await run("git", ["init", "-b", "main"], projectPath);
@@ -140,8 +251,26 @@ export function websiteInfo(projectPath: string) {
   const manifestPath = join(canonical, marker);
   if (!existsSync(manifestPath) || !existsSync(join(canonical, ".git"))) return null;
   try {
-    const data = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: string; slug?: string; framework?: string };
-    return data.framework === "vite-react" && typeof data.slug === "string" ? { path: canonical, name: data.name ?? data.slug, slug: data.slug } : null;
+    const data = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      name?: string;
+      slug?: string;
+      framework?: string;
+      template?: WebsiteTemplate;
+      status?: WebsiteProjectStatus;
+      originalBrief?: string | null;
+      createdAt?: string;
+      lastOpenedAt?: string;
+    };
+    return data.framework === "vite-react" && typeof data.slug === "string" ? {
+      path: canonical,
+      name: data.name ?? data.slug,
+      slug: data.slug,
+      template: websiteTemplates.includes(data.template as WebsiteTemplate) ? data.template as WebsiteTemplate : "saas-landing",
+      status: data.status ?? "ready",
+      originalBrief: data.originalBrief ?? null,
+      createdAt: data.createdAt ?? null,
+      lastOpenedAt: data.lastOpenedAt ?? null,
+    } : null;
   } catch { return null; }
 }
 
