@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, ExternalLink, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
+import { ActivityFeed, type AgentActivity } from "@/components/agent/activity-feed";
+import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel";
 import { isUnsupportedLanguageTool, stageProgress, toolProgress } from "./agent-progress";
 import { executionIsRunning, taskIsRunning, taskNeedsAttention, taskProgress } from "./task-activity";
 import { Button } from "@/components/ui/button";
@@ -50,6 +52,7 @@ type StreamEvent = {
   review?: { summary?: string };
   stage?: string;
   status?: string | { stdout?: string };
+  activity?: AgentActivity;
 };
 
 function statusLabel(config: ToolConfig | null) {
@@ -63,6 +66,8 @@ function statusLabel(config: ToolConfig | null) {
 function transientMessage(role: RenderableMessage["role"], text: string, kind?: string): ChatMessage {
   return { id: crypto.randomUUID(), sessionId: "transient", taskId: null, role, kind, text, createdAt: new Date().toISOString() };
 }
+
+const EMPTY_CHANGE_SET: ChangeSet = { files: [], additions: 0, deletions: 0, diff: "", clean: true };
 
 export function BorgWorkspaceV2() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -95,6 +100,9 @@ export function BorgWorkspaceV2() {
   const [sessionError, setSessionError] = useState("");
   const [progress, setProgress] = useState<{ title: string; detail: string } | null>(null);
   const [liveActivity, setLiveActivity] = useState<string[]>([]);
+  const [activities, setActivities] = useState<AgentActivity[]>([]);
+  const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
+  const [rightPanel, setRightPanel] = useState<"preview" | "changes">("preview");
   const [websiteOpen, setWebsiteOpen] = useState(false);
   const [websiteName, setWebsiteName] = useState("");
   const [websiteBusy, setWebsiteBusy] = useState(false);
@@ -142,6 +150,20 @@ export function BorgWorkspaceV2() {
     }
   }, []);
 
+  const refreshTaskActivity = useCallback(async (taskId: string) => {
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/activity`);
+    if (!response.ok) return;
+    const result = await response.json() as { activities?: AgentActivity[] };
+    setActivities(result.activities ?? []);
+  }, []);
+
+  const refreshChanges = useCallback(async (taskId: string) => {
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/changes`);
+    if (!response.ok) return;
+    const result = await response.json() as ChangeSet & { taskId?: string };
+    setChanges({ files: result.files ?? [], additions: result.additions ?? 0, deletions: result.deletions ?? 0, diff: result.diff ?? "", clean: result.clean ?? !(result.files?.length) });
+  }, []);
+
   const loadSession = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}`);
     if (!response.ok) throw new Error("Unable to load chat session.");
@@ -161,6 +183,8 @@ export function BorgWorkspaceV2() {
     setMessages(result.messages);
     setProgress(null);
     setLiveActivity([]);
+    setActivities([]);
+    setChanges(EMPTY_CHANGE_SET);
     setActiveTaskId(result.latestTaskId);
     setApproval(pendingApproval);
     setEscalation(pendingEscalation);
@@ -168,9 +192,10 @@ export function BorgWorkspaceV2() {
     setTaskState(result.task?.state ?? (result.latestTaskId && !result.runtimeAvailable ? "RUNTIME UNAVAILABLE" : "READY"));
     setPreviewUrl(null);
     setPreviewError("");
+    if (result.latestTaskId) await Promise.allSettled([refreshTaskActivity(result.latestTaskId), refreshChanges(result.latestTaskId)]);
     await activatePreview(sessionId);
     return result;
-  }, [activatePreview]);
+  }, [activatePreview, refreshChanges, refreshTaskActivity]);
 
   const refreshSessions = useCallback(async (preferredId?: string) => {
     const response = await fetch(`${API}/api/sessions`);
@@ -308,6 +333,8 @@ export function BorgWorkspaceV2() {
     if (event.type === "task.created" && event.task) {
       setActiveTaskId(event.task.id);
       setTaskState(event.task.state);
+      setActivities([]);
+      setChanges(EMPTY_CHANGE_SET);
     } else if (event.type === "task.state" && event.state) {
       setTaskState(event.state);
       setDeliveryReady(event.state === "DELIVERY_READY");
@@ -321,13 +348,21 @@ export function BorgWorkspaceV2() {
         const id = liveAssistantId.current;
         setMessages((current) => current.map((message) => message.id === id ? { ...message, text: `${message.text}${text}` } : message));
       }
+    } else if (event.type === "activity.updated" && event.activity) {
+      const activity = { ...event.activity, taskId: event.taskId ?? event.activity.taskId };
+      setActivities((current) => [...current.filter((item) => item.id !== activity.id), activity].slice(-100));
+      setProgress({ title: activity.title, detail: activity.detail ?? `BORG is ${activity.phase} the current task.` });
     } else if (event.type === "stage.updated" && event.status === "active" && event.stage) {
       const next = stageProgress(event.stage);
       if (next) setProgress(next);
     } else if (event.type === "tool.started") {
       const tool = event.tool ?? "tool";
-      setProgress({ title: toolProgress(tool, event.input), detail: "BORG will show its proposed choices in the plan after this review." });
-      setLiveActivity((current) => [...current.slice(-39), `Running ${tool}${event.input?.path ? ` · ${String(event.input.path)}` : ""}`]);
+      const title = toolProgress(tool, event.input);
+      const path = typeof event.input?.path === "string" ? event.input.path : "";
+      setProgress({ title, detail: path ? `Working in ${path}.` : "BORG is continuing this part of the task." });
+      setLiveActivity((current) => [...current.slice(-39), `${title} · ${tool}`]);
+    } else if (event.type === "tool.completed") {
+      if (event.taskId && ["worktree_patch", "git_diff", "git_status"].includes(event.tool ?? "")) void refreshChanges(event.taskId);
     } else if (event.type === "tool.failed") {
       const detail = `${event.tool ?? "Tool"} failed: ${event.message ?? "Unknown error"}`;
       setLiveActivity((current) => [...current.slice(-39), detail]);
@@ -340,7 +375,7 @@ export function BorgWorkspaceV2() {
       setTaskState("IMPLEMENTING");
       if (activeSession) void activatePreview(activeSession.id);
     } else if (event.type === "implementation.summary") {
-      setMessages((current) => [...current, transientMessage("system", event.diff?.stdout?.trim() || "No diff produced.", "diff")]);
+      if (event.taskId) void refreshChanges(event.taskId);
     } else if (event.type === "review.completed" && event.review?.summary) {
       const summary = event.review.summary;
       setMessages((current) => [...current, transientMessage("system", summary, "evidence")]);
@@ -380,6 +415,8 @@ export function BorgWorkspaceV2() {
     setStreaming(true);
     setProgress({ title: "Reading your request", detail: "BORG will review the project, then show its proposed design choices in the plan." });
     setLiveActivity([]);
+    setActivities([]);
+    setChanges(EMPTY_CHANGE_SET);
     setApproval(null);
     setEscalation(null);
     setDeliveryReady(false);
