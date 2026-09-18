@@ -16,6 +16,7 @@ import { AccessController } from "../../../packages/repository/src/access-contro
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
 import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { readProjectPlan, readSliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const gatewayPort = Number(process.env.BORG_GATEWAY_PORT ?? 4312);
 const coreUrl = process.env.BORG_CORE_URL ?? "http://127.0.0.1:4311";
@@ -27,7 +28,9 @@ const access = new AccessController(resolve(".borg/access.json"));
 const credentials = new DesktopCredentialStore();
 const internet = new InternetConfigurationStore(resolve(".borg/internet.json"), credentials);
 const activeStreams = new Map<string, AbortController>();
+const frontendLaunches = new Map<string, { session: ChatSession; run: Promise<void> }>();
 const previews = new WebsitePreviewManager();
+type EventSink = (event: Record<string, unknown>) => void;
 
 function headers(contentType = "application/json") {
   return {
@@ -170,7 +173,7 @@ async function proxyJson(request: IncomingMessage, response: ServerResponse) {
   }
 }
 
-async function pipeExecution(taskId: string, session: ChatSession, response: ServerResponse, controller: AbortController) {
+async function pipeExecution(taskId: string, session: ChatSession, emitToClient: EventSink, controller: AbortController) {
   const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/execute`, {
     method: "POST",
     signal: controller.signal,
@@ -202,11 +205,11 @@ async function pipeExecution(taskId: string, session: ChatSession, response: Ser
         const review = event.review as { summary?: string } | undefined;
         if (review?.summary) appendMessage({ sessionId: session.id, taskId, role: "system", kind: "evidence", text: review.summary, metadata: event });
       }
-      writeEvent(response, event);
+      emitToClient(event);
     }
     if (done) break;
   }
-  if (buffer.trim()) writeEvent(response, JSON.parse(buffer) as Record<string, unknown>);
+  if (buffer.trim()) emitToClient(JSON.parse(buffer) as Record<string, unknown>);
   if (assistantText.trim()) appendMessage({ sessionId: session.id, taskId, role: "assistant", kind: "prose", text: assistantText.trim() });
 }
 
@@ -222,7 +225,85 @@ async function approveCoreTask(taskId: string) {
   return body;
 }
 
-async function streamChat(session: ChatSession, prompt: string, response: ServerResponse, sliceAction?: string) {
+async function coreTaskRuntime(taskId: string) {
+  const response = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/approval`, { signal: AbortSignal.timeout(10_000) });
+  const body = await response.json().catch(() => ({})) as { task?: { state?: string }; error?: string };
+  if (!response.ok) throw new Error(body.error ?? `Unable to read task state (${response.status}).`);
+  return body;
+}
+
+async function saveVerifiedFrontendSlice(taskId: string, session: ChatSession, emitToClient: EventSink) {
+  const runtime = await coreTaskRuntime(taskId);
+  if (runtime.task?.state !== "DELIVERY_READY") return false;
+  const response = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/delivery`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method: "commit", message: "BORG verified frontend slice checkpoint" }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  const body = await response.json().catch(() => ({})) as { delivery?: { commit?: string }; error?: string };
+  if (!response.ok) throw new Error(body.error ?? "Unable to checkpoint the verified frontend slice.");
+  appendMessage({
+    sessionId: session.id,
+    taskId,
+    role: "system",
+    kind: "status",
+    text: `Verified frontend slice checkpointed${body.delivery?.commit ? ` as ${body.delivery.commit}` : ""}. The primary project now contains this slice.`,
+  });
+  emitToClient({ type: "slice.checkpointed", taskId, commit: body.delivery?.commit ?? null });
+  return true;
+}
+
+function sliceLaunchPrompt(action: "initial" | "advance" | "revise" | "backend", feedback: string) {
+  if (action === "initial") return "Start the first approved frontend slice. Use the approved phase plan, approved design brief, and current-slice docs as scope authority; do not re-plan the whole website.";
+  if (action === "advance" && !feedback.trim()) return "Approved. Continue directly to the next frontend slice in the frozen phase plan.";
+  return feedback.trim();
+}
+
+async function launchFrontendWorkflowSession(parent: ChatSession, action: "initial" | "advance" | "revise" | "backend", feedback = "") {
+  if (!parent.repositoryPath) throw new Error("The website session is not attached to a repository.");
+  const currentAccess = access.load();
+  if (currentAccess.repositoryPath !== parent.repositoryPath) access.save({ repositoryPath: parent.repositoryPath, documents: currentAccess.documents });
+  const key = `${parent.repositoryPath.toLowerCase()}::${action}`;
+  const active = frontendLaunches.get(key);
+  if (active) return active.session;
+
+  const label = action === "initial" ? "Slice 1" : action === "advance" ? "Next slice" : action === "backend" ? "Backend planning" : "Revision";
+  const activeMode: PermissionMode = action === "backend" ? "plan" : "edit";
+  const session = createChatSession({
+    id: randomUUID(),
+    title: `${parent.title} · ${label}`,
+    activeMode,
+    repositoryPath: parent.repositoryPath,
+    workspaceId: parent.workspaceId,
+    provider: parent.provider,
+    model: parent.model,
+  });
+  chats.saveSession(session);
+
+  const prompt = sliceLaunchPrompt(action, feedback);
+  if (!prompt) throw new Error("Feedback is required for this workflow action.");
+
+  let markStarted: (() => void) | null = null;
+  const started = new Promise<void>((resolveStarted) => { markStarted = resolveStarted; });
+  const run = streamChat(session, prompt, (event) => {
+    if (event.type === "task.created") markStarted?.();
+  }, action).catch((error) => {
+    appendMessage({
+      sessionId: session.id,
+      role: "system",
+      kind: "warning",
+      text: error instanceof Error ? error.message : "The server-owned frontend workflow failed.",
+    });
+  }).finally(() => {
+    if (frontendLaunches.get(key)?.session.id === session.id) frontendLaunches.delete(key);
+  });
+  frontendLaunches.set(key, { session, run });
+  await Promise.race([started, new Promise<void>((resolveStarted) => setTimeout(resolveStarted, 5_000))]);
+  return session;
+}
+
+async function streamChat(session: ChatSession, prompt: string, emitToClient: EventSink, sliceAction?: string) {
   const controller = new AbortController();
   activeStreams.set(session.id, controller);
   try {
@@ -265,7 +346,7 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
           if (taskId && coreApproval) {
             appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "Frontend phase plan is ready for approval. Approving it freezes the slice roadmap and authorizes the bounded frontend slice workflow.", metadata: { approval: coreApproval, projectPlan: event.projectPlan } });
           }
-          writeEvent(response, event);
+          emitToClient(event);
           continue;
         }
         if (event.type === "mode.escalation.requested") {
@@ -279,7 +360,7 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
             });
             chats.saveModeEscalation(escalation);
             appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "PLAN is complete. Switching to EDIT is required before any mutation can occur.", metadata: { escalation, approval: coreApproval } });
-            writeEvent(response, { type: "mode.escalation.requested", taskId, approval: coreApproval, escalation, message: "PLAN is read-only. Switch to Edit & Continue to execute the persisted plan." });
+            emitToClient({ type: "mode.escalation.requested", taskId, approval: coreApproval, escalation, message: "PLAN is read-only. Switch to Edit & Continue to execute the persisted plan." });
           }
           continue;
         }
@@ -293,7 +374,7 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
           if (event.type === "tool.failed" && ["web_search", "web_fetch"].includes(String(event.tool ?? ""))) internet.markConnectionFailed(String(event.message ?? "Internet tool failed"));
           if (event.type === "tool.completed" && ["web_search", "web_fetch"].includes(String(event.tool ?? ""))) internet.markAvailable();
         }
-        if (event.type !== "stream.completed" || session.activeMode === "ask" || session.activeMode === "plan") writeEvent(response, event);
+        if (event.type !== "stream.completed" || session.activeMode === "ask" || session.activeMode === "plan") emitToClient(event);
       }
       if (done) break;
     }
@@ -302,9 +383,10 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
 
     if (!projectPlanApproval && (session.activeMode === "edit" || session.activeMode === "agent") && taskId && coreApproval) {
       await approveCoreTask(taskId);
-      writeEvent(response, { type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
-      await pipeExecution(taskId, session, response, controller);
-      writeEvent(response, { type: "stream.completed", taskId });
+      emitToClient({ type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
+      await pipeExecution(taskId, session, emitToClient, controller);
+      if (sliceAction && sliceAction !== "backend") await saveVerifiedFrontendSlice(taskId, session, emitToClient);
+      emitToClient({ type: "stream.completed", taskId });
     }
   } finally {
     if (activeStreams.get(session.id) === controller) activeStreams.delete(session.id);
@@ -318,7 +400,7 @@ async function streamExecutionRoute(taskId: string, response: ServerResponse) {
   activeStreams.set(session.id, controller);
   response.writeHead(200, headers("application/x-ndjson; charset=utf-8"));
   try {
-    await pipeExecution(taskId, session, response, controller);
+    await pipeExecution(taskId, session, (event) => writeEvent(response, event), controller);
   } catch (error) {
     writeEvent(response, { type: "runtime.failed", taskId, message: error instanceof Error ? error.message : "Execution failed" });
   } finally {
@@ -461,6 +543,21 @@ const server = createServer((request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/frontend-workflow/continue") {
+    void readJson(request).then(async (input) => {
+      const parent = chats.findSession(String(input.sessionId ?? ""));
+      if (!parent) return send(response, 404, { error: "Website session not found." });
+      const rawAction = String(input.action ?? "");
+      if (!["initial", "advance", "revise", "backend"].includes(rawAction)) return send(response, 400, { error: "Invalid frontend workflow action." });
+      const action = rawAction as "initial" | "advance" | "revise" | "backend";
+      const feedback = String(input.feedback ?? "");
+      if ((action === "revise" || action === "backend") && !feedback.trim()) return send(response, 400, { error: "Feedback is required for this workflow action." });
+      const session = await launchFrontendWorkflowSession(parent, action, feedback);
+      return send(response, 202, { session, workflowStarted: true });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to continue frontend workflow." }));
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/chat") {
     response.writeHead(200, headers("application/x-ndjson; charset=utf-8"));
     void readJson(request).then(async (input) => {
@@ -470,7 +567,7 @@ const server = createServer((request, response) => {
       if (!session) throw new Error("A valid chat session is required.");
       if (!prompt) throw new Error("Request cannot be empty.");
       writeEvent(response, { type: "session.mode", sessionId, mode: session.activeMode });
-      await streamChat(session, prompt, response, typeof input.sliceAction === "string" ? input.sliceAction : undefined);
+      await streamChat(session, prompt, (event) => writeEvent(response, event), typeof input.sliceAction === "string" ? input.sliceAction : undefined);
     }).catch((error) => writeEvent(response, { type: "stream.failed", message: error instanceof Error ? error.message : "Invalid chat request" }))
       .finally(() => response.end());
     return;
@@ -502,14 +599,17 @@ const server = createServer((request, response) => {
         role: "system",
         kind: decision === "approve" ? "status" : "plan",
         text: projectPlanApproved
-          ? "Frontend phase plan approved. Starting slice 1 automatically; each slice will plan, implement, verify, review, and checkpoint before feedback."
+          ? "Frontend phase plan approved. The server is starting slice 1 automatically; each slice will plan, implement, verify, review, and checkpoint before feedback."
           : escalated
             ? "Mode escalated from PLAN to EDIT for the approved slice."
             : decision === "reject"
               ? "Stayed in PLAN. No mutation authorization was granted."
               : `${updatedSession.activeMode.toUpperCase()} authorization was confirmed.`,
       });
-      return send(response, 200, { ...body, session: updatedSession });
+      const startedSession = projectPlanApproved && decision === "approve"
+        ? await launchFrontendWorkflowSession(updatedSession, "initial")
+        : null;
+      return send(response, 200, { ...body, session: updatedSession, startedSession, workflowStarted: Boolean(startedSession) });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
     return;
   }
@@ -523,7 +623,49 @@ const server = createServer((request, response) => {
   void proxyJson(request, response);
 });
 
-server.listen(gatewayPort, "127.0.0.1", () => console.log(`BORG desktop gateway listening on http://127.0.0.1:${gatewayPort}`));
+async function recoverApprovedFrontendPlans() {
+  const sessions = chats.listSessions();
+  const repositories = new Map<string, ChatSession>();
+  for (const session of sessions) if (session.repositoryPath && !repositories.has(session.repositoryPath.toLowerCase())) repositories.set(session.repositoryPath.toLowerCase(), session);
+  for (const parent of repositories.values()) {
+    try {
+      if (!parent.repositoryPath || !websiteInfo(parent.repositoryPath)) continue;
+      const plan = readProjectPlan(parent.repositoryPath);
+      const slice = readSliceState(parent.repositoryPath);
+      if (plan?.status !== "approved" || slice?.status !== "ready") continue;
+      const existing = sessions.find((candidate) => candidate.repositoryPath?.toLowerCase() === parent.repositoryPath!.toLowerCase()
+        && candidate.activeMode === "edit"
+        && candidate.title.includes("Slice 1")
+        && chats.latestTaskId(candidate.id));
+      if (!existing) {
+        await launchFrontendWorkflowSession(parent, "initial");
+        continue;
+      }
+      const runtime = await loadSessionRuntime(existing);
+      if (!runtime.latestTaskId) continue;
+      if (runtime.task?.state === "AWAITING_APPROVAL" && runtime.approval?.status === "REQUESTED") {
+        await approveCoreTask(runtime.latestTaskId);
+        const controller = new AbortController();
+        activeStreams.set(existing.id, controller);
+        try {
+          await pipeExecution(runtime.latestTaskId, existing, () => undefined, controller);
+          await saveVerifiedFrontendSlice(runtime.latestTaskId, existing, () => undefined);
+        } finally {
+          if (activeStreams.get(existing.id) === controller) activeStreams.delete(existing.id);
+        }
+      } else if (runtime.task?.state === "DELIVERY_READY") {
+        await saveVerifiedFrontendSlice(runtime.latestTaskId, existing, () => undefined);
+      }
+    } catch (error) {
+      console.error("[frontend-workflow] recovery failed", error);
+    }
+  }
+}
+
+server.listen(gatewayPort, "127.0.0.1", () => {
+  console.log(`BORG desktop gateway listening on http://127.0.0.1:${gatewayPort}`);
+  setTimeout(() => { void recoverApprovedFrontendPlans(); }, 750);
+});
 
 async function shutdown(signal: string) {
   console.log(`[lifecycle] gateway shutdown requested: ${signal}`);

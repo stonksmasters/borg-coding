@@ -53,7 +53,7 @@ import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } f
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readProjectDocs, readProjectPlan, readSliceState, slicePlanningPrompt, slicePrompt, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -596,9 +596,11 @@ const server = createServer((request, response) => {
       if (eventType === "activity.updated") appendTaskEvent(taskId, "AGENT_ACTIVITY", { activity: event.activity });
     };
     const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
-    const designBrief = latestDesignBrief(taskId);
-    const designContext = designBrief ? designBriefPrompt(designBrief) : "";
     const websiteProject = websiteInfo(approvedWorktreePath);
+    const persistedDesignBrief = websiteProject ? readPersistedDesignBrief(approvedWorktreePath) : null;
+    const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
+    const designBrief = latestDesignBrief(taskId) ?? (parsedPersistedDesignBrief?.success ? parsedPersistedDesignBrief.data : null);
+    const designContext = designBrief ? designBriefPrompt(designBrief) : "";
     const priorDeliveredWebsiteTask = websiteProject
       ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
       : false;
@@ -661,6 +663,7 @@ const server = createServer((request, response) => {
         const verifierModel = teamPolicies.modelFor(teamPolicy, "verifier", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "verifier", primaryDiscipline, verifierModel, packs, emit);
         task = transitionTask(task, "VERIFYING", emit);
+        if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_verifying", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Implementation produced source changes. Deterministic and browser verification are running." });
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         emit({ type: "tool.started", tool: "verification_run", input: { profile: verificationProfile } });
         const deterministicVerification = await tools.execute(
@@ -836,6 +839,7 @@ const server = createServer((request, response) => {
         activeRoleAssignment = null;
         emit({ type: "stage.updated", stage: "Verification", status: "complete" });
         task = transitionTask(task, "REVIEWING", emit);
+        if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_reviewing", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Verification passed. Fresh review and visual quality gates are running." });
         emit({ type: "stage.updated", stage: "Review", status: "active" });
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, packs, emit);
@@ -916,6 +920,10 @@ const server = createServer((request, response) => {
         tools.execute({ function: { name: "browser_close", arguments: {} } }, "agent", taskContext),
       ]);
       const message = error instanceof Error ? error.message : "Approved implementation failed";
+      if (websiteInfo(approvedWorktreePath) && readSliceState(approvedWorktreePath)) {
+        const failedSlice = readSliceState(approvedWorktreePath)!;
+        setFrontendWorkflowStage(approvedWorktreePath, "blocked", { currentSlice: failedSlice.current, totalSlices: failedSlice.total, taskId, detail: message });
+      }
       appendTaskEvent(taskId, "IMPLEMENTATION_FAILED", { message });
       if (task && !["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "FAILED", emit);
       emit({ type: "runtime.failed", message });
@@ -1087,7 +1095,10 @@ const server = createServer((request, response) => {
       if (sliceIntent) {
         const website = websiteInfo(worktree.path);
         const approvedPlan = tasks.listEvents(task.id).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
-        if (website) prepareSlice(worktree.path, website.originalBrief || task.request, sliceIntent.action ?? "initial", sliceIntent.feedback ?? "", task.id, typeof approvedPlan === "string" ? approvedPlan : "");
+        if (website) {
+          const prepared = prepareSlice(worktree.path, website.originalBrief || task.request, sliceIntent.action ?? "initial", sliceIntent.feedback ?? "", task.id, typeof approvedPlan === "string" ? approvedPlan : "");
+          setFrontendWorkflowStage(worktree.path, "slice_implementing", { currentSlice: prepared.current, totalSlices: prepared.total, taskId: task.id, detail: "Slice mini-plan approved automatically from the outer frontend approval. Implementation is starting." });
+        }
       }
       const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: worktree.path, baseCommit: worktree.baseCommit };
       tasks.saveApproval(approved);
@@ -1234,7 +1245,7 @@ const server = createServer((request, response) => {
         const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
         const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
         sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
-        const relevantNames = ["brief.md", "plan.md", "current-slice.md", "decisions.md", "handoff.md", "known-issues.md", "data-contract.md"];
+        const relevantNames = ["brief.md", "design-brief.md", "plan.md", "current-slice.md", "decisions.md", "handoff.md", "known-issues.md", "data-contract.md"];
         const docs = readProjectDocs(websiteProject.path)
           .filter((doc) => relevantNames.some((name) => doc.path.endsWith(`/${name}`)))
           .map((doc) => `${doc.path}\n${doc.content.slice(0, 3200)}`).join("\n\n").slice(0, 14_000);
@@ -1264,6 +1275,7 @@ const server = createServer((request, response) => {
           repositoryContext,
           isGreenfield: isGreenfieldDesign,
         });
+        if (websiteProject && projectPlanning) persistDesignBrief(websiteProject.path, designBrief);
         appendTaskEvent(task.id, "DESIGN_BRIEF_CREATED", { brief: designBrief, model: architectModel });
         emit({ type: "design.brief.created", brief: designBrief });
         emit({ type: "stage.updated", stage: "Design Direction", status: "complete" });
