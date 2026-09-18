@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 
 export interface AccessPolicy {
   repositoryPath: string | null;
@@ -47,6 +47,7 @@ export class AccessController {
     }
 
     const policy = { repositoryPath, documents, updatedAt: new Date().toISOString() };
+    mkdirSync(dirname(this.policyPath), { recursive: true });
     const temporaryPath = `${this.policyPath}.tmp`;
     writeFileSync(temporaryPath, JSON.stringify(policy, null, 2), "utf8");
     renameSync(temporaryPath, this.policyPath);
