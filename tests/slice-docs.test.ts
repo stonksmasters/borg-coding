@@ -35,6 +35,24 @@ test("website types receive appropriately sized fallback phase plans", () => {
   assert.equal(dashboard.backendRequired, true);
 });
 
+test("commerce fallback preserves vertical product slices when model formatting fails", () => {
+  const plan = fallbackProjectPlan(
+    "Build a social-commerce marketplace with discovery feed, product variants, cart, checkout, orders, auth, wishlist, sellers, inventory, and admin roles.",
+    "ecommerce",
+  );
+  const titles = plan.slices.map((slice) => slice.title).join(" | ");
+  assert.match(titles, /Commerce foundation/i);
+  assert.match(titles, /Catalog, search, and product/i);
+  assert.match(titles, /Cart and checkout/i);
+  assert.match(titles, /account and order/i);
+  assert.match(titles, /Social-commerce/i);
+  assert.match(titles, /Seller storefront/i);
+  assert.match(titles, /Administrator/i);
+  assert.match(titles, /Frontend completion review/i);
+  assert.equal(plan.backendRequired, true);
+  assert.ok(plan.slices.length >= 8);
+});
+
 test("structured model plans replace the fixed slice list", () => {
   const answer = `Plan summary.
 <borg-project-plan>{"siteGoal":"Launch a collector marketplace","audience":"Collectors","pages":["Home","Browse","Listing"],"features":["Search","Listing detail"],"visualDirection":"Editorial dark","backendRequired":true,"slices":[{"id":"shell","title":"Shell","outcome":"Navigable shell","scope":["navigation"],"acceptanceCriteria":["mobile works"]},{"id":"browse","title":"Browse","outcome":"Browse works","scope":["catalog"],"acceptanceCriteria":["filters work"]},{"id":"review","title":"Review","outcome":"Frontend gate passes","scope":["browser review"],"acceptanceCriteria":["build passes"]}],"acceptanceCriteria":["all pages navigable"]}</borg-project-plan>`;
