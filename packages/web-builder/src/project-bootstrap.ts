@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -17,6 +17,46 @@ export type WebsiteProjectOptions = {
   template?: WebsiteTemplate;
   originalBrief?: string;
 };
+
+export const websiteWorkspaceDirectories = [
+  "src",
+  "src/assets",
+  "src/components",
+  "src/components/layout",
+  "src/components/ui",
+  "src/data",
+  "src/design",
+  "src/features",
+  "src/hooks",
+  "src/lib",
+  "src/pages",
+  "src/sections",
+  "src/styles",
+  "src/types",
+  "public",
+  "server",
+  "server/lib",
+  "server/routes",
+  "server/services",
+  ".localcode",
+  ".localcode/build",
+] as const;
+
+export function prepareWebsiteWorkspace(projectPath: string): string[] {
+  const root = resolve(projectPath);
+  mkdirSync(root, { recursive: true });
+  const created: string[] = [];
+  for (const directory of websiteWorkspaceDirectories) {
+    const absolute = join(root, directory);
+    if (existsSync(absolute)) {
+      if (!lstatSync(absolute).isDirectory()) throw new Error(`Website workspace path is not a directory: ${directory}`);
+      continue;
+    }
+    mkdirSync(absolute, { recursive: true });
+    created.push(directory);
+  }
+  return created;
+}
 
 const templateCopy: Record<WebsiteTemplate, { kicker: string; description: string }> = {
   "saas-landing": { kicker: "SAAS / PRODUCT", description: "A polished product canvas with room for a decisive hero, product proof, pricing, and conversion-focused calls to action." },
@@ -50,9 +90,7 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
   const projectPath = resolve(root, slug);
   if (existsSync(projectPath)) throw new Error(`A website named “${slug}” already exists.`);
   mkdirSync(root, { recursive: true });
-  for (const directory of ["src", "src/components", "src/sections", "src/design", "src/assets", "src/lib", "server"]) {
-    mkdirSync(join(projectPath, directory), { recursive: true });
-  }
+  prepareWebsiteWorkspace(projectPath);
   const title = name.trim();
   const template = websiteTemplates.includes(options.template as WebsiteTemplate) ? options.template as WebsiteTemplate : "saas-landing";
   const starter = templateCopy[template];
