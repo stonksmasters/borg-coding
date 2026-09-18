@@ -641,18 +641,7 @@ export function BorgWorkspaceV2() {
       });
       if (!response.ok) throw new Error("Unable to start BORG task.");
       await consumeStream(response);
-      let loaded = await loadSession(targetSession.id, { restorePreview: false, resetWorkspace: false });
-      if (sliceAction && sliceAction !== "backend" && loaded.latestTaskId && loaded.task?.state === "DELIVERY_READY") {
-        setProgress({ title: "Saving verified slice", detail: "This slice passed verification and review. BORG is checkpointing it before the next slice." });
-        const deliveryResponse = await fetch(`${API}/api/tasks/${encodeURIComponent(loaded.latestTaskId)}/delivery`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ method: "commit", message: "BORG verified frontend slice checkpoint" }),
-        });
-        const deliveryResult = await deliveryResponse.json().catch(() => ({})) as { error?: string };
-        if (!deliveryResponse.ok) throw new Error(deliveryResult.error ?? "Unable to save the verified frontend slice.");
-        loaded = await loadSession(targetSession.id, { restorePreview: false, resetWorkspace: false });
-      }
+      await loadSession(targetSession.id, { restorePreview: false, resetWorkspace: false });
       const sessionResponse = await fetch(`${API}/api/sessions`);
       if (sessionResponse.ok) setSessions((await sessionResponse.json() as { sessions: ChatSession[] }).sessions);
     } catch (error) {
@@ -664,24 +653,20 @@ export function BorgWorkspaceV2() {
     }
   }
 
-  async function startSliceSession(action: "initial" | "advance" | "revise" | "backend", forceRun = false) {
+  async function startSliceSession(action: "initial" | "advance" | "revise" | "backend") {
     const feedback = sliceFeedback.trim();
     if (!activeSession || sliceBusy || ((action === "revise" || action === "backend") && !feedback)) return;
     setSliceBusy(true);
     try {
-      const label = action === "initial" ? "Slice 1" : action === "advance" ? "Next slice" : action === "backend" ? "Backend planning" : "Revision";
-      const sliceMode: PermissionMode = action === "backend" ? "plan" : "edit";
-      const response = await fetch(`${API}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activeMode: sliceMode, workspaceId: activeSession.workspaceId, title: `${activeSession.title} · ${label}` }) });
-      if (!response.ok) throw new Error("Unable to create the next build session.");
-      const result = await response.json() as { session: ChatSession };
-      await refreshSessions(result.session.id);
+      const response = await fetch(`${API}/api/frontend-workflow/continue`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: activeSession.id, action, feedback }),
+      });
+      const result = await response.json() as { session?: ChatSession; error?: string };
+      if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to start the next build session.");
       setSliceFeedback("");
-      const prompt = action === "initial"
-        ? "Start the first approved frontend slice. Use the approved phase plan and current-slice docs as scope authority; do not re-plan the whole website."
-        : action === "advance" && !feedback
-          ? "Approved. Continue directly to the next frontend slice in the frozen phase plan."
-          : feedback;
-      await runTask(prompt, action, result.session, forceRun);
+      await refreshSessions(result.session.id);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Unable to start the next slice.");
     } finally { setSliceBusy(false); }
@@ -692,7 +677,7 @@ export function BorgWorkspaceV2() {
     setApprovalBusy(true);
     try {
       const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/approval`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision }) });
-      const result = await response.json() as { session?: ChatSession; task?: { state: string }; projectPlanApproved?: boolean; error?: string };
+      const result = await response.json() as { session?: ChatSession; startedSession?: ChatSession | null; workflowStarted?: boolean; task?: { state: string }; projectPlanApproved?: boolean; error?: string };
       if (!response.ok) throw new Error(result.error ?? "Unable to record mode decision.");
       if (result.session) {
         setActiveSession(result.session);
@@ -706,8 +691,12 @@ export function BorgWorkspaceV2() {
         setProgress({ title: "Frontend plan approved", detail: "The roadmap is frozen. Starting slice 1 now." });
         setRightPanel("preview");
         await refreshDocs(activeTaskId);
-        await loadSession(activeSession.id, { restorePreview: false, resetWorkspace: false });
-        await startSliceSession("initial", true);
+        if (result.startedSession) {
+          await refreshSessions(result.startedSession.id);
+        } else {
+          await loadSession(activeSession.id, { restorePreview: false, resetWorkspace: false });
+          setSessionError("The frontend plan was approved, but the server did not return a started slice session.");
+        }
       } else if (decision === "approve") {
         setApproval(null);
         setEscalation(null);
