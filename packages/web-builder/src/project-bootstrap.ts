@@ -10,6 +10,22 @@ import { execFile } from "node:child_process";
 const execFileAsync = promisify(execFile);
 const marker = ".borg-website.json";
 
+export const websiteTemplates = ["saas-landing", "portfolio", "ecommerce", "dashboard", "waitlist"] as const;
+export type WebsiteTemplate = typeof websiteTemplates[number];
+export type WebsiteProjectStatus = "new" | "generating" | "ready" | "needs_attention" | "archived";
+export type WebsiteProjectOptions = {
+  template?: WebsiteTemplate;
+  originalBrief?: string;
+};
+
+const templateCopy: Record<WebsiteTemplate, { kicker: string; description: string }> = {
+  "saas-landing": { kicker: "SAAS / PRODUCT", description: "A polished product canvas with room for a decisive hero, product proof, pricing, and conversion-focused calls to action." },
+  portfolio: { kicker: "PORTFOLIO / STORY", description: "A portfolio canvas built to foreground personality, selected work, credibility, and a clear path to contact." },
+  ecommerce: { kicker: "COMMERCE / CATALOG", description: "A commerce canvas prepared for product storytelling, collection discovery, merchandising, and confident purchase paths." },
+  dashboard: { kicker: "PRODUCT / WORKSPACE", description: "An application canvas prepared for navigation, dense information, useful empty states, and responsive operational workflows." },
+  waitlist: { kicker: "LAUNCH / WAITLIST", description: "A focused launch canvas designed around a crisp value proposition, trust signals, and one excellent signup journey." },
+};
+
 export function websiteRoot() {
   return resolve(process.env.BORG_WEBSITES_DIR ?? join(homedir(), "Documents", "BORG Websites"));
 }
@@ -29,7 +45,7 @@ async function run(command: string, args: string[], cwd: string, timeout = 120_0
   return `${stdout}\n${stderr}`.trim();
 }
 
-export async function createWebsiteProject(name: string, root = websiteRoot(), install?: (projectPath: string) => Promise<void>) {
+export async function createWebsiteProject(name: string, root = websiteRoot(), install?: (projectPath: string) => Promise<void>, options: WebsiteProjectOptions = {}) {
   const slug = websiteSlug(name);
   const projectPath = resolve(root, slug);
   if (existsSync(projectPath)) throw new Error(`A website named “${slug}” already exists.`);
@@ -38,6 +54,9 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
     mkdirSync(join(projectPath, directory), { recursive: true });
   }
   const title = name.trim();
+  const template = websiteTemplates.includes(options.template as WebsiteTemplate) ? options.template as WebsiteTemplate : "saas-landing";
+  const starter = templateCopy[template];
+  const createdAt = new Date().toISOString();
   const files: Record<string, string> = {
     "package.json": JSON.stringify({
       name: slug,
@@ -57,16 +76,17 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
 import { motion } from "motion/react";
 
 export default function App() {
+  const starter = ${JSON.stringify(starter)};
   return (
     <main className="site-shell">
       <section className="starter-hero">
-        <div className="starter-kicker">BORG / DESIGN CANVAS</div>
+        <div className="starter-kicker">{starter.kicker}</div>
         <div className="starter-grid">
           <div>
             <motion.h1 initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.55 }}>
               ${title.replaceAll("{", "").replaceAll("}", "")}
             </motion.h1>
-            <p className="starter-copy">A production-ready canvas is prepared. BORG will replace this starter with the approved design direction before delivery.</p>
+            <p className="starter-copy">{starter.description}</p>
           </div>
           <div className="starter-meta">
             <span>React 19</span><span>Tailwind 4</span><span>Motion</span><span>Design tokens</span>
@@ -115,7 +135,7 @@ img { display: block; max-width: 100%; }
   .starter-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 `,
-    [marker]: JSON.stringify({ id: randomUUID(), name: title, slug, framework: "vite-react", starterVersion: 2, designPipeline: "premium-v1", createdAt: new Date().toISOString() }, null, 2) + "\n",
+    [marker]: JSON.stringify({ id: randomUUID(), name: title, slug, framework: "vite-react", template, starterVersion: 3, designPipeline: "premium-v1", status: "new", originalBrief: options.originalBrief?.trim() || null, createdAt, lastOpenedAt: createdAt }, null, 2) + "\n",
   };
   for (const [relativePath, contents] of Object.entries(files)) writeFileSync(join(projectPath, relativePath), contents, "utf8");
   await run("git", ["init", "-b", "main"], projectPath);
@@ -140,8 +160,26 @@ export function websiteInfo(projectPath: string) {
   const manifestPath = join(canonical, marker);
   if (!existsSync(manifestPath) || !existsSync(join(canonical, ".git"))) return null;
   try {
-    const data = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: string; slug?: string; framework?: string };
-    return data.framework === "vite-react" && typeof data.slug === "string" ? { path: canonical, name: data.name ?? data.slug, slug: data.slug } : null;
+    const data = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      name?: string;
+      slug?: string;
+      framework?: string;
+      template?: WebsiteTemplate;
+      status?: WebsiteProjectStatus;
+      originalBrief?: string | null;
+      createdAt?: string;
+      lastOpenedAt?: string;
+    };
+    return data.framework === "vite-react" && typeof data.slug === "string" ? {
+      path: canonical,
+      name: data.name ?? data.slug,
+      slug: data.slug,
+      template: websiteTemplates.includes(data.template as WebsiteTemplate) ? data.template as WebsiteTemplate : "saas-landing",
+      status: data.status ?? "ready",
+      originalBrief: data.originalBrief ?? null,
+      createdAt: data.createdAt ?? null,
+      lastOpenedAt: data.lastOpenedAt ?? null,
+    } : null;
   } catch { return null; }
 }
 
