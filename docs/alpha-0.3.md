@@ -1,5 +1,7 @@
 # BORG Code Alpha 0.3 — discipline routing foundation
 
+> Historical implementation milestone. For the current product direction, see VISION.md, ARCHITECTURE.md, WEBSITE-BUILDER.md, CONTEXT-SYSTEM.md, and ROADMAP.md. This document remains authoritative for the Alpha 0.3 runtime features it describes, but it is not the current product roadmap.
+
 ## Implemented vertical slice
 
 - Every planned change is deterministically routed to one or more engineering disciplines: general, frontend, backend, database, security, QA, DevOps, and infrastructure.
