@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
+import { contractForWorkspace, prepareWorkspaceContract, viteReactWorkspaceDirectories, type WorkspaceKind } from "./workspace-contract.ts";
 
 const execFileAsync = promisify(execFile);
 const marker = ".borg-website.json";
@@ -18,44 +19,13 @@ export type WebsiteProjectOptions = {
   originalBrief?: string;
 };
 
-export const websiteWorkspaceDirectories = [
-  "src",
-  "src/assets",
-  "src/components",
-  "src/components/layout",
-  "src/components/ui",
-  "src/data",
-  "src/design",
-  "src/features",
-  "src/hooks",
-  "src/lib",
-  "src/pages",
-  "src/sections",
-  "src/styles",
-  "src/types",
-  "public",
-  "server",
-  "server/lib",
-  "server/routes",
-  "server/services",
-  ".localcode",
-  ".localcode/build",
-] as const;
+export const websiteWorkspaceDirectories = viteReactWorkspaceDirectories;
 
-export function prepareWebsiteWorkspace(projectPath: string): string[] {
+export function prepareWebsiteWorkspace(projectPath: string, forcedKind?: WorkspaceKind): string[] {
   const root = resolve(projectPath);
   mkdirSync(root, { recursive: true });
-  const created: string[] = [];
-  for (const directory of websiteWorkspaceDirectories) {
-    const absolute = join(root, directory);
-    if (existsSync(absolute)) {
-      if (!lstatSync(absolute).isDirectory()) throw new Error(`Website workspace path is not a directory: ${directory}`);
-      continue;
-    }
-    mkdirSync(absolute, { recursive: true });
-    created.push(directory);
-  }
-  return created;
+  const contract = contractForWorkspace(root, forcedKind ?? (!existsSync(join(root, "package.json")) ? "vite-react" : undefined));
+  return prepareWorkspaceContract(root, contract);
 }
 
 const templateCopy: Record<WebsiteTemplate, { kicker: string; description: string }> = {
@@ -90,7 +60,7 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
   const projectPath = resolve(root, slug);
   if (existsSync(projectPath)) throw new Error(`A website named “${slug}” already exists.`);
   mkdirSync(root, { recursive: true });
-  prepareWebsiteWorkspace(projectPath);
+  prepareWebsiteWorkspace(projectPath, "vite-react");
   const title = name.trim();
   const template = websiteTemplates.includes(options.template as WebsiteTemplate) ? options.template as WebsiteTemplate : "saas-landing";
   const starter = templateCopy[template];
