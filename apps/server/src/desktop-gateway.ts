@@ -351,8 +351,19 @@ const server = createServer((request, response) => {
     const website = session.repositoryPath ? websiteInfo(session.repositoryPath) : null;
     if (!website) return send(response, 404, { error: "This session has no website preview." });
     void loadSessionRuntime(session).then(async (runtime) => {
-      const candidate = runtime.approval?.status === "APPROVED" && runtime.approval.worktreePath ? websiteInfo(runtime.approval.worktreePath) : null;
-      const preview = await previews.ensure(candidate?.path ?? website.path);
+      let preview: { url: string; status: string; processId?: string; pid?: number | null };
+      if (runtime.latestTaskId && runtime.approval?.status === "APPROVED" && runtime.approval.worktreePath) {
+        previews.stop(website.path);
+        const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(runtime.latestTaskId)}/preview`, {
+          method: "POST",
+          signal: AbortSignal.timeout(65_000),
+        });
+        const body = await upstream.json().catch(() => ({})) as { preview?: typeof preview; error?: string };
+        if (!upstream.ok || !body.preview) throw new Error(body.error ?? `Task preview failed (${upstream.status}).`);
+        preview = body.preview;
+      } else {
+        preview = await previews.ensure(website.path);
+      }
       const current = access.load();
       if (current.repositoryPath !== website.path) access.save({ repositoryPath: website.path, documents: current.documents });
       send(response, 200, { preview, project: website, access: access.describe() });
