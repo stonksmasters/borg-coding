@@ -225,9 +225,10 @@ export function currentSlice(plan: ProjectPlan, state: SliceState) {
 export function prepareSlice(root: string, brief: string, action: SliceAction, feedback: string, taskId: string, approvedPlan = ""): SliceState {
   const plan = readProjectPlan(root);
   const previous = readSliceState(root);
-  if (!plan || plan.status !== "approved") throw new Error("Approve the frontend phase plan before starting a slice.");
+  if (!plan) throw new Error("Approve the frontend phase plan before starting a slice.");
   if (!previous) throw new Error("Frontend project state is missing.");
-  if (previous.status === "frontend_complete") throw new Error("Frontend is complete.");
+  if (previous.status === "frontend_complete" || plan.status === "frontend_complete") throw new Error("Frontend is complete.");
+  if (plan.status !== "approved") throw new Error("Approve the frontend phase plan before starting a slice.");
   if (action === "initial" && previous.status !== "ready") throw new Error("The first slice is not ready to start.");
   if ((action === "advance" || action === "revise") && previous.status !== "awaiting_feedback") throw new Error("Review the completed slice before continuing.");
   const current = action === "advance" ? Math.min(previous.current + 1, plan.slices.length - 1) : previous.current;
