@@ -120,13 +120,14 @@ function toolStatus() {
 
 async function loadSessionRuntime(session: ChatSession) {
   const latestTaskId = chats.latestTaskId(session.id);
-  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, runtimeAvailable: true };
+  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, projectPlanApproval: false, runtimeAvailable: true };
   try {
     const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(latestTaskId)}/approval`, { signal: AbortSignal.timeout(5_000) });
     if (!upstream.ok) throw new Error(`Core task state returned ${upstream.status}.`);
     const body = await upstream.json() as {
       task?: { id: string; state: string };
       approval?: { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null } | null;
+      projectPlanApproval?: boolean;
     };
     let restoredSession = session;
     let escalation = chats.findModeEscalation(latestTaskId);
@@ -144,10 +145,11 @@ async function loadSessionRuntime(session: ChatSession) {
       task: body.task ?? null,
       approval: body.approval ?? null,
       escalation: pending ? escalation : null,
+      projectPlanApproval: pending && body.projectPlanApproval === true,
       runtimeAvailable: true,
     };
   } catch {
-    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), runtimeAvailable: false };
+    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), projectPlanApproval: false, runtimeAvailable: false };
   }
 }
 
