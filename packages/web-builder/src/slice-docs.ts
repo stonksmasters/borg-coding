@@ -225,9 +225,10 @@ export function currentSlice(plan: ProjectPlan, state: SliceState) {
 export function prepareSlice(root: string, brief: string, action: SliceAction, feedback: string, taskId: string, approvedPlan = ""): SliceState {
   const plan = readProjectPlan(root);
   const previous = readSliceState(root);
-  if (!plan || plan.status !== "approved") throw new Error("Approve the frontend phase plan before starting a slice.");
+  if (!plan) throw new Error("Approve the frontend phase plan before starting a slice.");
   if (!previous) throw new Error("Frontend project state is missing.");
-  if (previous.status === "frontend_complete") throw new Error("Frontend is complete.");
+  if (previous.status === "frontend_complete" || plan.status === "frontend_complete") throw new Error("Frontend is complete.");
+  if (plan.status !== "approved") throw new Error("Approve the frontend phase plan before starting a slice.");
   if (action === "initial" && previous.status !== "ready") throw new Error("The first slice is not ready to start.");
   if ((action === "advance" || action === "revise") && previous.status !== "awaiting_feedback") throw new Error("Review the completed slice before continuing.");
   const current = action === "advance" ? Math.min(previous.current + 1, plan.slices.length - 1) : previous.current;
@@ -287,7 +288,7 @@ export function readProjectDocs(root: string): ProjectDoc[] {
 
 export function slicePlanningPrompt(plan: ProjectPlan, state: SliceState): string {
   const slice = currentSlice(plan, state);
-  return `MINI LOOP — FRONTEND SLICE ${state.current + 1}/${plan.slices.length}: ${slice.title}. Approved outcome: ${slice.outcome} This is not a new project-planning pass. Do not rediscover the whole repository, redesign the phase plan, or expand scope. Load the approved phase plan, current slice, relevant decisions, latest handoff, and only the source files needed for this outcome. Produce a concise execution plan for this slice only and request escalation to EDIT. PLAN must not mutate source/components/styles/assets/config/backend/API/auth/database files or run commands, previews, builds, tests, or verification. BORG may persist planning Markdown under .localcode/build/**/*.md through its dedicated docs path.`;
+  return `MINI LOOP — FRONTEND SLICE ${state.current + 1}/${plan.slices.length}: ${slice.title}. Approved outcome: ${slice.outcome} This is an internal execution loop inside the already-approved frontend phase plan. Do not rediscover the whole repository, redesign the phase plan, or expand scope. Load the approved phase plan, current slice, relevant decisions, latest handoff, and only the source files needed for this outcome. Produce a concise execution plan for this slice only; the desktop runtime will authorize execution from the outer plan approval. During this architect pass, do not mutate source/components/styles/assets/config/backend/API/auth/database files or run commands, previews, builds, tests, or verification. BORG may persist planning Markdown under .localcode/build/**/*.md through its dedicated docs path.`;
 }
 
 export function slicePrompt(plan: ProjectPlan, state: SliceState, availableTools: string[] = []): string {

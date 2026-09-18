@@ -60,8 +60,9 @@ test("project plan approval is separate from slice execution", () => {
     const planPrompt = slicePlanningPrompt(plan, approved.state);
     assert.match(planPrompt, /MINI LOOP/);
     assert.match(planPrompt, /Do not rediscover the whole repository/i);
-    assert.match(planPrompt, /request escalation to EDIT/i);
-    assert.doesNotMatch(planPrompt, /new project-planning pass/i);
+    assert.match(planPrompt, /internal execution loop/i);
+    assert.match(planPrompt, /desktop runtime will authorize execution from the outer plan approval/i);
+    assert.doesNotMatch(planPrompt, /request escalation to EDIT/i);
 
     const first = prepareSlice(root, "", "initial", "", "slice-one", "Patch the shell only.");
     assert.equal(first.status, "working");

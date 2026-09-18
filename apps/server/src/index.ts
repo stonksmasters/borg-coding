@@ -1325,7 +1325,7 @@ const server = createServer((request, response) => {
               approval,
               planText: answer,
               projectPlan: proposedProjectPlan,
-              message: "Approve the tailored frontend phase plan. Approval freezes scope but does not authorize source-file mutation; slice 1 starts in a new session.",
+              message: "Approve the tailored frontend phase plan. Approval freezes scope and authorizes the bounded frontend slice workflow; slice 1 starts automatically.",
             });
           } else if (mode === "plan") {
             writeEvent(response, {

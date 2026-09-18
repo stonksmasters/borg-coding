@@ -615,9 +615,9 @@ export function BorgWorkspaceV2() {
     if (buffer.trim()) applyEvent(JSON.parse(buffer) as StreamEvent);
   }
 
-  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend", targetSession = activeSession) {
+  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend", targetSession = activeSession, force = false) {
     const clean = prompt.trim();
-    if (!targetSession || !clean || taskBusy) return;
+    if (!targetSession || !clean || (taskBusy && !force)) return;
     const controller = new AbortController();
     abortRef.current = controller;
     liveAssistantId.current = null;
@@ -641,7 +641,18 @@ export function BorgWorkspaceV2() {
       });
       if (!response.ok) throw new Error("Unable to start BORG task.");
       await consumeStream(response);
-      await loadSession(targetSession.id, { restorePreview: false, resetWorkspace: false });
+      let loaded = await loadSession(targetSession.id, { restorePreview: false, resetWorkspace: false });
+      if (sliceAction && sliceAction !== "backend" && loaded.latestTaskId && loaded.task?.state === "DELIVERY_READY") {
+        setProgress({ title: "Saving verified slice", detail: "This slice passed verification and review. BORG is checkpointing it before the next slice." });
+        const deliveryResponse = await fetch(`${API}/api/tasks/${encodeURIComponent(loaded.latestTaskId)}/delivery`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ method: "commit", message: "BORG verified frontend slice checkpoint" }),
+        });
+        const deliveryResult = await deliveryResponse.json().catch(() => ({})) as { error?: string };
+        if (!deliveryResponse.ok) throw new Error(deliveryResult.error ?? "Unable to save the verified frontend slice.");
+        loaded = await loadSession(targetSession.id, { restorePreview: false, resetWorkspace: false });
+      }
       const sessionResponse = await fetch(`${API}/api/sessions`);
       if (sessionResponse.ok) setSessions((await sessionResponse.json() as { sessions: ChatSession[] }).sessions);
     } catch (error) {
@@ -653,21 +664,24 @@ export function BorgWorkspaceV2() {
     }
   }
 
-  async function startSliceSession(action: "initial" | "advance" | "revise" | "backend") {
+  async function startSliceSession(action: "initial" | "advance" | "revise" | "backend", forceRun = false) {
     const feedback = sliceFeedback.trim();
-    if (!activeSession || sliceBusy || (action !== "initial" && !feedback)) return;
+    if (!activeSession || sliceBusy || ((action === "revise" || action === "backend") && !feedback)) return;
     setSliceBusy(true);
     try {
       const label = action === "initial" ? "Slice 1" : action === "advance" ? "Next slice" : action === "backend" ? "Backend planning" : "Revision";
-      const response = await fetch(`${API}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activeMode: "plan", workspaceId: activeSession.workspaceId, title: `${activeSession.title} · ${label}` }) });
+      const sliceMode: PermissionMode = action === "backend" ? "plan" : "edit";
+      const response = await fetch(`${API}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activeMode: sliceMode, workspaceId: activeSession.workspaceId, title: `${activeSession.title} · ${label}` }) });
       if (!response.ok) throw new Error("Unable to create the next build session.");
       const result = await response.json() as { session: ChatSession };
       await refreshSessions(result.session.id);
       setSliceFeedback("");
       const prompt = action === "initial"
         ? "Start the first approved frontend slice. Use the approved phase plan and current-slice docs as scope authority; do not re-plan the whole website."
-        : feedback;
-      await runTask(prompt, action, result.session);
+        : action === "advance" && !feedback
+          ? "Approved. Continue directly to the next frontend slice in the frozen phase plan."
+          : feedback;
+      await runTask(prompt, action, result.session, forceRun);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Unable to start the next slice.");
     } finally { setSliceBusy(false); }
@@ -689,10 +703,11 @@ export function BorgWorkspaceV2() {
         setEscalation(null);
         setPlanApproval(false);
         setTaskState("COMPLETE");
-        setProgress({ title: "Frontend plan approved", detail: "The roadmap is frozen. Start slice 1 in a new session when ready." });
-        setRightPanel("docs");
+        setProgress({ title: "Frontend plan approved", detail: "The roadmap is frozen. Starting slice 1 now." });
+        setRightPanel("preview");
         await refreshDocs(activeTaskId);
         await loadSession(activeSession.id, { restorePreview: false, resetWorkspace: false });
+        await startSliceSession("initial", true);
       } else if (decision === "approve") {
         setApproval(null);
         setEscalation(null);
@@ -1131,13 +1146,13 @@ export function BorgWorkspaceV2() {
         </div>}</div>
 
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
-          {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planApproval ? "Approve frontend phase plan" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planApproval ? "Approval freezes the tailored slice roadmap. It does not authorize source-file changes; slice 1 starts in a separate session." : "This mini-plan is limited to the current approved slice. Approval switches only this slice session to EDIT."}</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planApproval ? "Revise plan" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planApproval ? "Approve plan" : "Build slice"}</Button></div></div>}
+          {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planApproval ? "Approve frontend phase plan" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planApproval ? "Approval freezes the tailored slice roadmap and starts the frontend build. BORG will execute each slice in a bounded mini-loop inside isolated worktrees." : "This mini-plan is limited to the current approved slice. Approved frontend slices execute automatically inside the frozen phase plan."}</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planApproval ? "Revise plan" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planApproval ? "Approve plan" : "Build slice"}</Button></div></div>}
           {deliveryReady && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Website check complete</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}The verified result is ready in Preview. Save the change set when you are happy with it.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
           {taskState === "COMPLETE" && sliceState && !["working", "plan_pending"].includes(sliceState.status) && <div className="mx-auto mb-3 max-w-3xl rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
             <p className="text-sm font-medium text-[#d9ffb5]">{sliceState.status === "ready" ? `Frontend plan approved — ${sliceState.currentTitle} is ready` : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? "Frontend complete — backend phase is available" : "Frontend complete — static site can be finalized") : `Slice ${sliceState.current + 1} of ${sliceState.total} complete — your feedback is needed`}</p>
             <p className="mt-1 text-xs text-slate-400">{sliceState.status === "ready" ? "Slice 1 starts a lightweight mini-loop in a new session. BORG will not rediscover or re-plan the whole website." : "Review Preview, Changes, and Docs. The next step starts in a new session and carries forward the approved project state."}</p>
             {sliceState.status !== "ready" && <Input value={sliceFeedback} onChange={(event) => setSliceFeedback(event.target.value)} placeholder="What worked, and what should change? “Looks good” is enough to continue." aria-label="Feedback on this slice" className="mt-3 border-white/10 bg-white/4 text-slate-100" />}
-            <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setRightPanel("docs")} className="border-white/10 bg-transparent text-slate-300">Read docs</Button>{sliceState.status === "ready" ? <Button size="sm" disabled={sliceBusy} onClick={() => void startSliceSession("initial")} className="bg-[#a7ff4f] text-[#071007]">Start slice 1</Button> : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? <Button size="sm" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("backend")} className="bg-[#a7ff4f] text-[#071007]">Plan backend in new session</Button> : null) : <><Button size="sm" variant="outline" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("revise")} className="border-white/10 bg-transparent text-slate-300">Revise this slice</Button><Button size="sm" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("advance")} className="bg-[#a7ff4f] text-[#071007]">Approve and start next slice</Button></>}</div>
+            <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setRightPanel("docs")} className="border-white/10 bg-transparent text-slate-300">Read docs</Button>{sliceState.status === "ready" ? <Button size="sm" disabled={sliceBusy} onClick={() => void startSliceSession("initial")} className="bg-[#a7ff4f] text-[#071007]">Start slice 1</Button> : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? <Button size="sm" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("backend")} className="bg-[#a7ff4f] text-[#071007]">Plan backend in new session</Button> : null) : <><Button size="sm" variant="outline" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("revise")} className="border-white/10 bg-transparent text-slate-300">Revise this slice</Button><Button size="sm" disabled={sliceBusy} onClick={() => void startSliceSession("advance")} className="bg-[#a7ff4f] text-[#071007]">Approve and start next slice</Button></>}</div>
           </div>}
           <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); if (taskBusy) return; const value = request; setRequest(""); void runTask(value); }}>
             <Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={taskBusy || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={isWebsite ? "Describe a change to this website…" : `Ask BORG in ${activeMode.toUpperCase()} mode…`} />
