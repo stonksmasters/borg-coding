@@ -504,7 +504,16 @@ const server = createServer((request, response) => {
     const taskId = decodeURIComponent(designRoute[1]);
     if (!tasks.findTask(taskId)) return send(response, 404, { error: "Task not found." });
     const events = tasks.listEvents(taskId);
-    const brief = latestDesignBrief(taskId);
+    const approval = tasks.findApproval(taskId);
+    const repositoryPath = access.load().repositoryPath;
+    const designRoot = approval?.worktreePath && websiteInfo(approval.worktreePath)
+      ? approval.worktreePath
+      : repositoryPath && websiteInfo(repositoryPath)
+        ? repositoryPath
+        : null;
+    const persistedBrief = designRoot ? readPersistedDesignBrief(designRoot) : null;
+    const parsedPersistedBrief = persistedBrief ? DesignBriefSchema.safeParse(persistedBrief) : null;
+    const brief = latestDesignBrief(taskId) ?? (parsedPersistedBrief?.success ? parsedPersistedBrief.data : null);
     const reviewEvent = events.findLast((event) => event.type === "DESIGN_REVIEW_COMPLETED" || event.type === "DESIGN_REVIEW_BLOCKED");
     const review = (reviewEvent?.payload.review ?? null) as DesignReviewResult | null;
     return send(response, 200, {
@@ -539,7 +548,10 @@ const server = createServer((request, response) => {
       const context = { taskId };
       const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", context) as { stdout?: string };
       const diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", context) as { stdout?: string };
-      return send(response, 200, { taskId, ...buildChangeLog(status.stdout ?? "", diff.stdout ?? "") });
+      const live = buildChangeLog(status.stdout ?? "", diff.stdout ?? "");
+      if (!live.clean) return send(response, 200, { taskId, ...live });
+      const captured = tasks.listEvents(taskId).findLast((event) => event.type === "CHANGESET_CAPTURED")?.payload as { status?: string; diff?: string } | undefined;
+      return send(response, 200, { taskId, ...(captured ? buildChangeLog(captured.status ?? "", captured.diff ?? "") : live) });
     })().catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to inspect task changes." }));
     return;
   }
@@ -905,6 +917,7 @@ const server = createServer((request, response) => {
           status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
           diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
         }
+        appendTaskEvent(taskId, "CHANGESET_CAPTURED", { status: status.stdout ?? "", diff: diff.stdout ?? "" });
         emit({ type: "implementation.summary", status, diff, worktreePath: approval.worktreePath });
         emit({ type: "stage.updated", stage: "Review", status: "complete" });
         task = transitionTask(task, "DELIVERY_READY", emit);
