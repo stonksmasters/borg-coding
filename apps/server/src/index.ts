@@ -600,8 +600,8 @@ const server = createServer((request, response) => {
       template: websiteProject.template,
       originalBrief: websiteProject.originalBrief,
     }, websiteWorkflow) : "";
+    const projectPlan = websiteProject ? readProjectPlan(approvedWorktreePath) : null;
     const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED") ? readSliceState(approvedWorktreePath) : null;
-    const activeSlicePrompt = sliceState ? slicePrompt(sliceState) : "";
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
     const teamPolicy = teamPolicies.load(access.load().repositoryPath);
@@ -613,6 +613,8 @@ const server = createServer((request, response) => {
       verifier: specialistSystemInstructions(packs, "verifier"),
       reviewer: specialistSystemInstructions(packs, "reviewer"),
     };
+    const availableImplementationTools = tools.toolDefinitions("agent", taskContext, "implementer", activeDisciplines).map((tool) => tool.function.name);
+    const activeSlicePrompt = sliceState && projectPlan ? slicePrompt(projectPlan, sliceState, availableImplementationTools) : "";
     const verificationProfile = verificationProfileFor(packs);
     let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
@@ -625,12 +627,17 @@ const server = createServer((request, response) => {
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
         const { answer, usedTools } = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
-          limits: sliceState ? { toolRounds: 16, toolCalls: 36 } : undefined,
+          limits: sliceState ? { toolRounds: 12, toolCalls: 28 } : undefined,
           messages: [
             { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Use exact, small patches; inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, start or reuse the local app with browser_server_start, inspect and interact with it through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
         });
+        if (sliceState) {
+          const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
+          const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
+          if (!sourceProgress) throw new Error("Slice stopped because no source-file progress was made. Planning-doc changes alone do not count as implementation.");
+        }
         appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, attempt: task.attempts });
         finishRole(activeRoleAssignment, "completed", emit);
         recordHandoff({
@@ -879,8 +886,8 @@ const server = createServer((request, response) => {
           return;
         }
 
-        if (sliceState) {
-          const summary = `Verified ${FRONTEND_SLICES[sliceState.current].title}.\n\nChanged files:\n${(status.stdout ?? "").slice(0, 1200)}\n\nVerification: passed.\n\nReview: ${review.summary.slice(0, 1200)}`;
+        if (sliceState && projectPlan) {
+          const summary = `Verified ${currentSlice(projectPlan, sliceState).title}.\n\nChanged files:\n${(status.stdout ?? "").slice(0, 1200)}\n\nVerification: passed.\n\nReview: ${review.summary.slice(0, 1200)}`;
           const ready = markSliceReady(approvedWorktreePath, taskId, summary);
           if (ready) appendTaskEvent(taskId, "FRONTEND_SLICE_READY", { slice: ready.current, status: ready.status });
           status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
