@@ -38,7 +38,22 @@ const WEBSITE_EXAMPLES = [
 const BUILDER_STEPS = ["Understand", "Design", "Build", "Test", "Ready"] as const;
 type PermissionMode = "ask" | "plan" | "edit" | "agent";
 type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string; parentSessionId: string | null; workflowRole: "primary" | "frontend_slice" | "backend" };
-type WorkflowStatus = { taskState: string; sliceIndex: number | null; sliceTotal: number | null; sliceTitle: string | null; objective: string; currentAction: string; completed: string[]; pending: string[]; verificationPassed: boolean | null; repairAttempt: number; nextAction: string; activity: Array<{ type: string; occurredAt: string; detail: string }> };
+type WorkflowStatus = {
+  taskState: string;
+  sliceIndex: number | null;
+  sliceTotal: number | null;
+  sliceTitle: string | null;
+  objective: string;
+  currentAction: string;
+  completed: string[];
+  pending: string[];
+  verificationPassed: boolean | null;
+  repairAttempt: number;
+  recovery: { active: boolean; attempt: number; maximum: number; category: string; reason: string; action: string } | null;
+  preflight: { passed: boolean; reason: string; contract: string; repairedDirectories: string[]; dependencyState: string; warnings: string[] } | null;
+  nextAction: string;
+  activity: Array<{ type: string; occurredAt: string; detail: string }>;
+};
 type ContextRecord = { id: string; role: string; model: string; sliceId: string | null; createdAt: string; inputSha256: string; manifest: Array<{ path: string; reason: string; characters: number; sha256: string }> };
 type ChatMessage = RenderableMessage & { sessionId: string; taskId: string | null; createdAt: string; metadata?: Record<string, unknown> };
 type AccessConfig = { repositoryPath: string | null; documents: string[]; repositoryName: string | null; documentNames: string[]; updatedAt: string };
@@ -1224,6 +1239,12 @@ export function BorgWorkspaceV2() {
               <p className="mt-2 text-sm font-medium text-slate-200">{workflowStatus.sliceTitle ?? "Project planning"}</p>
               <p className="mt-2">Objective: {workflowStatus.objective}</p>
               <p className="mt-1">Current action: {workflowStatus.currentAction}</p>
+              {workflowStatus.recovery?.active && <div role="status" className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] p-3">
+                <p className="font-medium text-amber-200">Recovering current slice · attempt {workflowStatus.recovery.attempt}/{workflowStatus.recovery.maximum}</p>
+                <p className="mt-1 text-amber-100/70">{workflowStatus.recovery.category.replaceAll("_", " ")} · {workflowStatus.recovery.reason}</p>
+                <p className="mt-1 text-slate-400">{workflowStatus.recovery.action}</p>
+              </div>}
+              {workflowStatus.preflight && <p className="mt-2">Workspace: {workflowStatus.preflight.contract.replaceAll("-", " ")} · Preflight {workflowStatus.preflight.passed ? "passed" : "blocked"}{workflowStatus.preflight.repairedDirectories.length ? ` · repaired ${workflowStatus.preflight.repairedDirectories.length} director${workflowStatus.preflight.repairedDirectories.length === 1 ? "y" : "ies"}` : ""} · Dependencies: {workflowStatus.preflight.dependencyState.replaceAll("_", " ")}</p>}
               <p className="mt-1">Verification: {workflowStatus.verificationPassed === null ? "Pending" : workflowStatus.verificationPassed ? "Passed" : "Failed"} · Repair attempts: {workflowStatus.repairAttempt}</p>
               <p className="mt-1">Next: {workflowStatus.nextAction}</p>
               <div className="mt-3 grid grid-cols-2 gap-3"><div><p className="text-slate-300">Completed</p><p className="mt-1">{workflowStatus.completed.map((item) => item.replaceAll("_", " ").toLowerCase()).join(" · ") || "None yet"}</p></div><div><p className="text-slate-300">Pending</p><p className="mt-1">{workflowStatus.pending.map((item) => item.replaceAll("_", " ").toLowerCase()).join(" · ") || "None"}</p></div></div>
