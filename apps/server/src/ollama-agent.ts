@@ -118,6 +118,18 @@ export async function runOllamaAgent(options: AgentOptions) {
       const signature = `${call.function.name}:${JSON.stringify(call.function.arguments)}`;
       const repeats = (repeatedCalls.get(signature) ?? 0) + 1;
       repeatedCalls.set(signature, repeats);
+      if (call.function.name === "activity_update") {
+        try {
+          const activity = await options.tools.execute(call, options.mode, options.taskContext, options.role, options.disciplines);
+          options.emit({ type: "activity.updated", activity });
+          options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ acknowledged: true, activity }) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Activity update failed";
+          options.emit({ type: "tool.failed", tool: call.function.name, message });
+          options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message }) });
+        }
+        continue;
+      }
       options.emit({ type: "tool.started", tool: call.function.name, input: call.function.arguments });
       if (repeats > limits.identicalCalls) {
         const message = "Blocked repeated identical tool call. Use the results already provided.";
