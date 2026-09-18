@@ -892,6 +892,7 @@ export function BorgWorkspaceV2() {
               <button type="button" disabled={!previewUrl && !previewError} onClick={() => setRightPanel("preview")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "preview" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
               <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "plan" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
               <button type="button" onClick={() => setRightPanel("changes")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "changes" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Changes{changes.files.length ? ` (${changes.files.length})` : ""}</button>
+              <button type="button" disabled={!designBrief} onClick={() => setRightPanel("design")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "design" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Design{designReview?.status === "repair" ? " •" : ""}</button>
               <button type="button" onClick={() => setRightPanel("terminal")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "terminal" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
             </div>
             {rightPanel === "preview" && <div className="flex items-center gap-2">
@@ -904,9 +905,11 @@ export function BorgWorkspaceV2() {
               ? <PlanPanel plan={latestPlan} />
               : rightPanel === "changes"
                 ? <ChangesPanel changes={changes} />
-                : rightPanel === "terminal"
-                  ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
-                  : previewUrl
+                : rightPanel === "design"
+                  ? <DesignPanel brief={designBrief} review={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} />
+                  : rightPanel === "terminal"
+                    ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
+                    : previewUrl
                     ? <iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full min-h-0 w-full flex-1 border-0 bg-white" />
                     : <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 text-sm text-red-200">{previewError || "Preview is not available for this task yet."}</div>}
           </div>
