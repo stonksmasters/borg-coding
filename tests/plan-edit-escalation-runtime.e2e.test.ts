@@ -55,12 +55,15 @@ function startNode(entry: string, cwd: string, env: NodeJS.ProcessEnv): LoggedCh
 async function stopChild(child: ChildProcess | null) {
   if (!child || child.exitCode !== null) return;
   child.kill("SIGTERM");
-  await Promise.race([
-    once(child, "exit").then(() => undefined),
-    delay(3_000).then(() => {
-      if (child.exitCode === null) child.kill("SIGKILL");
-    }),
+  const exited = once(child, "exit").then(() => true);
+  const stoppedGracefully = await Promise.race([
+    exited,
+    delay(3_000).then(() => false),
   ]);
+  if (!stoppedGracefully && child.exitCode === null) {
+    child.kill("SIGKILL");
+    await once(child, "exit").catch(() => undefined);
+  }
 }
 
 async function waitForHttp(url: string, child: LoggedChild, label: string) {
