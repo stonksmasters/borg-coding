@@ -71,3 +71,42 @@ test("workflow status after restart follows durable failure and verification evi
     reopened.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("workflow status surfaces deterministic preflight and active recovery after restart", () => {
+  const task = { ...createTask({ id: "recovery-status", projectId: "local", request: "Build checkout" }), state: "IMPLEMENTING" as const, attempts: 1 };
+  const occurredAt = new Date().toISOString();
+  const events = [
+    {
+      id: "preflight",
+      taskId: task.id,
+      type: "WORKSPACE_PREFLIGHT_COMPLETED",
+      payload: {
+        report: {
+          passed: true,
+          reason: "no_progress_recovery",
+          contract: { kind: "vite-react" },
+          repairedDirectories: ["src/features"],
+          dependencyState: "configured",
+          issues: [],
+        },
+      },
+      occurredAt,
+    },
+    {
+      id: "recovery",
+      taskId: task.id,
+      type: "IMPLEMENTATION_RECOVERY_SCHEDULED",
+      payload: { attempt: 1, maximum: 2, category: "missing_path", reason: "ENOENT", action: "Retry the same slice." },
+      occurredAt,
+    },
+  ];
+  const status = deriveWorkflowStatus(task, events, null, null);
+  assert.equal(status.recovery?.active, true);
+  assert.equal(status.recovery?.category, "missing_path");
+  assert.equal(status.preflight?.contract, "vite-react");
+  assert.deepEqual(status.preflight?.repairedDirectories, ["src/features"]);
+  assert.match(status.currentAction, /Recovery active/);
+  assert.match(status.nextAction, /same approved slice/);
+  assert.ok(status.activity.some((item) => /repaired 1 directory/.test(item.detail)));
+});
