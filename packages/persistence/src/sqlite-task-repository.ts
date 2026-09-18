@@ -33,6 +33,7 @@ export class SqliteTaskRepository {
     this.database = new DatabaseSync(path);
     this.database.exec(`
       PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 5000;
       PRAGMA foreign_keys = ON;
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL, request TEXT NOT NULL,
