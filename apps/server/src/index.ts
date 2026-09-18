@@ -745,7 +745,6 @@ const server = createServer((request, response) => {
       if (activeRoleAssignment?.status === "active") finishRole(activeRoleAssignment, "failed", emit);
       await Promise.allSettled([
         tools.execute({ function: { name: "browser_close", arguments: {} } }, "agent", taskContext),
-        tools.execute({ function: { name: "browser_server_stop", arguments: {} } }, "agent", taskContext),
       ]);
       const message = error instanceof Error ? error.message : "Approved implementation failed";
       appendTaskEvent(taskId, "IMPLEMENTATION_FAILED", { message });
