@@ -185,7 +185,7 @@ export async function runOllamaAgent(options: AgentOptions) {
   let budgetReason = "tool-round limit";
   const repeatedCalls = new Map<string, number>();
   const invalidToolFailures = new Map<string, number>();
-  const availableToolNames = toolDefinitions.map((tool) => tool.function.name);
+  const availableToolNames: string[] = toolDefinitions.map((tool) => tool.function.name);
   for (let round = 0; round < limits.toolRounds; round += 1) {
     const assistant = await runTurn(options);
     const nativeCalls = assistant.tool_calls ?? [];
