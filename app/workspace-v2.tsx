@@ -362,7 +362,7 @@ export function BorgWorkspaceV2() {
       setProgress({ title, detail: path ? `Working in ${path}.` : "BORG is continuing this part of the task." });
       setLiveActivity((current) => [...current.slice(-39), `${title} · ${tool}`]);
     } else if (event.type === "tool.completed") {
-      if (event.taskId && ["worktree_patch", "git_diff", "git_status"].includes(event.tool ?? "")) void refreshChanges(event.taskId);
+      if (event.taskId && ["worktree_patch", "worktree_command", "git_diff", "git_status"].includes(event.tool ?? "")) void refreshChanges(event.taskId);
     } else if (event.type === "tool.failed") {
       const detail = `${event.tool ?? "Tool"} failed: ${event.message ?? "Unknown error"}`;
       setLiveActivity((current) => [...current.slice(-39), detail]);
@@ -732,7 +732,7 @@ export function BorgWorkspaceV2() {
             <ActivityFeed activities={activities} />
             {activityItems.length > 0 && <details className="rounded-lg border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer select-none font-medium text-slate-400">Technical activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
           </div>
-        </div></div>{(previewUrl || previewError || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col border-t border-white/8 lg:min-h-0 lg:border-l lg:border-t-0">
+        </div></div>{(previewUrl || previewError || changes.files.length > 0 || Boolean(activeTaskId && ["IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERY_READY"].includes(taskState))) && <div className="flex min-h-[320px] flex-1 flex-col border-t border-white/8 lg:min-h-0 lg:border-l lg:border-t-0">
           <div className="flex h-11 shrink-0 items-center justify-between border-b border-white/8 bg-[#0a0d12] px-3">
             <div className="flex items-center gap-1">
               <button type="button" disabled={!previewUrl && !previewError} onClick={() => setRightPanel("preview")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "preview" && (previewUrl || previewError) ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
