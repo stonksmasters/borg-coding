@@ -1,7 +1,9 @@
 export function stageProgress(stage: string): { title: string; detail: string } | null {
   switch (stage) {
     case "Discovery": return { title: "Getting to know the project", detail: "BORG is checking the current pages and project structure before proposing changes." };
-    case "Plan": return { title: "Putting together the design plan", detail: "The proposed layout, style, and sections will appear in the plan when this pass is complete." };
+    case "Plan": return { title: "Putting together the implementation plan", detail: "BORG is turning the request and repository evidence into an actionable plan." };
+    case "Design Direction": return { title: "Art-directing the website", detail: "BORG is defining hierarchy, typography, composition, page rhythm, content voice, and mobile behavior before implementation." };
+    case "Visual Direction": return { title: "Judging visual quality", detail: "The Visual Director is reviewing responsive screenshots against the approved Design Brief and can request another refinement pass." };
     case "Implementation": return { title: "Building the approved design", detail: "BORG is applying the plan in an isolated worktree. The live preview will show the result." };
     case "Verification": return { title: "Checking the website", detail: "BORG is running the available checks on the updated project." };
     case "Review": return { title: "Reviewing the result", detail: "BORG is looking for issues before presenting the finished work." };
