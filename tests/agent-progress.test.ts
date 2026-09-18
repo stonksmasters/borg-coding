@@ -5,8 +5,8 @@ import { isUnsupportedLanguageTool, stageProgress, toolProgress } from "../app/a
 test("planning progress explains activity without claiming a design decision before the plan exists", () => {
   assert.match(stageProgress("Discovery")!.detail, /checking/);
   assert.match(stageProgress("Plan")!.detail, /will appear in the plan/);
-  assert.equal(toolProgress("repository_read"), "Reviewing the current website and its files");
-  assert.equal(toolProgress("repository_read", { path: "src/style.css" }), "Reviewing the site's colors and styles");
+  assert.equal(toolProgress("repository_read"), "Reading a repository file");
+  assert.equal(toolProgress("repository_read", { path: "src/style.css" }), "Reading src/style.css");
   assert.equal(toolProgress("web_search", { query: "yellow pop musician homepage" }), "Looking up references for “yellow pop musician homepage”");
 });
 
