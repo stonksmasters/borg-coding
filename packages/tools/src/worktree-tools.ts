@@ -48,11 +48,26 @@ export const worktreeToolDefinitions = {
       parameters: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
     },
   },
+  worktree_write: {
+    type: "function",
+    function: {
+      name: "worktree_write",
+      description: "Create or replace a text file inside the approved task worktree. Missing parent directories are created safely and automatically.",
+      parameters: {
+        type: "object", required: ["path", "content"],
+        properties: {
+          path: { type: "string" },
+          content: { type: "string" },
+          overwrite: { type: "boolean" },
+        },
+      },
+    },
+  },
   worktree_patch: {
     type: "function",
     function: {
       name: "worktree_patch",
-      description: "Apply an exact text replacement inside the approved task worktree. To create a new file, use an empty old_text and a path that does not exist.",
+      description: "Apply an exact text replacement inside the approved task worktree. To create a new file, use an empty old_text and a path that does not exist. Missing parent directories are created safely and automatically.",
       parameters: {
         type: "object", required: ["path", "old_text", "new_text"],
         properties: {
@@ -224,6 +239,25 @@ export class WorktreeTools {
     return path;
   }
 
+  private ensureWritableParent(root: string, path: string): void {
+    const parent = dirname(path);
+    mkdirSync(parent, { recursive: true });
+    const realParent = realpathSync(parent);
+    if (!statSync(realParent).isDirectory() || !isInside(root, realParent)) throw new Error("Worktree path escapes through a parent link.");
+  }
+
+  private atomicWrite(root: string, path: string, value: string): void {
+    if (Buffer.byteLength(value, "utf8") > MAX_FILE_BYTES) throw new Error("Worktree file exceeds the size limit.");
+    this.ensureWritableParent(root, path);
+    const temporaryPath = `${path}.borg-${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporaryPath, value, "utf8");
+      renameSync(temporaryPath, path);
+    } finally {
+      if (existsSync(temporaryPath)) rmSync(temporaryPath, { force: true });
+    }
+  }
+
   async execute(name: string, input: Record<string, unknown>, context?: TaskToolContext): Promise<unknown> {
     const root = this.approvedRoot(context);
     if (name === "worktree_read") {
@@ -231,6 +265,7 @@ export class WorktreeTools {
       if (!lstatSync(path).isFile() || statSync(path).size > MAX_FILE_BYTES) throw new Error("Worktree file is not a bounded regular file.");
       return { path: relative(root, path), content: readFileSync(path, "utf8") };
     }
+    if (name === "worktree_write") return this.write(root, input);
     if (name === "worktree_patch") return this.patch(root, input);
     if (name === "worktree_command") return this.command(root, input, context!);
     if (name === "git_status") return this.git(root, ["status", "--short", "--untracked-files=all"]);
@@ -244,6 +279,19 @@ export class WorktreeTools {
     if (name.startsWith("browser_")) return this.browser.execute(name, input, { taskId: context!.taskId, worktreePath: root });
     if (name === "verification_run") return this.verify(root, String(input.profile ?? "quick"), context!);
     throw new Error(`Unknown worktree tool: ${name}`);
+  }
+
+  private write(root: string, input: Record<string, unknown>) {
+    const path = this.resolveWritable(root, input.path);
+    const value = String(input.content ?? "");
+    const overwrite = input.overwrite === true;
+    const created = !existsSync(path);
+    if (!created) {
+      if (!lstatSync(path).isFile() || statSync(path).size > MAX_FILE_BYTES) throw new Error("Worktree file is not a bounded regular file.");
+      if (!overwrite) throw new Error("Worktree file already exists. Set overwrite=true to replace it.");
+    }
+    this.atomicWrite(root, path, value);
+    return { path: relative(root, path), created, overwritten: !created, bytes: Buffer.byteLength(value, "utf8") };
   }
 
   private patch(root: string, input: Record<string, unknown>) {
@@ -272,14 +320,7 @@ export class WorktreeTools {
     if (occurrences !== expected) throw new Error(`Patch expected ${expected} replacement(s) but found ${occurrences}.`);
     const updated = matchText ? current.split(matchText).join(replacementText) : newText;
     if (Buffer.byteLength(updated, "utf8") > MAX_FILE_BYTES) throw new Error("Patched file exceeds the size limit.");
-    if (created) mkdirSync(dirname(path), { recursive: true });
-    const temporaryPath = `${path}.borg-${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporaryPath, updated, "utf8");
-      renameSync(temporaryPath, path);
-    } finally {
-      if (existsSync(temporaryPath)) rmSync(temporaryPath, { force: true });
-    }
+    this.atomicWrite(root, path, updated);
     return { path: relative(root, path), created, replacements: occurrences, bytes: Buffer.byteLength(updated, "utf8") };
   }
 
