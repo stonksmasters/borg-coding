@@ -7,6 +7,7 @@ import { ActivityFeed, type AgentActivity } from "@/components/agent/activity-fe
 import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel";
 import { PlanPanel } from "@/components/workspace/plan-panel";
 import { TerminalPanel, type TaskProcess, type TaskProcessEvent } from "@/components/workspace/terminal-panel";
+import { DesignPanel, type DesignBriefView, type DesignReviewView } from "@/components/workspace/design-panel";
 import { isUnsupportedLanguageTool, stageProgress, toolProgress } from "./agent-progress";
 import { executionIsRunning, taskIsRunning, taskNeedsAttention, taskProgress } from "./task-activity";
 import { previewChangeFingerprint, shouldRefreshPreview } from "./preview-refresh";
@@ -56,6 +57,10 @@ type StreamEvent = {
   stage?: string;
   status?: string | { stdout?: string };
   activity?: AgentActivity;
+  brief?: DesignBriefView;
+  designReview?: DesignReviewView;
+  refinement?: number;
+  maximum?: number;
 };
 
 function statusLabel(config: ToolConfig | null) {
@@ -105,7 +110,11 @@ export function BorgWorkspaceV2() {
   const [liveActivity, setLiveActivity] = useState<string[]>([]);
   const [activities, setActivities] = useState<AgentActivity[]>([]);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
-  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "terminal">("preview");
+  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "terminal" | "design">("preview");
+  const [designBrief, setDesignBrief] = useState<DesignBriefView | null>(null);
+  const [designReview, setDesignReview] = useState<DesignReviewView | null>(null);
+  const [designRefinementCount, setDesignRefinementCount] = useState(0);
+  const [maxDesignRefinements, setMaxDesignRefinements] = useState(3);
   const [processes, setProcesses] = useState<TaskProcess[]>([]);
   const [processEvents, setProcessEvents] = useState<TaskProcessEvent[]>([]);
   const [websiteOpen, setWebsiteOpen] = useState(false);
@@ -189,6 +198,21 @@ export function BorgWorkspaceV2() {
     return refreshPreview;
   }, []);
 
+  const refreshDesign = useCallback(async (taskId: string) => {
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/design`);
+    if (!response.ok) return;
+    const result = await response.json() as {
+      brief?: DesignBriefView | null;
+      review?: DesignReviewView | null;
+      refinementCount?: number;
+      maxRefinements?: number;
+    };
+    setDesignBrief(result.brief ?? null);
+    setDesignReview(result.review ?? null);
+    setDesignRefinementCount(result.refinementCount ?? 0);
+    setMaxDesignRefinements(result.maxRefinements ?? 3);
+  }, []);
+
   const refreshProcesses = useCallback(async (taskId: string) => {
     const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/processes`);
     if (!response.ok) return;
@@ -228,6 +252,9 @@ export function BorgWorkspaceV2() {
       setChanges(EMPTY_CHANGE_SET);
       setProcesses([]);
       setProcessEvents([]);
+      setDesignBrief(null);
+      setDesignReview(null);
+      setDesignRefinementCount(0);
       changeFingerprintRef.current = null;
     }
     setActiveTaskId(result.latestTaskId);
@@ -243,10 +270,11 @@ export function BorgWorkspaceV2() {
       refreshTaskActivity(result.latestTaskId),
       refreshChanges(result.latestTaskId),
       refreshProcesses(result.latestTaskId),
+      refreshDesign(result.latestTaskId),
     ]);
     if (restorePreview) await activatePreview(sessionId);
     return result;
-  }, [activatePreview, refreshChanges, refreshProcesses, refreshTaskActivity]);
+  }, [activatePreview, refreshChanges, refreshDesign, refreshProcesses, refreshTaskActivity]);
 
   const refreshSessions = useCallback(async (preferredId?: string) => {
     const response = await fetch(`${API}/api/sessions`);
@@ -417,6 +445,9 @@ export function BorgWorkspaceV2() {
       setChanges(EMPTY_CHANGE_SET);
       setProcesses([]);
       setProcessEvents([]);
+      setDesignBrief(null);
+      setDesignReview(null);
+      setDesignRefinementCount(0);
       changeFingerprintRef.current = null;
     } else if (event.type === "task.state" && event.state) {
       setTaskState(event.state);
@@ -431,6 +462,21 @@ export function BorgWorkspaceV2() {
         const id = liveAssistantId.current;
         setMessages((current) => current.map((message) => message.id === id ? { ...message, text: `${message.text}${text}` } : message));
       }
+    } else if (event.type === "design.brief.created" && event.brief) {
+      setDesignBrief(event.brief);
+      setDesignReview(null);
+      setDesignRefinementCount(0);
+      setRightPanel("design");
+    } else if (event.type === "design.review.completed" && event.designReview) {
+      setDesignReview(event.designReview);
+      setRightPanel("design");
+    } else if (event.type === "design.refinement.scheduled") {
+      setDesignRefinementCount(event.refinement ?? 0);
+      if (event.maximum) setMaxDesignRefinements(event.maximum);
+      setRightPanel("design");
+    } else if (event.type === "design.review.blocked") {
+      if (event.designReview) setDesignReview(event.designReview);
+      setRightPanel("design");
     } else if (event.type === "activity.updated" && event.activity) {
       const activity = { ...event.activity, taskId: event.taskId ?? event.activity.taskId };
       setActivities((current) => [...current.filter((item) => item.id !== activity.id), activity].slice(-100));
