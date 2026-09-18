@@ -16,6 +16,8 @@ export const ChatSessionSchema = z.object({
   workspaceId: z.string().min(1),
   provider: z.string().min(1),
   model: z.string().min(1),
+  parentSessionId: z.string().min(1).nullable().default(null),
+  workflowRole: z.enum(["primary", "frontend_slice", "backend"]).default("primary"),
 });
 export type ChatSession = z.infer<typeof ChatSessionSchema>;
 
@@ -51,6 +53,8 @@ export function createChatSession(input: {
   workspaceId?: string;
   provider?: string;
   model?: string;
+  parentSessionId?: string | null;
+  workflowRole?: "primary" | "frontend_slice" | "backend";
 }): ChatSession {
   const now = new Date().toISOString();
   return ChatSessionSchema.parse({
@@ -63,6 +67,8 @@ export function createChatSession(input: {
     workspaceId: input.workspaceId ?? "borg-code",
     provider: input.provider ?? "ollama",
     model: input.model ?? "qwen3-coder:30b",
+    parentSessionId: input.parentSessionId ?? null,
+    workflowRole: input.workflowRole ?? "primary",
   });
 }
 
