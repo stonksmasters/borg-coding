@@ -7,6 +7,7 @@ import { roleAllowsTool, specialistAllowsTool } from "../../orchestration/src/in
 import type { AccessController } from "../../repository/src/access-controller.ts";
 import type { RepositoryMemory } from "../../repository/src/repository-memory.ts";
 import { WorktreeTools, type TaskToolContext, type WorktreeToolOptions } from "./worktree-tools.ts";
+import { activityToolDefinition, normalizeActivityUpdate } from "./activity-tool.ts";
 
 interface ToolPolicy { internetEnabled: boolean; updatedAt: string; }
 export interface ToolCall { function: { name: string; arguments: Record<string, unknown> }; }
@@ -242,6 +243,7 @@ export class ToolBroker {
   toolDefinitions(mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole, disciplines?: readonly EngineeringDiscipline[]) {
     const status = this.status();
     const available = [];
+    if (mode !== "ask") available.push(activityToolDefinition);
     const allowed = <T extends { function: { name: string } }>(items: readonly T[]): T[] =>
       items.filter((item) =>
         (!role || roleAllowsTool(role, item.function.name))
@@ -257,6 +259,10 @@ export class ToolBroker {
   }
 
   async execute(call: ToolCall, mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole, disciplines?: readonly EngineeringDiscipline[]): Promise<unknown> {
+    if (call.function.name === "activity_update") {
+      if (mode === "ask") throw new Error("Structured activity updates are unavailable in ASK mode.");
+      return normalizeActivityUpdate(call.function.arguments);
+    }
     if (role && !roleAllowsTool(role, call.function.name)) throw new Error(`The ${role} role cannot invoke ${call.function.name}.`);
     if (disciplines?.length && !specialistAllowsTool(disciplines, call.function.name)) throw new Error(`The active specialist packs cannot invoke ${call.function.name}.`);
     if (call.function.name.startsWith("repository_")) {
