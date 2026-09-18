@@ -1,4 +1,5 @@
 import { createServer, type ServerResponse } from "node:http";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -104,6 +105,13 @@ const disciplineRouter = new DisciplineRouter();
 const teamPolicies = new TeamPolicyService();
 const maxRepairAttempts = 2;
 const maxDesignRefinements = 3;
+
+function commitBuildDocs(repositoryPath: string, message: string) {
+  execFileSync("git", ["-C", repositoryPath, "add", "--", ".localcode/build"], { stdio: "ignore" });
+  const staged = execFileSync("git", ["-C", repositoryPath, "diff", "--cached", "--name-only", "--", ".localcode/build"], { encoding: "utf8" }).trim();
+  if (!staged) return;
+  execFileSync("git", ["-C", repositoryPath, "-c", "user.name=BORG", "-c", "user.email=borg@local.invalid", "commit", "-m", message, "--", ".localcode/build"], { stdio: "ignore" });
+}
 
 function send(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, {
@@ -1065,6 +1073,7 @@ const server = createServer((request, response) => {
       if (!repositoryPath) return send(response, 400, { error: "Approve a Git repository before continuing." });
       if (isProjectPlanApproval) {
         const approvedProject = approveProjectPlan(repositoryPath, task.id);
+        commitBuildDocs(repositoryPath, "Approve BORG frontend phase plan");
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
         tasks.saveApproval(approved);
         appendTaskEvent(task.id, "PROJECT_PLAN_APPROVED", { approvalId: approval.id, revision: approvedProject.plan.revision });
