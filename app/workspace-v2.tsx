@@ -806,13 +806,42 @@ export function BorgWorkspaceV2() {
 
   return <SidebarProvider>
     <Dialog open={websiteOpen} onOpenChange={setWebsiteOpen}>
-      <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-md">
-        <DialogHeader><DialogTitle>New website</DialogTitle><DialogDescription>BORG creates a local React website, installs its dependencies, and opens a live preview.</DialogDescription></DialogHeader>
-        <label className="block py-2"><span className="mb-2 block text-sm font-medium text-slate-300">Website name</span><Input value={websiteName} onChange={(event) => setWebsiteName(event.target.value)} placeholder="My new website" className="border-white/10 bg-white/4 text-slate-100" /></label>
-        {websiteError && <p className="text-sm text-red-200">{websiteError}</p>}
-        <DialogFooter><Button variant="outline" onClick={() => setWebsiteOpen(false)} className="border-white/10 bg-transparent text-slate-300">Cancel</Button><Button disabled={websiteBusy || !websiteName.trim()} onClick={() => void createWebsite()} className="bg-[#a7ff4f] text-[#071007]">{websiteBusy ? "Creating…" : "Create website"}</Button></DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <DialogContent className="max-h-[90vh] overflow-y-auto border-white/10 bg-[#11161e] text-slate-100 sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="text-xl">Create a website</DialogTitle>
+          <DialogDescription>Give BORG the product direction up front. It will create the local project and keep this brief attached to the website.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-5 py-2">
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-slate-300">Website name</span>
+            <Input value={websiteName} onChange={(event) => setWebsiteName(event.target.value)} placeholder="Acme AI" className="border-white/10 bg-white/4 text-slate-100" />
+          </label>
+          <div>
+            <span className="mb-2 block text-sm font-medium text-slate-300">Starting point</span>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {WEBSITE_TEMPLATES.map((template) => <button key={template.id} type="button" onClick={() => setWebsiteTemplate(template.id)} className={`rounded-lg border p-3 text-left transition ${websiteTemplate === template.id ? "border-[#a7ff4f]/45 bg-[#a7ff4f]/8" : "border-white/10 bg-white/[0.025] hover:bg-white/5"}`}>
+                <span className="block text-sm font-medium text-slate-200">{template.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">{template.detail}</span>
+              </button>)}
+            </div>
+          </div>
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-slate-300">What do you want to build?</span>
+            <textarea value={websiteBrief} onChange={(event) => setWebsiteBrief(event.target.value)} rows={6} placeholder="Describe the business, audience, pages, features, and visual direction. You can keep it simple." className="w-full resize-y rounded-lg border border-white/10 bg-white/4 px-3 py-3 text-sm leading-6 text-slate-100 outline-none placeholder:text-slate-600 focus:border-[#a7ff4f]/40" />
+          </label>
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-slate-600">Try an example</p>
+            <div className="flex flex-wrap gap-2">{WEBSITE_EXAMPLES.slice(0, 3).map((example) => <button key={example} type="button" onClick={() => setWebsiteBrief(example)} className="rounded-full border border-white/10 bg-white/[0.025] px-3 py-1.5 text-xs text-slate-400 hover:border-white/20 hover:text-slate-200">{example.split(" ").slice(0, 5).join(" ")}…</button>)}</div>
+          </div>
+          {websiteError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{websiteError}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setWebsiteOpen(false)} className="border-white/10 bg-transparent text-slate-300">Cancel</Button>
+          <Button disabled={websiteBusy || !websiteName.trim() || !websiteBrief.trim()} onClick={() => void createWebsite()} className="bg-[#a7ff4f] text-[#071007]">
+            <Sparkles className="size-4" />{websiteBusy ? "Creating…" : "Create website"}
+          </Button>
+        </DialogFooter>
+      </Dialog>
     <Dialog open={accessOpen} onOpenChange={setAccessOpen}>
       <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-xl">
         <DialogHeader><DialogTitle>Repository access</DialogTitle><DialogDescription>The active repository is shared by chat sessions and remains inside the local BORG runtime.</DialogDescription></DialogHeader>
