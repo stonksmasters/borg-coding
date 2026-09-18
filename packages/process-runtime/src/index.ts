@@ -40,7 +40,7 @@ export interface ProcessStartInput {
   args?: string[];
   cwd: string;
   url?: string | null;
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   timeoutMs?: number;
 }
 
