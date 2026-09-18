@@ -91,6 +91,9 @@ test("PLAN exposes no mutation tools and rejects mutation while EDIT and AGENT c
     assert.equal(broker.toolDefinitions("plan", context).some((tool) => tool.function.name === "worktree_patch"), false);
     assert.equal(broker.toolDefinitions("edit", context).some((tool) => tool.function.name === "worktree_patch"), true);
     assert.equal(broker.toolDefinitions("agent", context).some((tool) => tool.function.name === "worktree_patch"), true);
+    assert.equal(broker.toolDefinitions("plan", context).some((tool) => tool.function.name === "worktree_write"), false);
+    assert.equal(broker.toolDefinitions("edit", context).some((tool) => tool.function.name === "worktree_write"), true);
+    assert.equal(broker.toolDefinitions("agent", context).some((tool) => tool.function.name === "worktree_write"), true);
 
     await assert.rejects(
       () => broker.execute({ function: { name: "worktree_patch", arguments: { path: "plan.txt", old_text: "", new_text: "should-not-exist" } } }, "plan", context),
