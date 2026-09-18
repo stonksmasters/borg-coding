@@ -899,7 +899,9 @@ createServer((request, response) => {
         }
         const enriched = { ...event, taskId: task.id };
         writeEvent(response, enriched);
-        if (String(event.type).startsWith("tool.")) appendTaskEvent(task.id, String(event.type).toUpperCase().replaceAll(".", "_"), enriched);
+        const eventType = String(event.type ?? "");
+        if (eventType.startsWith("tool.")) appendTaskEvent(task.id, eventType.toUpperCase().replaceAll(".", "_"), enriched);
+        if (eventType === "activity.updated") appendTaskEvent(task.id, "AGENT_ACTIVITY", { activity: event.activity });
       };
       task = transitionTask(task, "CLASSIFYING", emit);
       appendTaskEvent(task.id, "DISCIPLINE_ROUTE_SELECTED", { route });
