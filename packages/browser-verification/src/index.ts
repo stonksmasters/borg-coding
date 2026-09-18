@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { ProcessRuntime, type ProcessSnapshot } from "../../process-runtime/src/index.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import axe from "axe-core";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 
 const MAX_EVENTS = 500;
-const MAX_SERVER_LOG = 120_000;
 const MAX_STARTUP_SECONDS = 60;
 const serverCommands = new Set(["node", "npm", "python", "python3", "dotnet", "cargo", "go"]);
 
@@ -112,15 +111,6 @@ interface BrowserSession {
   dom: BrowserDomElement[];
   accessibility: AccessibilityEvidence | null;
   viewport: { width: number; height: number };
-}
-
-interface ManagedServer {
-  child: ChildProcess;
-  command: string;
-  args: string[];
-  url: string;
-  stdout: string;
-  stderr: string;
 }
 
 export const browserToolDefinitions = {
@@ -267,15 +257,6 @@ function safeName(value: unknown, fallback: string): string {
   return (normalized || fallback).slice(0, 80);
 }
 
-function boundedLog(current: string, chunk: Buffer | string): string {
-  const next = current + String(chunk);
-  return next.length > MAX_SERVER_LOG ? next.slice(next.length - MAX_SERVER_LOG) : next;
-}
-
-function delay(milliseconds: number) {
-  return new Promise<void>((resolveDelay) => setTimeout(resolveDelay, milliseconds));
-}
-
 function numberInRange(value: unknown, fallback: number, minimum: number, maximum: number): number {
   const parsed = Math.floor(Number(value ?? fallback));
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
@@ -291,40 +272,14 @@ function browserLaunchOptions() {
   return { headless: true as const, channel };
 }
 
-async function waitForLoopback(url: string, timeoutSeconds: number, child: ChildProcess) {
-  const deadline = Date.now() + timeoutSeconds * 1_000;
-  let lastError = "No response";
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`Development server exited before becoming ready (code ${child.exitCode}).`);
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
-      if (response.status >= 100) return;
-    } catch (error) { lastError = error instanceof Error ? error.message : String(error); }
-    await delay(250);
-  }
-  throw new Error(`Development server did not become ready: ${lastError}`);
-}
-
-async function stopProcess(child: ChildProcess) {
-  if (child.exitCode !== null) return;
-  const closed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
-  if (process.platform === "win32" && child.pid) {
-    const killedTree = await new Promise<boolean>((resolveStop) => execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true }, (error) => resolveStop(!error)));
-    if (!killedTree && child.exitCode === null) child.kill("SIGTERM");
-  } else {
-    child.kill("SIGTERM");
-  }
-  const stopped = await Promise.race([closed.then(() => true), delay(1_500).then(() => false)]);
-  if (stopped) return;
-  if (child.exitCode === null) child.kill("SIGKILL");
-  const forced = await Promise.race([closed.then(() => true), delay(1_500).then(() => false)]);
-  if (!forced) throw new Error("Development server did not stop after termination request.");
-}
-
 export class BrowserVerification {
   private readonly sessions = new Map<string, BrowserSession>();
-  private readonly servers = new Map<string, ManagedServer>();
   private readonly reports = new Map<string, BrowserEvidenceReport>();
+  private readonly processRuntime: ProcessRuntime;
+
+  constructor(options: { processRuntime?: ProcessRuntime } = {}) {
+    this.processRuntime = options.processRuntime ?? new ProcessRuntime();
+  }
 
   definitions() { return Object.values(browserToolDefinitions); }
   latest(taskId: string) { return this.reports.get(taskId) ?? null; }
@@ -343,12 +298,11 @@ export class BrowserVerification {
 
   async closeForVerification(taskId: string) {
     await this.close(taskId);
-    await this.stopServer(taskId);
+    this.updateReport(taskId);
     return this.latest(taskId);
   }
 
   private async startServer(input: Record<string, unknown>, context: BrowserTaskContext) {
-    await this.stopServer(context.taskId);
     const command = String(input.command ?? "").toLowerCase();
     if (!serverCommands.has(command)) throw new Error(`Development server command is not allowlisted: ${command}`);
     const args = Array.isArray(input.args) ? input.args.map(String) : [];
@@ -360,48 +314,38 @@ export class BrowserVerification {
     if (!isInside(root, candidateCwd) || !existsSync(candidateCwd)) throw new Error("Development server cwd must remain inside the approved worktree.");
     const cwd = realpathSync(candidateCwd);
     if (!isInside(root, cwd) || !statSync(cwd).isDirectory()) throw new Error("Development server cwd cannot escape through a link.");
-    const executable = command === "node" ? process.execPath : command === "npm" && process.platform === "win32" ? "npm.cmd" : command;
-    const child = spawn(executable, args, {
+    const server = await this.processRuntime.ensureServer({
+      taskId: context.taskId,
+      kind: "dev_server",
+      label: "Development server",
+      command,
+      args,
       cwd,
-      shell: false,
-      windowsHide: true,
-      detached: process.platform !== "win32",
-      env: { ...process.env, HOST: "127.0.0.1", BROWSER: "none", CI: "1", NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
+      url,
+      env: { HOST: "127.0.0.1", BROWSER: "none" },
+      startupTimeoutMs: numberInRange(input.timeout_seconds, 30, 1, MAX_STARTUP_SECONDS) * 1_000,
     });
-    const server: ManagedServer = { child, command, args, url, stdout: "", stderr: "" };
-    child.stdout?.on("data", (chunk) => { server.stdout = boundedLog(server.stdout, chunk); });
-    child.stderr?.on("data", (chunk) => { server.stderr = boundedLog(server.stderr, chunk); });
-    this.servers.set(context.taskId, server);
-    try {
-      const spawnFailure = new Promise<never>((_, reject) => child.once("error", reject));
-      await Promise.race([waitForLoopback(url, numberInRange(input.timeout_seconds, 30, 1, MAX_STARTUP_SECONDS), child), spawnFailure]);
-    } catch (error) {
-      await this.stopServer(context.taskId);
-      throw error;
-    }
     this.updateReport(context.taskId);
     return this.serverEvidence(server);
   }
 
   private async stopServer(taskId: string) {
-    const server = this.servers.get(taskId);
+    const server = this.processRuntime.findRunning(taskId, "dev_server");
     if (!server) return { stopped: false };
-    await stopProcess(server.child);
-    const evidence = this.serverEvidence(server);
-    this.servers.delete(taskId);
+    const stopped = await this.processRuntime.stop(server.id);
+    const evidence = stopped ? this.serverEvidence(stopped) : this.serverEvidence(server);
     const report = this.reports.get(taskId);
     if (report) this.reports.set(taskId, { ...report, capturedAt: new Date().toISOString(), server: evidence });
     return { stopped: true, server: evidence };
   }
 
-  private serverEvidence(server: ManagedServer): ServerEvidence {
+  private serverEvidence(server: ProcessSnapshot): ServerEvidence {
     return {
       command: server.command,
       args: server.args,
-      url: server.url,
-      pid: server.child.pid ?? null,
-      running: server.child.exitCode === null,
+      url: server.url ?? "",
+      pid: server.pid,
+      running: server.status === "starting" || server.status === "running",
       stdout: server.stdout,
       stderr: server.stderr,
     };
@@ -649,7 +593,7 @@ export class BrowserVerification {
 
   private updateReport(taskId: string) {
     const session = this.sessions.get(taskId);
-    const server = this.servers.get(taskId);
+    const server = this.processRuntime.findRunning(taskId, "dev_server");
     const dom = session?.dom ?? [];
     const consoleEvidence = session?.console ?? [];
     const network = session?.network ?? [];
@@ -669,7 +613,7 @@ export class BrowserVerification {
       taskId,
       passed: issues.length === 0,
       issues,
-      url: session?.page.url() ?? server?.url ?? null,
+      url: session?.page.url() ?? server?.url ?? this.reports.get(taskId)?.url ?? null,
       viewport: session?.viewport ?? null,
       capturedAt: new Date().toISOString(),
       dom,
