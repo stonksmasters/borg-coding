@@ -39,7 +39,7 @@ async function reservePort(): Promise<number> {
   return port;
 }
 
-function startNode(entry: string, cwd: string, env: NodeJS.ProcessEnv): LoggedChild {
+function startNode(entry: string, cwd: string, env: Record<string, string>): LoggedChild {
   let output = "";
   const child = spawn(process.execPath, ["--experimental-strip-types", "--experimental-sqlite", entry], {
     cwd,
