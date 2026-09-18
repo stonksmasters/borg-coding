@@ -107,8 +107,9 @@ const reviewFormat = {
 
 export function requiresDesignDirection(input: { request: string; disciplines: readonly string[]; isBorgWebsite: boolean }): boolean {
   if (!input.disciplines.includes("frontend")) return false;
-  if (input.isBorgWebsite) return true;
-  return /\b(homepage|landing page|website|site|redesign|brand|visual design|portfolio|marketing page)\b/i.test(input.request);
+  const explicitDesignIntent = /\b(homepage|landing page|website|web site|redesign|brand|visual design|portfolio|marketing page|art direction|look and feel|ui design|ux design)\b/i.test(input.request);
+  const greenfieldBuildIntent = input.isBorgWebsite && /\b(build|create|design|redesign|homepage|landing|website|site|brand|visual)\b/i.test(input.request);
+  return explicitDesignIntent || greenfieldBuildIntent;
 }
 
 export class DesignDirectorService {
