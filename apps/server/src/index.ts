@@ -51,7 +51,9 @@ import { deriveWorkflowStatus } from "./workflow-status.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
-import { prepareWebsiteWorkspace, websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { preflightFailureMessage, runWorkspacePreflight } from "../../../packages/web-builder/src/workspace-preflight.ts";
+import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
@@ -428,22 +430,36 @@ function scheduleDesignRefinement(task: Task, emit: (event: Record<string, unkno
   return updated;
 }
 
-function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
+function recoveryPayload(updated: Task, reason: string, recovery?: RecoveryDecision) {
+  return {
+    attempt: updated.attempts,
+    maximum: maxRepairAttempts,
+    reason,
+    category: recovery?.category ?? null,
+    action: recovery?.action ?? null,
+  };
+}
+
+function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
   createCheckpointSnapshot(task, "pre_repair");
   let updated = transitionTask(task, "IMPLEMENTING", emit);
   updated = { ...updated, attempts: updated.attempts + 1, updatedAt: new Date().toISOString() };
   tasks.saveTask(updated);
-  appendTaskEvent(task.id, "REPAIR_SCHEDULED", { attempt: updated.attempts, maximum: maxRepairAttempts, reason });
-  emit({ type: "repair.scheduled", attempt: updated.attempts, maximum: maxRepairAttempts, message: reason });
+  const payload = recoveryPayload(updated, reason, recovery);
+  appendTaskEvent(task.id, "REPAIR_SCHEDULED", payload);
+  if (recovery) appendTaskEvent(task.id, "IMPLEMENTATION_RECOVERY_SCHEDULED", payload);
+  emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
   return updated;
 }
 
-function scheduleImplementationRetry(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
+function scheduleImplementationRetry(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
   createCheckpointSnapshot(task, "pre_repair");
   const updated = { ...task, attempts: task.attempts + 1, updatedAt: new Date().toISOString() };
   tasks.saveTask(updated);
-  appendTaskEvent(task.id, "IMPLEMENTATION_RETRY_SCHEDULED", { attempt: updated.attempts, maximum: maxRepairAttempts, reason });
-  emit({ type: "repair.scheduled", attempt: updated.attempts, maximum: maxRepairAttempts, message: reason });
+  const payload = recoveryPayload(updated, reason, recovery);
+  appendTaskEvent(task.id, "IMPLEMENTATION_RETRY_SCHEDULED", payload);
+  if (recovery) appendTaskEvent(task.id, "IMPLEMENTATION_RECOVERY_SCHEDULED", payload);
+  emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
   return updated;
 }
 
@@ -656,9 +672,19 @@ const server = createServer((request, response) => {
       if (eventType.startsWith("tool.") || eventType.startsWith("runtime.turn.")) appendTaskEvent(taskId, eventType.toUpperCase().replaceAll(".", "_"), enriched);
       if (eventType === "activity.updated") appendTaskEvent(taskId, "AGENT_ACTIVITY", { activity: event.activity });
     };
+    const performPreflight = (reason: string) => {
+      const report = runWorkspacePreflight(approvedWorktreePath, { reason, repair: true });
+      appendTaskEvent(taskId, "WORKSPACE_PREFLIGHT_COMPLETED", { report });
+      emit({ type: "workspace.preflight.completed", report });
+      if (!report.passed) {
+        appendTaskEvent(taskId, "WORKSPACE_PREFLIGHT_BLOCKED", { report });
+        throw new Error(`Workspace preflight blocked execution: ${preflightFailureMessage(report)}`);
+      }
+      return report;
+    };
     const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+    const initialPreflight = performPreflight("execution_start");
     const websiteProject = websiteInfo(approvedWorktreePath);
-    if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
     const persistedDesignBrief = websiteProject ? readPersistedDesignBrief(approvedWorktreePath) : null;
     const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
     const designBrief = latestDesignBrief(taskId) ?? (parsedPersistedDesignBrief?.success ? parsedPersistedDesignBrief.data : null);
@@ -693,13 +719,15 @@ const server = createServer((request, response) => {
       const compiledSlice = sliceState ? compileFrontendContext({ root: approvedWorktreePath, phase: "frontend", sliceIndex: sliceState.current }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       while (task) {
-        if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
+        const attemptPreflight = task.attempts === 0 ? initialPreflight : performPreflight("retry_start");
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
         const repairPrompt = repairEvidence
           ? `Evidence-driven follow-up. Address only the concrete failure or refinement evidence below, then inspect the diff.\n\n${repairEvidence}`
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
-        const { answer, usedTools } = await runOllamaAgent({
+        let implementationResult: Awaited<ReturnType<typeof runOllamaAgent>>;
+        try {
+          implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
           limits: sliceState ? { toolRounds: 12, toolCalls: 28 } : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledSlice?.sliceId ?? null, compiledSlice?.manifest ?? [], body) : undefined,
@@ -707,7 +735,19 @@ const server = createServer((request, response) => {
             { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
-        });
+          });
+        } catch (error) {
+          if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
+          activeRoleAssignment = null;
+          const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
+          appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
+          if (decision.disposition === "fatal") throw error;
+          const recoveryPreflight = performPreflight("implementation_recovery");
+          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+          task = scheduleImplementationRetry(task, emit, decision.action, decision);
+          continue;
+        }
+        const { answer, usedTools } = implementationResult;
         if (sliceState) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
           const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
@@ -721,13 +761,16 @@ const server = createServer((request, response) => {
                 const payload = event.payload as Record<string, unknown>;
                 return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
               });
-            appendTaskEvent(taskId, "IMPLEMENTATION_NO_PROGRESS", { attempt: task.attempts, toolFailures });
-            if (task.attempts >= maxRepairAttempts) {
-              throw new Error(`Slice made no source-file progress after ${maxRepairAttempts + 1} bounded implementation attempts. Recent tool failures: ${toolFailures.join(" | ") || "none recorded"}`);
+            const failure = toolFailures.at(-1) ?? "The implementation attempt completed without any source-file progress.";
+            const decision = classifyImplementationFailure(failure, task.attempts, maxRepairAttempts, { noProgress: true });
+            appendTaskEvent(taskId, "IMPLEMENTATION_NO_PROGRESS", { attempt: task.attempts, toolFailures, decision });
+            appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
+            if (decision.disposition === "fatal") {
+              throw new Error(`Slice recovery stopped: ${decision.reason}`);
             }
-            if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
-            repairEvidence = `The previous implementation attempt produced no source-file changes. Stay inside the current approved slice and do not rediscover or re-plan the project. BORG has re-prepared the canonical workspace directories. For every new file, use worktree_write; it creates missing parent directories automatically. Use worktree_patch only for existing files. Recent tool failures:\n${toolFailures.length ? toolFailures.join("\n") : "No specific tool failure was recorded; inspect the current slice context and make the smallest concrete source change."}`;
-            task = scheduleImplementationRetry(task, emit, "Implementation produced no source-file changes; retrying the same approved slice without re-planning.");
+            const recoveryPreflight = performPreflight("no_progress_recovery");
+            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
+            task = scheduleImplementationRetry(task, emit, decision.action, decision);
             continue;
           }
         }
@@ -749,18 +792,31 @@ const server = createServer((request, response) => {
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_verifying", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Implementation produced source changes. Deterministic and browser verification are running." });
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         emit({ type: "tool.started", tool: "verification_run", input: { profile: verificationProfile } });
-        const deterministicVerification = await tools.execute(
-          { function: { name: "verification_run", arguments: { profile: verificationProfile } } },
-          "agent",
-          taskContext,
-          "verifier",
-          activeDisciplines,
-        ) as {
+        let deterministicVerification: {
           passed?: boolean;
           results?: unknown[];
           browserEvidence?: BrowserEvidenceReport | null;
           visualRegression?: VisualRegressionReport;
         };
+        try {
+          deterministicVerification = await tools.execute(
+          { function: { name: "verification_run", arguments: { profile: verificationProfile } } },
+          "agent",
+          taskContext,
+          "verifier",
+          activeDisciplines,
+          ) as typeof deterministicVerification;
+        } catch (error) {
+          if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
+          activeRoleAssignment = null;
+          const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
+          appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "verification" });
+          if (decision.disposition === "fatal") throw error;
+          const recoveryPreflight = performPreflight("verification_recovery");
+          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+          task = scheduleRepair(task, emit, decision.action, decision);
+          continue;
+        }
         const specialistEvidence = evaluateSpecialistEvidence(packs, deterministicVerification);
         const verification = {
           ...deterministicVerification,
