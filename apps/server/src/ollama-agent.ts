@@ -146,7 +146,7 @@ async function runTurn(options: AgentOptions, allowTools = true): Promise<Ollama
 
 export async function runOllamaAgent(options: AgentOptions) {
   const limits = agentLimits(options.limits);
-  const toolDefinitions = options.tools.toolDefinitions(options.mode, options.taskContext, options.role);
+  const toolDefinitions = options.tools.toolDefinitions(options.mode, options.taskContext, options.role, options.disciplines);
   options.emit({ type: "runtime.connected", runtime: "ollama", model: options.model, role: options.role ?? null });
   if (toolDefinitions.some((tool) => tool.function.name.startsWith("repository_"))) options.emit({ type: "stage.updated", stage: "Discovery", status: "active" });
   else if (toolDefinitions.length) options.emit({ type: "stage.updated", stage: "Plan", status: "active" });
@@ -157,6 +157,8 @@ export async function runOllamaAgent(options: AgentOptions) {
   let toolOutputCharacters = 0;
   let budgetReason = "tool-round limit";
   const repeatedCalls = new Map<string, number>();
+  const invalidToolFailures = new Map<string, number>();
+  const availableToolNames = toolDefinitions.map((tool) => tool.function.name);
   for (let round = 0; round < limits.toolRounds; round += 1) {
     const assistant = await runTurn(options);
     options.messages.push(assistant);
@@ -207,7 +209,13 @@ export async function runOllamaAgent(options: AgentOptions) {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Tool failed";
         options.emit({ type: "tool.failed", tool: call.function.name, message });
-        options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message }) });
+        options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message, available_tools: availableToolNames }) });
+        const invalid = /unknown|unavailable|cannot invoke|requires EDIT or AGENT|not configured/i.test(message);
+        if (invalid) {
+          const failures = (invalidToolFailures.get(call.function.name) ?? 0) + 1;
+          invalidToolFailures.set(call.function.name, failures);
+          if (failures >= 2) throw new Error(`Model repeatedly requested unavailable tool "${call.function.name}". Available tools: ${availableToolNames.join(", ") || "none"}.`);
+        }
       }
     }
     if (options.phase !== "implementation" && calls.some((call) => call.function.name.startsWith("repository_"))) {
