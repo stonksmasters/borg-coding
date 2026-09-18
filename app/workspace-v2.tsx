@@ -291,6 +291,14 @@ export function BorgWorkspaceV2() {
   }, [messages, streaming]);
 
   useEffect(() => {
+    if (!previewProcess?.url || previewProcess.status !== "running") return;
+    if (previewUrl === previewProcess.url) return;
+    setPreviewUrl(previewProcess.url);
+    setPreviewError("");
+    setPreviewVersion((value) => value + 1);
+  }, [previewProcess?.url, previewProcess?.status, previewUrl]);
+
+  useEffect(() => {
     if (!activeTaskId) {
       setProcesses([]);
       setProcessEvents([]);
