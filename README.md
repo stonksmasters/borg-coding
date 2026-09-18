@@ -1,16 +1,17 @@
 # BORG Code
 
-A local engineering operating system. The current Alpha 0.3 slice includes the task domain, event persistence, safe repository inspection, polyglot code graphs, call hierarchy and change-impact tools, persistent repository memory, named checkpoints and safe task continuation, durable review-decision history, approval-gated isolated worktree mutation, bounded commands, deterministic verification, bounded repair, fresh-context review findings, explicit delivery, local API, desktop launcher, and operator workspace.
+BORG is a private local AI website builder: describe a website, review the direction, build it in an isolated local project, and watch the verified result update in a live preview. The engineering runtime underneath still includes durable tasks, worktrees, checkpoints, review history, repository intelligence, browser verification, bounded repair, and Ollama-powered local agents, but those controls are intentionally secondary to the website-building workflow.
 
 ## Run the current slice
 
 ```text
 npm install
-npm run dev
 npm run server:dev
+npm run gateway:dev
+npm run dev
 ```
 
-Run the two servers in separate terminals. The workspace runs at `http://localhost:5173`; the local task API runs at `http://127.0.0.1:4311` and stores task data in `.borg/borg.db` and repository memory in `.borg/repository-memory.db`. Approve a repository in the workspace before using repository tools. Agent tasks require the configured local Ollama model.
+The workspace runs at `http://localhost:5173`. The core task service listens on `http://127.0.0.1:4311`; the desktop/web gateway listens on `http://127.0.0.1:4312` and is the browser UI's default API. Override the UI endpoint with `NEXT_PUBLIC_BORG_API_URL`, and override the gateway's core target with `BORG_CORE_URL`. Task data is stored in `.borg/borg.db` and repository memory in `.borg/repository-memory.db`. Website projects are created locally and the gateway restores their previews across sessions. Agent tasks require the configured local Ollama model.
 
 Use `npm test`, `npm run check`, `npm run lint`, and `npm run build` to verify the foundation.
 
