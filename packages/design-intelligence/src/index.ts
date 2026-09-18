@@ -165,7 +165,7 @@ export class VisualDirectorService {
 
   async review(input: { taskId: string; request: string; worktreePath: string; browserEvidence: BrowserEvidenceReport; brief: DesignBrief; policy: VisionPolicy }): Promise<DesignReviewResult> {
     const policy = input.policy;
-    if (!policy.enabled || !policy.model) return this.empty(input.taskId, policy.model, "unavailable", "Aesthetic review is required but the local vision reviewer is not enabled.");
+    if (!policy.model) return this.empty(input.taskId, policy.model, "unavailable", "Aesthetic review is required but no local vision model is configured.");
     const selected = selectScreenshots(input.browserEvidence, Math.max(2, policy.maxScreenshots));
     if (selected.length < 2) return this.empty(input.taskId, policy.model, "inconclusive", "Aesthetic review requires mobile and desktop screenshot evidence.");
     const root = realpathSync(resolve(input.worktreePath));
