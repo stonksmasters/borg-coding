@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
+import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, ExternalLink, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -90,6 +90,13 @@ export function BorgWorkspaceV2() {
   const [toolsError, setToolsError] = useState("");
   const [savingTools, setSavingTools] = useState(false);
   const [sessionError, setSessionError] = useState("");
+  const [websiteOpen, setWebsiteOpen] = useState(false);
+  const [websiteName, setWebsiteName] = useState("");
+  const [websiteBusy, setWebsiteBusy] = useState(false);
+  const [websiteError, setWebsiteError] = useState("");
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState("");
+  const [previewVersion, setPreviewVersion] = useState(0);
   const [checkpointOpen, setCheckpointOpen] = useState(false);
   const [checkpointName, setCheckpointName] = useState("");
   const [checkpoints, setCheckpoints] = useState<TaskCheckpoint[]>([]);
@@ -107,6 +114,22 @@ export function BorgWorkspaceV2() {
   const liveAssistantId = useRef<string | null>(null);
   const activeMode = activeSession?.activeMode ?? "plan";
   const actionLabel = useMemo(() => streaming ? "Stop" : "Send", [streaming]);
+
+  const activatePreview = useCallback(async (sessionId: string) => {
+    const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST" });
+    if (response.ok) {
+      const result = await response.json() as { preview: { url: string }; access: AccessConfig };
+      setPreviewUrl(result.preview.url);
+      setAccessConfig(result.access);
+      setPreviewError("");
+    } else if (response.status === 404) {
+      setPreviewUrl(null);
+      setPreviewError("");
+    } else {
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      setPreviewError(result.error ?? "Unable to restore website preview.");
+    }
+  }, []);
 
   const loadSession = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}`);
@@ -130,8 +153,11 @@ export function BorgWorkspaceV2() {
     setEscalation(pendingEscalation);
     setDeliveryReady(result.task?.state === "DELIVERY_READY");
     setTaskState(result.task?.state ?? (result.latestTaskId && !result.runtimeAvailable ? "RUNTIME UNAVAILABLE" : "READY"));
+    setPreviewUrl(null);
+    setPreviewError("");
+    await activatePreview(sessionId);
     return result;
-  }, []);
+  }, [activatePreview]);
 
   const refreshSessions = useCallback(async (preferredId?: string) => {
     const response = await fetch(`${API}/api/sessions`);
@@ -215,6 +241,20 @@ export function BorgWorkspaceV2() {
     } catch (error) { setSessionError(error instanceof Error ? error.message : "Unable to create chat."); }
   }
 
+  async function createWebsite() {
+    setWebsiteBusy(true);
+    setWebsiteError("");
+    try {
+      const response = await fetch(`${API}/api/websites`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: websiteName }) });
+      const result = await response.json() as { session?: ChatSession; error?: string };
+      if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to create website.");
+      setWebsiteOpen(false);
+      setWebsiteName("");
+      await refreshSessions(result.session.id);
+    } catch (error) { setWebsiteError(error instanceof Error ? error.message : "Unable to create website."); }
+    finally { setWebsiteBusy(false); }
+  }
+
   async function renameSession(session: ChatSession) {
     const title = window.prompt("Rename chat", session.title)?.trim();
     if (!title || title === session.title) return;
@@ -265,6 +305,7 @@ export function BorgWorkspaceV2() {
       setTaskState("AWAITING_APPROVAL");
     } else if (event.type === "mode.authorized") {
       setTaskState("IMPLEMENTING");
+      if (activeSession) void activatePreview(activeSession.id);
     } else if (event.type === "implementation.summary") {
       setMessages((current) => [...current, transientMessage("system", event.diff?.stdout?.trim() || "No diff produced.", "diff")]);
     } else if (event.type === "review.completed" && event.review?.summary) {
@@ -345,6 +386,7 @@ export function BorgWorkspaceV2() {
         setApproval(null);
         setEscalation(null);
         setStreaming(true);
+        await activatePreview(activeSession.id);
         const executeResponse = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/execute`, { method: "POST" });
         await consumeStream(executeResponse);
         await loadSession(activeSession.id);
@@ -495,6 +537,14 @@ export function BorgWorkspaceV2() {
   }
 
   return <SidebarProvider>
+    <Dialog open={websiteOpen} onOpenChange={setWebsiteOpen}>
+      <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-md">
+        <DialogHeader><DialogTitle>New website</DialogTitle><DialogDescription>BORG creates a local React website, installs its dependencies, and opens a live preview.</DialogDescription></DialogHeader>
+        <label className="block py-2"><span className="mb-2 block text-sm font-medium text-slate-300">Website name</span><Input value={websiteName} onChange={(event) => setWebsiteName(event.target.value)} placeholder="My new website" className="border-white/10 bg-white/4 text-slate-100" /></label>
+        {websiteError && <p className="text-sm text-red-200">{websiteError}</p>}
+        <DialogFooter><Button variant="outline" onClick={() => setWebsiteOpen(false)} className="border-white/10 bg-transparent text-slate-300">Cancel</Button><Button disabled={websiteBusy || !websiteName.trim()} onClick={() => void createWebsite()} className="bg-[#a7ff4f] text-[#071007]">{websiteBusy ? "Creating…" : "Create website"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
     <Dialog open={accessOpen} onOpenChange={setAccessOpen}>
       <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-xl">
         <DialogHeader><DialogTitle>Repository access</DialogTitle><DialogDescription>The active repository is shared by chat sessions and remains inside the local BORG runtime.</DialogDescription></DialogHeader>
@@ -585,6 +635,7 @@ export function BorgWorkspaceV2() {
       <SidebarHeader className="border-b border-white/8 px-4 py-4">
         <div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-lg bg-[#a7ff4f] text-[#071007]"><Bot className="size-5" /></div><div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG CODE</p><p className="text-xs text-slate-500">PERSISTENT WORKSTATION</p></div></div>
         <Button onClick={() => void createSession()} className="mt-4 w-full justify-start gap-2 bg-white/7 text-slate-200 hover:bg-white/10"><Plus className="size-4" />New Chat</Button>
+        <Button onClick={() => setWebsiteOpen(true)} className="mt-2 w-full justify-start gap-2 bg-[#a7ff4f] text-[#071007] hover:bg-[#b9ff74]"><Globe2 className="size-4" />New Website</Button>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup><SidebarGroupLabel className="text-slate-500">Chats</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>{sessions.map((session) => <SidebarMenuItem key={session.id}><div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeSession?.id === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><MessageSquare /><span className="truncate">{session.title}</span><span className="ml-auto text-[10px] uppercase text-slate-600">{session.activeMode}</span></SidebarMenuButton><button type="button" onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div></SidebarMenuItem>)}</SidebarMenu></SidebarGroupContent></SidebarGroup>
@@ -598,11 +649,11 @@ export function BorgWorkspaceV2() {
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeSession?.title ?? "New chat"}</span></div></div><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setReviewOpen(true)} className={`border-white/10 bg-white/4 ${blockingFindingIds.length ? "text-red-200" : "text-slate-300"}`}><ShieldAlert className="size-3.5" /><span className="hidden sm:inline">Review{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</span></Button><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Checkpoints</span></Button><Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${activeSession?.model ?? "qwen3-coder:30b"} · ${activeSession?.provider ?? "ollama"}` : "Runtime not connected"}</div></div></header>
 
       <section className="flex min-h-0 flex-1 flex-col">
-        <div ref={transcriptRef} className="flex-1 overflow-y-auto px-5 py-7 sm:px-10 lg:px-14"><div className="mx-auto max-w-3xl">
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row"><div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-7 sm:px-10 lg:px-14"><div className="mx-auto max-w-3xl">
           <div className="mb-6 flex items-start justify-between gap-4"><div><p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#a7ff4f]">{activeTaskId ? `Task ${activeTaskId.slice(0, 8).toUpperCase()}` : "Persistent session"}</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">{activeSession?.title ?? "New chat"}</h1></div><span className="rounded-full border border-white/10 bg-white/4 px-3 py-1 text-xs text-slate-400">{taskState}</span></div>
           {sessionError && <div className="mb-5 rounded-lg border border-red-400/20 bg-red-400/8 px-4 py-3 text-sm text-red-200">{sessionError}</div>}
           <div className="space-y-4">{messages.length ? messages.map((message) => <AssistantMessage key={message.id} message={message} />) : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">New persistent chat</p><p className="mt-1 text-sm text-slate-500">This conversation will survive restarts and stay associated with the selected mode and workspace.</p></div></div>}{streaming && <div className="flex items-center gap-2 pl-11 text-sm text-slate-500"><span className="size-1.5 animate-pulse rounded-full bg-[#a7ff4f]" />BORG is working…</div>}</div>
-        </div></div>
+        </div></div>{(previewUrl || previewError) && <div className="flex min-h-[320px] flex-1 flex-col border-t border-white/8 lg:min-h-0 lg:border-l lg:border-t-0"><div className="flex h-11 shrink-0 items-center justify-between border-b border-white/8 bg-[#0a0d12] px-3"><span className="text-xs font-medium text-slate-300">Live preview</span><div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} disabled={!previewUrl} className="text-slate-400"><RotateCcw className="size-3.5" />Refresh</Button>{previewUrl && <a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-white"><ExternalLink className="size-3.5" />Open</a>}</div></div>{previewUrl ? <iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="min-h-0 w-full flex-1 border-0 bg-white" /> : <div className="p-4 text-sm text-red-200">{previewError}</div>}</div>}</div>
 
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
           {approval && escalation && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3"><div className="max-w-xl"><p className="text-sm font-medium text-amber-100">PLAN reached a mutation boundary</p><p className="mt-1 text-xs leading-5 text-slate-400">PLAN remains read-only. Switch this session to EDIT to create the isolated worktree and execute the proposed plan, or stay in PLAN with no mutations.</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />Stay in Plan</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Check className="size-4" />{approvalBusy ? "Switching…" : "Switch to Edit & Continue"}</Button></div></div>}

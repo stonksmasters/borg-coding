@@ -15,6 +15,7 @@ import { SqliteChatRepository } from "../../../packages/persistence/src/sqlite-c
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
+import { createWebsiteProject, websiteInfo, WebsitePreviewManager } from "../../../packages/web-builder/src/project-bootstrap.ts";
 
 const gatewayPort = Number(process.env.BORG_GATEWAY_PORT ?? 4312);
 const coreUrl = process.env.BORG_CORE_URL ?? "http://127.0.0.1:4311";
@@ -26,6 +27,7 @@ const access = new AccessController(resolve(".borg/access.json"));
 const credentials = new DesktopCredentialStore();
 const internet = new InternetConfigurationStore(resolve(".borg/internet.json"), credentials);
 const activeStreams = new Map<string, AbortController>();
+const previews = new WebsitePreviewManager();
 
 function headers(contentType = "application/json") {
   return {
@@ -330,6 +332,34 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === "GET" && request.url === "/api/sessions") return send(response, 200, { sessions: chats.listSessions() });
+  if (request.method === "POST" && request.url === "/api/websites") {
+    void readJson(request).then(async (input) => {
+      const name = typeof input.name === "string" ? input.name.trim() : "";
+      if (!name) return send(response, 400, { error: "Website name is required." });
+      const project = await createWebsiteProject(name);
+      const savedAccess = access.save({ repositoryPath: project.path, documents: [] });
+      const session = createChatSession({ id: randomUUID(), title: project.name, activeMode: "plan", repositoryPath: savedAccess.repositoryPath, workspaceId: project.slug, provider: "ollama", model: process.env.BORG_MODEL ?? "qwen3-coder:30b" });
+      chats.saveSession(session);
+      const preview = await previews.ensure(project.path);
+      return send(response, 201, { session, project, preview, access: access.describe(savedAccess) });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create website." }));
+    return;
+  }
+  const previewRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)\/preview$/);
+  if (previewRoute && request.method === "POST") {
+    const session = chats.findSession(decodeURIComponent(previewRoute[1]));
+    if (!session) return send(response, 404, { error: "Session not found." });
+    const website = session.repositoryPath ? websiteInfo(session.repositoryPath) : null;
+    if (!website) return send(response, 404, { error: "This session has no website preview." });
+    void loadSessionRuntime(session).then(async (runtime) => {
+      const candidate = runtime.approval?.status === "APPROVED" && runtime.approval.worktreePath ? websiteInfo(runtime.approval.worktreePath) : null;
+      const preview = await previews.ensure(candidate?.path ?? website.path);
+      const current = access.load();
+      if (current.repositoryPath !== website.path) access.save({ repositoryPath: website.path, documents: current.documents });
+      send(response, 200, { preview, project: website, access: access.describe() });
+    }).catch((error) => send(response, 502, { error: error instanceof Error ? error.message : "Unable to start preview." }));
+    return;
+  }
   if (request.method === "POST" && request.url === "/api/sessions") {
     void readJson(request).then((input) => {
       const repositoryPath = access.load().repositoryPath;
@@ -471,6 +501,7 @@ async function shutdown(signal: string) {
   console.log(`[lifecycle] gateway shutdown requested: ${signal}`);
   for (const controller of activeStreams.values()) controller.abort();
   activeStreams.clear();
+  previews.stopAll();
   chats.close();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   process.exit(0);
