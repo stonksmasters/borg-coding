@@ -263,7 +263,7 @@ async function streamChat(session: ChatSession, prompt: string, response: Server
           coreApproval = event.approval as Record<string, unknown> | null;
           projectPlanApproval = true;
           if (taskId && coreApproval) {
-            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "Frontend phase plan is ready for approval. Approving it freezes the slice roadmap but does not authorize source-file mutation.", metadata: { approval: coreApproval, projectPlan: event.projectPlan } });
+            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "plan", text: "Frontend phase plan is ready for approval. Approving it freezes the slice roadmap and authorizes the bounded frontend slice workflow.", metadata: { approval: coreApproval, projectPlan: event.projectPlan } });
           }
           writeEvent(response, event);
           continue;
@@ -502,7 +502,7 @@ const server = createServer((request, response) => {
         role: "system",
         kind: decision === "approve" ? "status" : "plan",
         text: projectPlanApproved
-          ? "Frontend phase plan approved. Source mutation remains locked; start slice 1 in a new session."
+          ? "Frontend phase plan approved. Starting slice 1 automatically; each slice will plan, implement, verify, review, and checkpoint before feedback."
           : escalated
             ? "Mode escalated from PLAN to EDIT for the approved slice."
             : decision === "reject"
