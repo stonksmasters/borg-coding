@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BrowserVerification } from "../../browser-verification/src/index.ts";
 import { VisualRegressionService } from "../../visual-regression/src/index.ts";
+import { ProcessRuntime, type ProcessKind } from "../../process-runtime/src/index.ts";
 
 export interface RecordedApproval {
   taskId: string;
@@ -18,6 +19,7 @@ export interface WorktreeToolOptions {
   findApproval(taskId: string): RecordedApproval | null;
   browser?: BrowserVerification;
   visualRegression?: VisualRegressionService;
+  processRuntime?: ProcessRuntime;
 }
 
 interface CommandResult {
@@ -125,9 +127,38 @@ function npmInvocation(args: string[]): { executable: string; args: string[] } {
   return { executable: process.execPath, args: [npmCli, ...args] };
 }
 
-async function runBounded(command: string, args: string[], cwd: string, timeoutSeconds: number): Promise<CommandResult> {
+async function runBounded(
+  command: string,
+  args: string[],
+  cwd: string,
+  timeoutSeconds: number,
+  runtime?: ProcessRuntime,
+  taskId?: string,
+  kind: ProcessKind = "command",
+  label?: string,
+): Promise<CommandResult> {
   if (!allowedCommands.has(command)) throw new Error(`Command is not allowlisted: ${command}`);
   if (args.length > 40 || args.some((argument) => argument.length > 1_000 || argument.includes("\0"))) throw new Error("Command arguments exceed the bounded command policy.");
+  if (runtime && taskId) {
+    const result = await runtime.run({
+      taskId,
+      kind,
+      label: label ?? [command, ...args].join(" "),
+      command,
+      args,
+      cwd,
+      timeoutMs: Math.max(1, Math.min(MAX_COMMAND_SECONDS, timeoutSeconds)) * 1_000,
+    });
+    return {
+      command,
+      args,
+      exitCode: result.exitCode ?? (result.status === "completed" ? 0 : 1),
+      stdout: bounded(result.stdout),
+      stderr: bounded(result.stderr),
+      timedOut: result.timedOut,
+      durationMs: result.durationMs ?? 0,
+    };
+  }
   const invocation = command === "npm" ? npmInvocation(args) : { executable: command === "node" ? process.execPath : command, args };
   const startedAt = Date.now();
   return await new Promise((resolveResult, reject) => {
@@ -152,10 +183,12 @@ export class WorktreeTools {
   private readonly options: WorktreeToolOptions;
   private readonly browser: BrowserVerification;
   private readonly visualRegression: VisualRegressionService;
+  private readonly processRuntime: ProcessRuntime;
   constructor(options: WorktreeToolOptions) {
     this.options = options;
     this.worktreeRoot = resolve(options.worktreeRoot);
-    this.browser = options.browser ?? new BrowserVerification();
+    this.processRuntime = options.processRuntime ?? new ProcessRuntime();
+    this.browser = options.browser ?? new BrowserVerification({ processRuntime: this.processRuntime });
     this.visualRegression = options.visualRegression ?? new VisualRegressionService();
   }
 
@@ -195,7 +228,7 @@ export class WorktreeTools {
       return { path: relative(root, path), content: readFileSync(path, "utf8") };
     }
     if (name === "worktree_patch") return this.patch(root, input);
-    if (name === "worktree_command") return this.command(root, input);
+    if (name === "worktree_command") return this.command(root, input, context!);
     if (name === "git_status") return this.git(root, ["status", "--short", "--untracked-files=all"]);
     if (name === "git_diff") {
       await this.git(root, ["add", "-N", "--", "."]);
@@ -238,12 +271,24 @@ export class WorktreeTools {
     return { path: relative(root, path), created, replacements: occurrences, bytes: Buffer.byteLength(updated, "utf8") };
   }
 
-  private async command(root: string, input: Record<string, unknown>) {
+  private async command(root: string, input: Record<string, unknown>, context: TaskToolContext) {
     const command = String(input.command ?? "").toLowerCase();
     const args = Array.isArray(input.args) ? input.args.map(String) : [];
     const cwd = input.cwd ? this.resolveExisting(root, input.cwd) : root;
     if (!statSync(cwd).isDirectory()) throw new Error("Command cwd must be a directory.");
-    return runBounded(command, args, cwd, Number(input.timeout_seconds ?? 300));
+    const kind: ProcessKind = args.some((value) => /(^|:)test$/.test(value)) ? "test"
+      : args.some((value) => /(^|:)build$/.test(value)) ? "build"
+        : "command";
+    return runBounded(
+      command,
+      args,
+      cwd,
+      Number(input.timeout_seconds ?? 300),
+      this.processRuntime,
+      context.taskId,
+      kind,
+      [command, ...args].join(" "),
+    );
   }
 
   private async git(root: string, args: string[]) {
@@ -288,7 +333,7 @@ export class WorktreeTools {
     try {
       if (!profile.commands.length) throw new Error(`No commands were detected for the ${profileId} verification profile.`);
       for (const command of profile.commands) {
-        const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS);
+        const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS, this.processRuntime, context.taskId, "verification", command.label);
         results.push({ ...result, label: command.label });
         if (result.exitCode !== 0 || result.timedOut) break;
       }
