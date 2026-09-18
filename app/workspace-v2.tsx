@@ -968,7 +968,36 @@ export function BorgWorkspaceV2() {
     </Sidebar>
 
     <SidebarInset className="h-svh min-h-0 min-w-0 overflow-hidden bg-[#0d1117] text-slate-100">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger className="text-slate-400" /><div className="hidden min-w-0 items-center gap-2 text-sm text-slate-500 sm:flex"><span>{accessConfig?.repositoryName ?? "No repository"}</span><ChevronRight className="size-3" /><span className="truncate text-slate-200">{activeSession?.title ?? "New chat"}</span></div></div><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setReviewOpen(true)} className={`border-white/10 bg-white/4 ${blockingFindingIds.length ? "text-red-200" : "text-slate-300"}`}><ShieldAlert className="size-3.5" /><span className="hidden sm:inline">Review{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</span></Button><Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Checkpoints</span></Button><Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}><SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="ask">Ask</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="edit">Edit</SelectItem><SelectItem value="agent">Agent</SelectItem></SelectContent></Select><div className={`hidden rounded-md border px-3 py-1.5 text-xs sm:block ${runtimeConnected ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/8 text-[#a7ff4f]" : "border-white/10 bg-white/4 text-slate-400"}`}>{runtimeConnected ? `${activeSession?.model ?? "qwen3-coder:30b"} · ${activeSession?.provider ?? "ollama"}` : "Runtime not connected"}</div></div></header>
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <SidebarTrigger className="text-slate-400" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-slate-200">{activeSession?.title ?? "Choose a website"}</p>
+            <p className="hidden truncate text-[11px] text-slate-600 sm:block">{previewUrl ?? (isWebsite ? "Local website project" : "Developer workspace")}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isWebsite && <Button size="sm" variant="outline" onClick={() => setRightPanel("preview")} className="hidden border-white/10 bg-white/4 text-slate-300 sm:inline-flex"><Monitor className="size-3.5" />Preview</Button>}
+          <Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setRightPanel("changes")} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Changes</span></Button>
+          <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}>
+            <SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger>
+            <SelectContent className="border-white/10 bg-[#151a22] text-slate-100">
+              <SelectItem value="plan">Safe mode</SelectItem>
+              <SelectItem value="edit">Build mode</SelectItem>
+              <SelectItem value="agent">Autopilot</SelectItem>
+              <SelectItem value="ask">Ask only</SelectItem>
+            </SelectContent>
+          </Select>
+          <details className="relative">
+            <summary className="list-none cursor-pointer rounded-md border border-white/10 bg-white/4 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Advanced</summary>
+            <div className="absolute right-0 z-50 mt-2 w-48 rounded-lg border border-white/10 bg-[#11161e] p-2 shadow-2xl">
+              <button type="button" disabled={!activeTaskId} onClick={() => setReviewOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"><ShieldAlert className="size-3.5" />Review history{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</button>
+              <button type="button" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"><History className="size-3.5" />Checkpoints</button>
+              <button type="button" onClick={() => setAccessOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200"><FolderGit2 className="size-3.5" />Repository access</button>
+            </div>
+          </details>
+        </div>
+      </header>
 
       <section className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row"><div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-7 sm:px-10 lg:px-14"><div className="mx-auto max-w-3xl">
