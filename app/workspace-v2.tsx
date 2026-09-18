@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookmarkPlus, Bot, Check, ChevronRight, CircleStop, ExternalLink, FileText, FolderGit2, Globe2, History, KeyRound, MessageSquare, Monitor, Pencil, Play, Plus, RotateCcw, Settings2, ShieldAlert, ShieldCheck, Smartphone, Sparkles, Tablet, Trash2, Wrench, X } from "lucide-react";
+import { BookmarkPlus, Bot, Check, CircleStop, ExternalLink, FolderGit2, Globe2, History, KeyRound, MessageSquare, Monitor, Pencil, Play, Plus, RotateCcw, ShieldAlert, ShieldCheck, Smartphone, Sparkles, Tablet, Trash2, X } from "lucide-react";
 import { AssistantMessage, type RenderableMessage } from "@/components/chat/assistant-message";
 import { ActivityFeed, type AgentActivity } from "@/components/agent/activity-feed";
 import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel";
@@ -100,7 +100,7 @@ export function BorgWorkspaceV2() {
   const [request, setRequest] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [serverAvailable, setServerAvailable] = useState(false);
-  const [runtimeConnected, setRuntimeConnected] = useState(false);
+  const [, setRuntimeConnected] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskState, setTaskState] = useState("READY");
   const [approval, setApproval] = useState<Approval | null>(null);
@@ -108,7 +108,7 @@ export function BorgWorkspaceV2() {
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [deliveryReady, setDeliveryReady] = useState(false);
   const [deliveryBusy, setDeliveryBusy] = useState(false);
-  const [accessConfig, setAccessConfig] = useState<AccessConfig | null>(null);
+  const [, setAccessConfig] = useState<AccessConfig | null>(null);
   const [accessOpen, setAccessOpen] = useState(false);
   const [repositoryDraft, setRepositoryDraft] = useState("");
   const [documentsDraft, setDocumentsDraft] = useState("");
