@@ -93,6 +93,11 @@ export function readProjectDocs(root: string): ProjectDoc[] {
   });
 }
 
+export function slicePlanningPrompt(state: SliceState): string {
+  const slice = currentSlice(state);
+  return `FRONTEND SLICE ${state.current + 1}/${FRONTEND_SLICES.length} PLAN PHASE: ${slice.title}. ${slice.goal} Inspect the approved repository and existing .localcode/build documentation, then produce a concrete implementation plan for this slice only. Do not implement, scaffold, patch, create, rename, or delete components, source files, styles, assets, configuration, backend, API, authentication, or database files. Do not run commands, previews, builds, tests, or verification during PLAN. The only project files authorized to be created or updated while PLAN is active are planning documents under .localcode/build/**/*.md, and those must be persisted only through BORG's dedicated planning-document path rather than generic worktree mutation tools. Describe the exact files and verification the Implementer should perform after approval, then request escalation to EDIT.`;
+}
+
 export function slicePrompt(state: SliceState): string {
   const slice = currentSlice(state);
   return `FRONTEND SLICE ${state.current + 1}/${FRONTEND_SLICES.length}: ${slice.title}. ${slice.goal} Read .localcode/build/README.md and the linked docs. Implement only this slice. Do not create or modify backend, API, authentication, or database code. Use local representative data where needed. Keep the change small enough to verify in this session. Update the handoff and decisions docs with evidence. Stop after verification and ask the user to review the result; the next slice belongs to a new session.`;
