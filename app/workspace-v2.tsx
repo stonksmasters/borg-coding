@@ -37,7 +37,7 @@ const WEBSITE_EXAMPLES = [
 ] as const;
 const BUILDER_STEPS = ["Understand", "Design", "Build", "Test", "Ready"] as const;
 type PermissionMode = "ask" | "plan" | "edit" | "agent";
-type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string };
+type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string; parentSessionId: string | null; workflowRole: "primary" | "frontend_slice" | "backend" };
 type ChatMessage = RenderableMessage & { sessionId: string; taskId: string | null; createdAt: string; metadata?: Record<string, unknown> };
 type AccessConfig = { repositoryPath: string | null; documents: string[]; repositoryName: string | null; documentNames: string[]; updatedAt: string };
 type ToolConfig = {
@@ -168,12 +168,23 @@ export function BorgWorkspaceV2() {
   const changeFingerprintRef = useRef<string | null>(null);
   const activeMode = activeSession?.activeMode ?? "plan";
   const isWebsite = Boolean(activeSession?.repositoryPath);
-  const websiteSessions = useMemo(() => sessions.filter((session) => Boolean(session.repositoryPath)), [sessions]);
+  const websiteSessions = useMemo(() => sessions.filter((session) => Boolean(session.repositoryPath) && !session.parentSessionId), [sessions]);
   const legacySessions = useMemo(() => sessions.filter((session) => !session.repositoryPath), [sessions]);
+  const activeWebsiteRoot = useMemo(() => {
+    if (!activeSession?.repositoryPath) return null;
+    const rootId = activeSession.parentSessionId ?? activeSession.id;
+    return sessions.find((session) => session.id === rootId) ?? activeSession;
+  }, [activeSession, sessions]);
+  const displayTitle = activeWebsiteRoot?.title ?? activeSession?.title ?? "Choose a website";
   const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
   const canStop = streaming && !executionIsRunning(taskState);
   const actionLabel = executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
-  const currentProgress = progress ?? taskProgress(taskState);
+  const currentProgress = progress
+    ?? (taskState === "COMPLETE" && sliceState?.status === "awaiting_feedback"
+      ? { title: `Slice ${sliceState.current + 1} is ready for review`, detail: "The verified slice is checkpointed. Review Preview, Changes, Docs, and verification evidence before continuing." }
+      : taskState === "COMPLETE" && sliceState?.status === "frontend_complete"
+        ? { title: "Frontend complete", detail: "All approved frontend slices passed their completion gates." }
+        : taskProgress(taskState));
   const activityMessages = useMemo(() => messages.filter((message) => message.role === "tool" || (message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.role !== "tool" && !(message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const activityItems = useMemo(() => [...activityMessages.map((message) => message.text), ...liveActivity].slice(-60), [activityMessages, liveActivity]);
@@ -184,12 +195,12 @@ export function BorgWorkspaceV2() {
   const runningProcesses = useMemo(() => processes.filter((process) => process.status === "starting" || process.status === "running"), [processes]);
   const previewProcess = useMemo(() => processes.find((process) => process.kind === "dev_server" && (process.status === "starting" || process.status === "running")) ?? processes.findLast((process) => process.kind === "dev_server") ?? null, [processes]);
   const builderStep = useMemo(() => {
-    if (["DELIVERY_READY", "COMPLETE"].includes(taskState)) return 4;
-    if (["VERIFYING", "REVIEWING", "REPAIRING"].includes(taskState)) return 3;
+    if (taskState === "COMPLETE" && sliceState?.status === "frontend_complete") return 4;
+    if (["DELIVERY_READY", "VERIFYING", "REVIEWING", "REPAIRING"].includes(taskState) || (taskState === "COMPLETE" && sliceState?.status === "awaiting_feedback")) return 3;
     if (["IMPLEMENTING"].includes(taskState)) return 2;
-    if (designBrief || ["AWAITING_APPROVAL"].includes(taskState)) return 1;
+    if (designBrief || ["AWAITING_APPROVAL"].includes(taskState) || (taskState === "COMPLETE" && sliceState?.status === "ready")) return 1;
     return 0;
-  }, [designBrief, taskState]);
+  }, [designBrief, sliceState?.status, taskState]);
 
   const activatePreview = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST" });
@@ -317,7 +328,7 @@ export function BorgWorkspaceV2() {
     }
     if (result.latestTaskId) await Promise.allSettled([
       refreshTaskActivity(result.latestTaskId),
-      refreshChanges(result.latestTaskId),
+      refreshChanges(result.latestTaskId, { refreshPreviewOnChange: !resetWorkspace }),
       refreshProcesses(result.latestTaskId),
       refreshDesign(result.latestTaskId),
       refreshDocs(result.latestTaskId),
@@ -363,6 +374,28 @@ export function BorgWorkspaceV2() {
       refreshSessions(),
     ]).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to initialize workspace."));
   }, [refreshSessions]);
+
+  useEffect(() => {
+    if (!activeSession?.repositoryPath) return;
+    let cancelled = false;
+    const poll = () => {
+      void fetch(`${API}/api/sessions`).then(async (response) => {
+        if (!response.ok || cancelled) return;
+        const result = await response.json() as { sessions: ChatSession[] };
+        if (!cancelled) setSessions(result.sessions);
+      }).catch(() => undefined);
+    };
+    const timer = window.setInterval(poll, 4000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeSession?.repositoryPath]);
+
+  useEffect(() => {
+    if (!activeSession || activeSession.parentSessionId || !activeSession.repositoryPath || streaming || taskIsRunning(taskState) || sliceState?.status !== "ready") return;
+    const child = sessions
+      .filter((session) => session.parentSessionId === activeSession.id)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    if (child) void loadSession(child.id).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to follow the active frontend build."));
+  }, [activeSession, loadSession, sessions, sliceState?.status, streaming, taskState]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
@@ -436,9 +469,21 @@ export function BorgWorkspaceV2() {
       setBlockingFindingIds([]);
       return;
     }
-    void refreshCheckpoints(activeTaskId).catch((error) => setCheckpointError(error instanceof Error ? error.message : "Unable to load checkpoints."));
-    void refreshReviewHistory(activeTaskId).catch((error) => setReviewError(error instanceof Error ? error.message : "Unable to load review history."));
-  }, [activeTaskId, refreshCheckpoints, refreshReviewHistory]);
+    let cancelled = false;
+    let polling = false;
+    const poll = () => {
+      if (polling || cancelled) return;
+      polling = true;
+      void Promise.allSettled([
+        refreshCheckpoints(activeTaskId),
+        refreshReviewHistory(activeTaskId),
+      ]).finally(() => { polling = false; });
+    };
+    poll();
+    if (!taskIsRunning(taskState) && !reviewOpen && !checkpointOpen) return () => { cancelled = true; };
+    const timer = window.setInterval(poll, taskIsRunning(taskState) ? 2500 : 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeTaskId, checkpointOpen, refreshCheckpoints, refreshReviewHistory, reviewOpen, taskState]);
 
   async function createSession() {
     setSessionError("");
@@ -468,9 +513,10 @@ export function BorgWorkspaceV2() {
       setWebsiteName("");
       setWebsiteBrief("");
       setWebsiteTemplate("saas-landing");
-      setRequest(brief);
+      setRequest("");
       setRightPanel("preview");
       await refreshSessions(result.session.id);
+      await runTask(brief, undefined, result.session, true);
     } catch (error) { setWebsiteError(error instanceof Error ? error.message : "Unable to create website."); }
     finally { setWebsiteBusy(false); }
   }
@@ -490,7 +536,7 @@ export function BorgWorkspaceV2() {
   }
 
   async function changeMode(mode: PermissionMode) {
-    if (!activeSession || streaming) return;
+    if (!activeSession || taskBusy) return;
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(activeSession.id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ activeMode: mode }) });
     if (!response.ok) return;
     const result = await response.json() as { session: ChatSession };
@@ -1008,7 +1054,13 @@ export function BorgWorkspaceV2() {
           <SidebarGroupLabel className="text-slate-500">My Websites</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {websiteSessions.map((session) => <SidebarMenuItem key={session.id}><div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeSession?.id === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div></SidebarMenuItem>)}
+              {websiteSessions.map((session) => {
+                const latest = sessions
+                  .filter((candidate) => candidate.id === session.id || candidate.parentSessionId === session.id)
+                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? session;
+                const activeRootId = activeSession?.parentSessionId ?? activeSession?.id;
+                return <SidebarMenuItem key={session.id}><div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeRootId === session.id} onClick={() => void loadSession(latest.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div></SidebarMenuItem>;
+              })}
             </SidebarMenu>
             {!websiteSessions.length && <button type="button" onClick={() => setWebsiteOpen(true)} className="w-full rounded-lg border border-dashed border-white/10 px-3 py-4 text-left text-xs leading-5 text-slate-500 hover:border-white/20 hover:text-slate-300">Create your first website to start building with BORG.</button>}
             {activeTaskId && <Button variant="ghost" size="sm" onClick={() => setRightPanel("changes")} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><History className="size-3.5" />Recent changes{changes.files.length ? ` (${changes.files.length})` : ""}</Button>}
@@ -1039,14 +1091,14 @@ export function BorgWorkspaceV2() {
         <div className="flex min-w-0 items-center gap-3">
           <SidebarTrigger className="text-slate-400" />
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-slate-200">{activeSession?.title ?? "Choose a website"}</p>
+            <p className="truncate text-sm font-medium text-slate-200">{displayTitle}</p>
             <p className="hidden truncate text-[11px] text-slate-600 sm:block">{previewUrl ?? (isWebsite ? "Local website project" : "Developer workspace")}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {isWebsite && <Button size="sm" variant="outline" onClick={() => setRightPanel("preview")} className="hidden border-white/10 bg-white/4 text-slate-300 sm:inline-flex"><Monitor className="size-3.5" />Preview</Button>}
           <Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setRightPanel("changes")} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Changes</span></Button>
-          <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || streaming}>
+          <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || taskBusy}>
             <SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger>
             <SelectContent className="border-white/10 bg-[#151a22] text-slate-100">
               <SelectItem value="plan">Safe mode</SelectItem>
@@ -1068,7 +1120,7 @@ export function BorgWorkspaceV2() {
 
       <section className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row"><div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-7 sm:px-8 lg:basis-[35%] lg:flex-none lg:px-8"><div className="mx-auto max-w-3xl">
-          <div className="mb-6 flex items-start justify-between gap-4"><div><p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#a7ff4f]">{isWebsite ? "Website workspace" : "Developer workspace"}</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">{activeSession?.title ?? "Choose a website"}</h1></div>{activeTaskId && <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1 text-xs capitalize text-slate-400">{taskState.replaceAll("_", " ").toLowerCase()}</span>}</div>
+          <div className="mb-6 flex items-start justify-between gap-4"><div><p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#a7ff4f]">{isWebsite ? "Website workspace" : "Developer workspace"}</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">{displayTitle}</h1>{activeSession?.parentSessionId && <p className="mt-1 text-xs text-slate-600">{activeSession.title.replace(`${displayTitle} · `, "")}</p>}</div>{activeTaskId && <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1 text-xs capitalize text-slate-400">{taskState.replaceAll("_", " ").toLowerCase()}</span>}</div>
           {sessionError && <div className="mb-5 rounded-lg border border-red-400/20 bg-red-400/8 px-4 py-3 text-sm text-red-200">{sessionError}</div>}
           <div className="space-y-4">
             {visibleMessages.length ? visibleMessages.map((message) => <AssistantMessage key={message.id} message={message} />) : isWebsite ? <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
@@ -1080,7 +1132,7 @@ export function BorgWorkspaceV2() {
               </div>
             </div> : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">Developer session</p><p className="mt-1 text-sm text-slate-500">Use this advanced workspace for repository tasks that are not tied to a BORG website.</p></div></div>}
             {activeTaskId && isWebsite && <div role="status" aria-live="polite" className="rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
-              <div className="flex items-start gap-3"><span className={`mt-1.5 size-2 shrink-0 rounded-full bg-[#a7ff4f] ${streaming || taskIsRunning(taskState) ? "animate-pulse" : ""}`} /><div><p className="text-sm font-medium text-[#d9ffb5]">{currentProgress?.title ?? (builderStep === 4 ? "Website ready for review" : "BORG is working")}</p><p className="mt-1 text-xs leading-5 text-slate-400">{currentProgress?.detail ?? "BORG is continuing the current website build."}</p></div></div>
+              <div className="flex items-start gap-3"><span className={`mt-1.5 size-2 shrink-0 rounded-full bg-[#a7ff4f] ${streaming || taskIsRunning(taskState) ? "animate-pulse" : ""}`} /><div><p className="text-sm font-medium text-[#d9ffb5]">{currentProgress?.title ?? (builderStep === 4 ? "Frontend ready for review" : "BORG is working")}</p><p className="mt-1 text-xs leading-5 text-slate-400">{currentProgress?.detail ?? "BORG is continuing the current website build."}</p></div></div>
               <div className="mt-4 grid grid-cols-5 gap-1">{BUILDER_STEPS.map((step, index) => <div key={step} className="min-w-0"><div className={`h-1 rounded-full ${index <= builderStep ? "bg-[#a7ff4f]" : "bg-white/8"}`} /><p className={`mt-1 truncate text-[9px] uppercase tracking-wide ${index <= builderStep ? "text-[#cfff9e]" : "text-slate-700"}`}>{step}</p></div>)}</div>
             </div>}
             <ActivityFeed activities={activities} />
@@ -1136,7 +1188,7 @@ export function BorgWorkspaceV2() {
 
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
           {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planApproval ? "Approve frontend phase plan" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planApproval ? "Approval freezes the tailored slice roadmap and starts the frontend build. BORG will execute each slice in a bounded mini-loop inside isolated worktrees." : "This mini-plan is limited to the current approved slice. Approved frontend slices execute automatically inside the frozen phase plan."}</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planApproval ? "Revise plan" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planApproval ? "Approve plan" : "Build slice"}</Button></div></div>}
-          {deliveryReady && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Website check complete</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}The verified result is ready in Preview. Save the change set when you are happy with it.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
+          {deliveryReady && activeSession?.workflowRole !== "frontend_slice" && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Website check complete</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}The verified result is ready in Preview. Save the change set when you are happy with it.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
           {taskState === "COMPLETE" && sliceState && !["working", "plan_pending"].includes(sliceState.status) && <div className="mx-auto mb-3 max-w-3xl rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
             <p className="text-sm font-medium text-[#d9ffb5]">{sliceState.status === "ready" ? `Frontend plan approved — ${sliceState.currentTitle} is ready` : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? "Frontend complete — backend phase is available" : "Frontend complete — static site can be finalized") : `Slice ${sliceState.current + 1} of ${sliceState.total} complete — your feedback is needed`}</p>
             <p className="mt-1 text-xs text-slate-400">{sliceState.status === "ready" ? "Slice 1 starts a lightweight mini-loop in a new session. BORG will not rediscover or re-plan the whole website." : "Review Preview, Changes, and Docs. The next step starts in a new session and carries forward the approved project state."}</p>
