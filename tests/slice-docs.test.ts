@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FRONTEND_SLICES, markSliceReady, prepareSlice, readProjectDocs, readSliceState, slicePrompt } from "../packages/web-builder/src/slice-docs.ts";
+import { FRONTEND_SLICES, markSliceReady, prepareSlice, readProjectDocs, readSliceState, slicePlanningPrompt, slicePrompt } from "../packages/web-builder/src/slice-docs.ts";
 
 test("frontend slices persist feedback and advance only after review", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-slices-"));
@@ -20,6 +20,17 @@ test("frontend slices persist feedback and advance only after review", () => {
     assert.equal(readSliceState(root)?.feedback.at(-1), "Looks good");
     assert.match(readProjectDocs(root).find((doc) => doc.path.endsWith("decisions.md"))?.content ?? "", /Looks good/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("PLAN slice instructions never tell the architect to implement components", () => {
+  const state = { version: 1 as const, current: 0, status: "working" as const, brief: "Build an app", lastTaskId: null, feedback: [] };
+  const prompt = slicePlanningPrompt(state);
+  assert.match(prompt, /PLAN PHASE/);
+  assert.match(prompt, /only project files authorized.*\.localcode\/build\/\*\*\/\*\.md/i);
+  assert.match(prompt, /request escalation to EDIT/i);
+  assert.doesNotMatch(prompt, /Implement only this slice/);
+  assert.doesNotMatch(prompt, /Stop after verification/);
+  assert.match(prompt, /Do not run commands, previews, builds, tests, or verification/i);
 });
 
 test("final frontend slice hands off to backend planning", () => {
