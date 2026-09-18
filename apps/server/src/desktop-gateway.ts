@@ -262,6 +262,8 @@ function sliceLaunchPrompt(action: "initial" | "advance" | "revise" | "backend",
 
 async function launchFrontendWorkflowSession(parent: ChatSession, action: "initial" | "advance" | "revise" | "backend", feedback = "") {
   if (!parent.repositoryPath) throw new Error("The website session is not attached to a repository.");
+  const currentAccess = access.load();
+  if (currentAccess.repositoryPath !== parent.repositoryPath) access.save({ repositoryPath: parent.repositoryPath, documents: currentAccess.documents });
   const key = `${parent.repositoryPath.toLowerCase()}::${action}`;
   const active = frontendLaunches.get(key);
   if (active) return active.session;
