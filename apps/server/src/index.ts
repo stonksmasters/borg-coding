@@ -52,7 +52,7 @@ import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } f
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
-import { prepareSlice, markSliceReady, readProjectDocs, readSliceState, slicePlanningPrompt, slicePrompt, FRONTEND_SLICES, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readProjectDocs, readProjectPlan, readSliceState, slicePlanningPrompt, slicePrompt, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -1118,14 +1118,17 @@ const server = createServer((request, response) => {
       const selectedPath = access.load().repositoryPath;
       const selectedWebsite = selectedPath ? websiteInfo(selectedPath) : null;
       const previousSlice = selectedWebsite ? readSliceState(selectedWebsite.path) : null;
+      const projectPlan = selectedWebsite ? readProjectPlan(selectedWebsite.path) : null;
       const rawSliceAction = String(input.sliceAction ?? "initial");
-      const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && Boolean(selectedWebsite && (previousSlice || ["dashboard", "ecommerce"].includes(selectedWebsite.template) || /\b(app|application|full.stack|platform)\b/i.test(requestText)));
-      if (rawSliceAction === "backend" && previousSlice?.status !== "frontend_complete") throw new Error("Finish and review the frontend before beginning backend planning.");
+      const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
+      const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
+      const miniLoop = slicedApplication;
+      if (rawSliceAction === "backend" && (previousSlice?.status !== "frontend_complete" || projectPlan?.backendRequired !== true)) throw new Error("Backend planning is available only after an approved frontend completion gate for a site that requires backend work.");
       const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
-      if (slicedApplication && previousSlice?.status === "awaiting_feedback" && sliceAction === "initial") throw new Error("Review the finished frontend slice before starting another. Choose revise or approve and continue.");
-      if (slicedApplication && previousSlice?.status === "frontend_complete") throw new Error("Frontend slices are complete. Start a separate backend planning task using the build docs.");
+      if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready") throw new Error("Review the finished slice before starting another.");
+      if (slicedApplication && previousSlice?.status === "frontend_complete") throw new Error("Frontend is complete. Start backend planning only if the approved project plan requires it.");
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "advance") throw new Error("The current slice is not ready to advance.");
-      if (slicedApplication && !previousSlice && sliceAction !== "initial") throw new Error("There is no finished slice to review yet.");
+      if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "revise") throw new Error("There is no completed slice waiting for revision.");
       const teamPolicy = teamPolicies.load(access.load().repositoryPath);
       const route = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
       const packs = selectSpecialistPacks(route.disciplines);
@@ -1158,9 +1161,13 @@ const server = createServer((request, response) => {
       emit({ type: "specialist.packs.selected", packs: selectedPacks });
       task = transitionTask(task, "DISCOVERING", emit);
 
-      let repositoryContext = mode === "ask" ? "No repository context is available in ASK mode." : access.buildContext(slicedApplication || rawSliceAction === "backend" ? 12_000 : 80_000);
+      let repositoryContext = mode === "ask"
+        ? "No repository context is available in ASK mode."
+        : miniLoop
+          ? "MINI LOOP: use the approved phase plan, current slice, decisions, handoff, and targeted source reads. Do not rebuild the global repository map."
+          : access.buildContext(projectPlanning || rawSliceAction === "backend" ? 20_000 : 80_000);
       const approvedRepository = access.load().repositoryPath;
-      if (mode !== "ask" && approvedRepository) {
+      if (mode !== "ask" && approvedRepository && !miniLoop) {
         try {
           const refresh = await tools.refreshMemory();
           appendTaskEvent(task.id, "REPOSITORY_MEMORY_REFRESHED", refresh);
@@ -1188,11 +1195,17 @@ const server = createServer((request, response) => {
         emit({ type: "website.workflow.selected", workflow: websiteWorkflow, template: websiteProject?.template ?? null });
       }
       let sliceDirective = "";
-      if (slicedApplication && websiteProject) {
-        const plannedSlice: SliceState = previousSlice ? { ...previousSlice, current: sliceAction === "advance" ? previousSlice.current + 1 : previousSlice.current, status: "working" } : { version: 1, current: 0, status: "working", brief: websiteProject.originalBrief || requestText, lastTaskId: null, feedback: [] };
-        sliceDirective = slicePlanningPrompt(plannedSlice);
-        const docs = readProjectDocs(websiteProject.path).map((doc) => `${doc.path}\n${doc.content.slice(0, 4500)}`).join("\n\n").slice(0, 16_000);
-        repositoryContext += `\n\nExisting build docs:\n${docs || "No prior build docs. Plan the visual foundation only."}`;
+      if (projectPlanning && websiteProject) {
+        sliceDirective = projectPlanningPrompt(websiteProject.originalBrief || requestText);
+      } else if (slicedApplication && websiteProject && projectPlan && previousSlice) {
+        const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
+        const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
+        sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
+        const relevantNames = ["brief.md", "plan.md", "current-slice.md", "decisions.md", "handoff.md", "known-issues.md", "data-contract.md"];
+        const docs = readProjectDocs(websiteProject.path)
+          .filter((doc) => relevantNames.some((name) => doc.path.endsWith(`/${name}`)))
+          .map((doc) => `${doc.path}\n${doc.content.slice(0, 3200)}`).join("\n\n").slice(0, 14_000);
+        repositoryContext += `\n\nApproved mini-loop context:\n${docs}`;
       }
       if (rawSliceAction === "backend" && websiteProject) {
         const docs = readProjectDocs(websiteProject.path);
@@ -1202,7 +1215,7 @@ const server = createServer((request, response) => {
         repositoryContext += `\n\nFRONTEND HANDOFF: Plan backend and database work in this new session using the frontend contracts and decisions below. Do not rebuild the frontend.\n${handoff}`;
       }
       const isGreenfieldDesign = isBorgWebsite && websiteWorkflow === "initial_generation";
-      const designRequired = mode !== "ask" && requiresDesignDirection({
+      const designRequired = mode !== "ask" && !miniLoop && requiresDesignDirection({
         request: requestText,
         disciplines: route.disciplines,
         isBorgWebsite,
