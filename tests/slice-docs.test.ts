@@ -8,8 +8,11 @@ import {
   fallbackProjectPlan,
   markSliceReady,
   parseProjectPlan,
+  persistDesignBrief,
   persistProposedProjectPlan,
   prepareSlice,
+  readFrontendWorkflowState,
+  readPersistedDesignBrief,
   readProjectDocs,
   readProjectPlan,
   readSliceState,
@@ -55,6 +58,12 @@ test("project plan approval is separate from slice execution", () => {
     const approved = approveProjectPlan(root, "planning-task");
     assert.equal(approved.plan.status, "approved");
     assert.equal(approved.state.status, "ready");
+    assert.equal(readFrontendWorkflowState(root)?.stage, "plan_approved");
+
+    const designBrief = { taskId: "planning-task", createdAt: new Date().toISOString(), visualDirection: "Editorial premium" };
+    persistDesignBrief(root, designBrief);
+    assert.deepEqual(readPersistedDesignBrief(root), designBrief);
+    assert.ok(readProjectDocs(root).some((doc) => doc.path.endsWith("/design-brief.md")));
 
     const plan = readProjectPlan(root)!;
     const planPrompt = slicePlanningPrompt(plan, approved.state);
@@ -66,9 +75,11 @@ test("project plan approval is separate from slice execution", () => {
 
     const first = prepareSlice(root, "", "initial", "", "slice-one", "Patch the shell only.");
     assert.equal(first.status, "working");
+    assert.equal(readFrontendWorkflowState(root)?.stage, "slice_planning");
     assert.equal(first.current, 0);
     assert.match(slicePrompt(plan, first, ["worktree_read", "worktree_patch"]), /Available implementation tools: worktree_read, worktree_patch/);
     assert.equal(markSliceReady(root, "slice-one", "Preview and build passed.")?.status, "awaiting_feedback");
+    assert.equal(readFrontendWorkflowState(root)?.stage, "awaiting_feedback");
 
     const second = prepareSlice(root, "", "advance", "Looks good", "slice-two", "Implement the next approved outcome.");
     assert.equal(second.current, 1);
@@ -92,6 +103,7 @@ test("final slice reaches frontend_complete without inventing backend work", () 
     }
     assert.equal(state.status, "frontend_complete");
     assert.equal(state.backendRequired, false);
+    assert.equal(readFrontendWorkflowState(root)?.stage, "frontend_complete");
     assert.match(readProjectDocs(root).find((doc) => doc.path.endsWith("/handoff.md"))?.content ?? "", /No backend phase is required/i);
     assert.throws(() => prepareSlice(root, "", "advance", "Approved", "extra"), /Frontend is complete/);
   } finally {
