@@ -52,6 +52,7 @@ export function runWorkspacePreflight(rootPath: string, options: {
   reason?: string;
   repair?: boolean;
   expectedKind?: WorkspaceKind;
+  expectedGitHead?: string;
 } = {}): WorkspacePreflightReport {
   const root = resolve(rootPath);
   const reason = options.reason ?? "slice_start";
@@ -90,6 +91,9 @@ export function runWorkspacePreflight(rootPath: string, options: {
     gitHead = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim() || null;
     if (!samePath(gitRoot, root)) {
       issues.push({ code: "worktree_root_mismatch", severity: "fatal", message: `Approved workspace resolves inside a different Git root: ${gitRoot}` });
+    }
+    if (options.expectedGitHead && gitHead !== options.expectedGitHead) {
+      issues.push({ code: "worktree_head_mismatch", severity: "fatal", message: `Approved worktree HEAD moved from ${options.expectedGitHead} to ${gitHead ?? "unknown"}.` });
     }
   } catch {
     issues.push({ code: "git_worktree_invalid", severity: "fatal", message: "The approved workspace is not a valid Git worktree." });
