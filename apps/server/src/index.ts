@@ -383,7 +383,7 @@ function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => vo
 
 recoverInterruptedTasks();
 
-createServer((request, response) => {
+const server = createServer((request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, null);
   if (request.method === "GET" && request.url === "/health") {
     void fetch(`${ollamaUrl}/api/tags`).then(async (runtimeResponse) => {
@@ -1081,4 +1081,17 @@ createServer((request, response) => {
     return;
   }
   send(response, 404, { error: "Not found" });
-}).listen(port, "127.0.0.1", () => console.log(`BORG server listening on http://127.0.0.1:${port}`));
+});
+
+server.listen(port, "127.0.0.1", () => console.log(`BORG server listening on http://127.0.0.1:${port}`));
+
+async function shutdown(signal: string) {
+  console.log(`[lifecycle] core shutdown requested: ${signal}`);
+  await processRuntime.stopAll();
+  tasks.close();
+  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  process.exit(0);
+}
+
+process.once("SIGINT", () => { void shutdown("SIGINT"); });
+process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
