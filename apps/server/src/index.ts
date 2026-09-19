@@ -114,6 +114,29 @@ const teamPolicies = new TeamPolicyService();
 const maxRepairAttempts = 2;
 const maxDesignRefinements = 3;
 
+async function visionRuntimeStatus() {
+  const policy = vision.status();
+  try {
+    const response = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw new Error(`Ollama model discovery returned ${response.status}.`);
+    const body = await response.json() as { models?: { name?: string; model?: string }[] };
+    const modelAvailable = (body.models ?? []).some((item) => item.name === policy.model || item.model === policy.model);
+    return {
+      ...policy,
+      modelAvailable,
+      availabilityState: modelAvailable ? "available" as const : "missing" as const,
+      availabilityError: modelAvailable ? null : `Vision model ${policy.model} is not installed in Ollama.`,
+    };
+  } catch (error) {
+    return {
+      ...policy,
+      modelAvailable: false,
+      availabilityState: "connection_failed" as const,
+      availabilityError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function recordModelInput(taskId: string, role: string, selectedModel: string, sliceId: string | null, manifest: ContextItem[], body: string) {
   const id = randomUUID();
   tasks.saveModelContext({ id, taskId, role, model: selectedModel, sliceId, inputText: body, manifest, inputSha256: createHash("sha256").update(body).digest("hex"), createdAt: new Date().toISOString() });
@@ -1452,11 +1475,15 @@ const server = createServer((request, response) => {
       .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid access policy" }));
     return;
   }
-  if (request.method === "GET" && request.url === "/api/vision") return send(response, 200, { vision: vision.status() });
+  if (request.method === "GET" && request.url === "/api/vision") {
+    void visionRuntimeStatus().then((status) => send(response, 200, { vision: status }))
+      .catch((error) => send(response, 500, { error: error instanceof Error ? error.message : "Unable to inspect visual quality model." }));
+    return;
+  }
   if (request.method === "POST" && request.url === "/api/vision") {
-    void readJson(request).then((input) => {
+    void readJson(request).then(async (input) => {
       vision.save(input);
-      return send(response, 200, { vision: vision.status() });
+      return send(response, 200, { vision: await visionRuntimeStatus() });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid vision settings" }));
     return;
   }
