@@ -228,12 +228,13 @@ test("visual director can reject a technically valid page on aesthetic dimension
 test("design director propagates caller cancellation instead of waiting for its long timeout", async () => {
   const originalFetch = globalThis.fetch;
   const controller = new AbortController();
-  let observedSignal: AbortSignal | null = null;
+  const observedSignals: AbortSignal[] = [];
 
   globalThis.fetch = async (_input, init) => {
-    observedSignal = init?.signal as AbortSignal;
+    const signal = init?.signal as AbortSignal;
+    observedSignals.push(signal);
     return await new Promise<Response>((_resolve, reject) => {
-      observedSignal?.addEventListener("abort", () => reject(observedSignal?.reason ?? new DOMException("Aborted", "AbortError")), { once: true });
+      signal.addEventListener("abort", () => reject(signal.reason ?? new DOMException("Aborted", "AbortError")), { once: true });
     });
   };
 
@@ -247,10 +248,10 @@ test("design director propagates caller cancellation instead of waiting for its 
       signal: controller.signal,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(observedSignal);
+    assert.equal(observedSignals.length, 1);
     controller.abort();
     await assert.rejects(pending, /abort/i);
-    assert.equal(observedSignal?.aborted, true);
+    assert.equal(observedSignals[0]?.aborted, true);
   } finally {
     globalThis.fetch = originalFetch;
   }
