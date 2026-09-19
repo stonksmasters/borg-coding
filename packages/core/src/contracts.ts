@@ -20,6 +20,41 @@ export const workflowPhases = ["planning", "frontend", "backend", "delivery", "c
 export const workflowStatuses = ["idle", "planning", "awaiting_approval", "running", "verifying", "reviewing", "awaiting_feedback", "recovery_required", "complete", "blocked", "failed", "cancelled"] as const;
 export const workflowActions = ["plan", "await_approval", "start_slice", "implement", "verify", "repair", "checkpoint", "advance_slice", "request_feedback", "plan_backend", "deliver", "recover", "none"] as const;
 
+export const WorkflowProjectSliceSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  outcome: z.string(),
+  scope: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()),
+});
+export type WorkflowProjectSlice = z.infer<typeof WorkflowProjectSliceSchema>;
+
+export const WorkflowProjectPlanSchema = z.object({
+  version: z.literal(2),
+  revision: z.number().int().positive(),
+  status: z.enum(["proposed", "approved", "frontend_complete"]),
+  phase: z.literal("frontend"),
+  siteGoal: z.string(),
+  audience: z.string(),
+  pages: z.array(z.string()),
+  features: z.array(z.string()),
+  visualDirection: z.string(),
+  backendRequired: z.boolean(),
+  slices: z.array(WorkflowProjectSliceSchema).min(1),
+  acceptanceCriteria: z.array(z.string()),
+  proposedAt: z.string().datetime(),
+  approvedAt: z.string().datetime().nullable(),
+});
+export type WorkflowProjectPlan = z.infer<typeof WorkflowProjectPlanSchema>;
+
+export const WorkflowCommandSchema = z.object({
+  id: z.string().min(1),
+  action: z.enum(workflowActions),
+  workflowVersion: z.number().int().positive(),
+  createdAt: z.string().datetime(),
+});
+export type WorkflowCommand = z.infer<typeof WorkflowCommandSchema>;
+
 export const TaskSchema = z.object({
   id: z.string().min(1), projectId: z.string().min(1), request: z.string().min(1),
   state: z.enum(taskStates), riskLevel: z.enum(riskLevels),
@@ -84,7 +119,10 @@ export const WorkflowStateSchema = z.object({
   projectId: z.string().min(1), taskId: z.string().min(1).nullable(),
   phase: z.enum(workflowPhases), status: z.enum(workflowStatuses), nextAction: z.enum(workflowActions),
   planApprovalId: z.string().min(1).nullable(), planApproved: z.boolean(),
+  projectPlan: WorkflowProjectPlanSchema.nullable().default(null),
   sliceIndex: z.number().int().nonnegative().nullable(), sliceTotal: z.number().int().positive().nullable(), sliceTitle: z.string().nullable(),
+  feedback: z.array(z.string()).default([]), handoff: z.string().nullable().default(null),
+  pendingCommand: WorkflowCommandSchema.nullable().default(null), lastConsumedCommandId: z.string().nullable().default(null),
   repairAttempt: z.number().int().nonnegative(), recoveryCategory: z.string().nullable(), detail: z.string(),
   version: z.number().int().positive(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
 });
