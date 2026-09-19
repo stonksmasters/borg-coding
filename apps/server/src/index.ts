@@ -990,6 +990,19 @@ const server = createServer((request, response) => {
     const focusedExecutionScope = focusedWorkspace?.scopeType && focusedWorkspace.scopeId
       ? { type: focusedWorkspace.scopeType, id: focusedWorkspace.scopeId } as const
       : null;
+    const focusedBrowserRoute = focusedExecutionScope && projectPlan
+      ? (() => {
+          const staticRoute = (route: string | null | undefined) =>
+            route && route.startsWith("/") && !/[:\[]/.test(route) ? route : null;
+          if (focusedExecutionScope.type === "page") {
+            return staticRoute(projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id)?.route);
+          }
+          const component = projectPlan.components.find((item) => item.id === focusedExecutionScope.id);
+          return component?.usedBy
+            .map((pageId) => staticRoute(projectPlan.sitemap.find((page) => page.id === pageId)?.route))
+            .find((route): route is string => Boolean(route)) ?? null;
+        })()
+      : null;
     const styleWorkspace = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "STYLE_WORKSPACE_SELECTED");
     const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED")
       ? sliceStateFromWorkflow(ownedTaskWorkflow, projectPlan, approvedWorktreePath)
@@ -1182,10 +1195,52 @@ const server = createServer((request, response) => {
           task = scheduleRepair(task, emit, decision.action, decision);
           continue;
         }
-        const specialistEvidence = evaluateSpecialistEvidence(packs, deterministicVerification);
+        let focusedBrowserEvidence: BrowserEvidenceReport | null = null;
+        let focusedBrowserFailure: string | null = null;
+        if (focusedBrowserRoute) {
+          const serverUrl = processRuntime.findRunning(taskId, "dev_server")?.url;
+          if (!serverUrl) {
+            focusedBrowserFailure = "Focused route verification requires the managed development server.";
+          } else {
+            const focusedUrl = new URL(focusedBrowserRoute, serverUrl).toString();
+            try {
+              await tools.execute(
+                { function: { name: "browser_responsive", arguments: { url: focusedUrl, accessibility: true } } },
+                "agent", taskContext, "verifier", activeDisciplines,
+              );
+              const closed = await tools.execute(
+                { function: { name: "browser_close", arguments: {} } },
+                "agent", taskContext, "verifier", activeDisciplines,
+              ) as { report?: BrowserEvidenceReport | null };
+              focusedBrowserEvidence = closed.report ?? null;
+              appendTaskEvent(taskId, "FOCUSED_BROWSER_VERIFICATION_COMPLETED", {
+                scope: focusedExecutionScope,
+                route: focusedBrowserRoute,
+                passed: focusedBrowserEvidence?.passed ?? false,
+              });
+            } catch (error) {
+              focusedBrowserFailure = error instanceof Error ? error.message : String(error);
+              appendTaskEvent(taskId, "FOCUSED_BROWSER_VERIFICATION_FAILED", {
+                scope: focusedExecutionScope,
+                route: focusedBrowserRoute,
+                message: focusedBrowserFailure,
+              });
+            }
+          }
+        }
+        const verificationEvidence = focusedBrowserEvidence
+          ? { ...deterministicVerification, browserEvidence: focusedBrowserEvidence }
+          : deterministicVerification;
+        const specialistEvidence = evaluateSpecialistEvidence(packs, verificationEvidence);
         const verification = {
           ...deterministicVerification,
-          passed: Boolean(deterministicVerification.passed) && specialistEvidence.passed,
+          browserEvidence: focusedBrowserEvidence ?? deterministicVerification.browserEvidence,
+          focusedBrowserRoute,
+          focusedBrowserFailure,
+          passed: Boolean(deterministicVerification.passed)
+            && !focusedBrowserFailure
+            && (focusedBrowserEvidence?.passed ?? true)
+            && specialistEvidence.passed,
           specialistEvidence,
           specialistInstructions: specialistInstructions.verifier,
         };
@@ -1222,7 +1277,7 @@ const server = createServer((request, response) => {
           }
           const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
           const recentChanges = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim());
-          const context = buildRepairContext({ sliceId: compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
+          const context = buildRepairContext({ sliceId: compiledFocus?.sliceId ?? compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
           repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({ browserEvidence: verification.browserEvidence, specialistEvidence: verification.specialistEvidence }).slice(0, 40_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
           setExecutionState("REPAIR");
