@@ -386,7 +386,6 @@ export class WorkflowEngine {
       updatedAt: now,
     });
     this.store.commitWorkflowMutation({
-      task,
       state,
       events: [taskEvent(task.id, eventType, { ...payload, workflowVersion: state.version }, now)],
     });
