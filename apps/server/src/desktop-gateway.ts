@@ -659,6 +659,20 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === "GET" && request.url === "/api/tools") return send(response, 200, { tools: toolStatus() });
+  if (request.url === "/api/vision" && (request.method === "GET" || request.method === "POST")) {
+    void (async () => {
+      const body = request.method === "POST" ? await readText(request) : undefined;
+      const upstream = await fetch(`${coreUrl}/api/vision`, {
+        method: request.method,
+        headers: request.method === "POST" ? { "content-type": "application/json" } : undefined,
+        body,
+        signal: AbortSignal.timeout(10_000),
+      });
+      const payload = await upstream.json().catch(() => ({ error: `Visual quality configuration failed (${upstream.status}).` }));
+      return send(response, upstream.status, payload);
+    })().catch((error) => send(response, 502, { error: error instanceof Error ? error.message : "Unable to reach the visual quality service." }));
+    return;
+  }
   if (request.method === "POST" && request.url === "/api/tools") {
     void readJson(request).then(async (input) => {
       internet.save({ internetEnabled: input.internetEnabled, apiKey: input.ollamaApiKey ?? input.apiKey, clearApiKey: input.clearApiKey });
