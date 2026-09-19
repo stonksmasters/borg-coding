@@ -65,7 +65,7 @@ function Empty({ label }: { label: string }) {
   return <div className="grid h-full flex-1 place-items-center p-8 text-center text-sm text-slate-500">{label}</div>;
 }
 
-function SitemapView({ pages }: { pages: SitemapPage[] }) {
+function SitemapView({ pages, busy, onOpenPage }: { pages: SitemapPage[]; busy: boolean; onOpenPage?(page: SitemapPage): void }) {
   if (!pages.length) return <Empty label="The sitemap will appear after the website plan is generated." />;
   return <div className="h-full overflow-y-auto p-5 sm:p-7">
     <div className="mb-6 flex items-start gap-3">
@@ -80,11 +80,12 @@ function SitemapView({ pages }: { pages: SitemapPage[] }) {
       <p className="mt-3 text-xs leading-5 text-slate-400">{page.purpose}</p>
       <div className="mt-4"><p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-600">Sections</p><div className="flex flex-wrap gap-1.5">{page.sections.map((section) => <Pill key={section}>{section}</Pill>)}</div></div>
       <div className="mt-4"><p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-600">Planned components</p><div className="flex flex-wrap gap-1.5">{page.componentIds.length ? page.componentIds.map((id) => <Pill key={id}>{id}</Pill>) : <span className="text-xs text-slate-600">No component IDs assigned yet.</span>}</div></div>
+      {onOpenPage && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onOpenPage(page)} className="mt-4 border-white/10 bg-transparent text-slate-300">Open page workspace</Button>}
     </section>)}</div>
   </div>;
 }
 
-function ComponentsView({ components, pages }: { components: PlannedComponent[]; pages: SitemapPage[] }) {
+function ComponentsView({ components, pages, busy, onOpenComponent }: { components: PlannedComponent[]; pages: SitemapPage[]; busy: boolean; onOpenComponent?(component: PlannedComponent): void }) {
   const pageNames = new Map(pages.map((page) => [page.id, page.name]));
   if (!components.length) return <Empty label="The component inventory will appear after the website plan is generated." />;
   return <div className="h-full overflow-y-auto p-5 sm:p-7">
@@ -97,6 +98,7 @@ function ComponentsView({ components, pages }: { components: PlannedComponent[];
       <p className="mt-3 text-xs leading-5 text-slate-400">{component.purpose}</p>
       <div className="mt-4"><p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-600">Used by</p><div className="flex flex-wrap gap-1.5">{component.usedBy.length ? component.usedBy.map((id) => <Pill key={id}>{pageNames.get(id) ?? id}</Pill>) : <Pill>Global/shared</Pill>}</div></div>
       {component.variants.length > 0 && <div className="mt-4"><p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-600">Variants</p><div className="flex flex-wrap gap-1.5">{component.variants.map((variant) => <Pill key={variant}>{variant}</Pill>)}</div></div>}
+      {onOpenComponent && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onOpenComponent(component)} className="mt-4 border-white/10 bg-transparent text-slate-300">Open component workspace</Button>}
     </section>)}</div>
   </div>;
 }
@@ -135,13 +137,13 @@ function StylesView({ styles, busy, onFeedback }: { styles: StyleSystem | null; 
   </div>;
 }
 
-export function StructurePanel({ view, docs, styleBusy = false, onStyleFeedback }: { view: "sitemap" | "components" | "styles"; docs: BuildDoc[]; styleBusy?: boolean; onStyleFeedback?(feedback: string): Promise<void> | void }) {
+export function StructurePanel({ view, docs, styleBusy = false, focusBusy = false, onStyleFeedback, onOpenPage, onOpenComponent }: { view: "sitemap" | "components" | "styles"; docs: BuildDoc[]; styleBusy?: boolean; focusBusy?: boolean; onStyleFeedback?(feedback: string): Promise<void> | void; onOpenPage?(page: SitemapPage): void; onOpenComponent?(component: PlannedComponent): void }) {
   const plan = useMemo(() => structuredPlan(docs), [docs]);
   if (!plan) {
     const fallback = docs.filter((doc) => view === "sitemap" ? /site.?map|page/i.test(`${doc.path} ${doc.title}`) : view === "components" ? /component/i.test(`${doc.path} ${doc.title}`) : /style|design/i.test(`${doc.path} ${doc.title}`));
     return <DocsPanel docs={fallback} />;
   }
-  if (view === "sitemap") return <SitemapView pages={plan.sitemap ?? []} />;
-  if (view === "components") return <ComponentsView components={plan.components ?? []} pages={plan.sitemap ?? []} />;
+  if (view === "sitemap") return <SitemapView pages={plan.sitemap ?? []} busy={focusBusy} onOpenPage={onOpenPage} />;
+  if (view === "components") return <ComponentsView components={plan.components ?? []} pages={plan.sitemap ?? []} busy={focusBusy} onOpenComponent={onOpenComponent} />;
   return <StylesView styles={plan.styles ?? null} busy={styleBusy} onFeedback={onStyleFeedback} />;
 }
