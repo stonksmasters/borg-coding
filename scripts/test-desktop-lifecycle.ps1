@@ -66,12 +66,12 @@ if (-not (Test-Path -LiteralPath $executable)) { throw "Desktop executable was n
 
 Write-Host "Checking Windows Credential Manager bridge..."
 $credentialTarget = "BORG Code/LifecycleTest/$([Guid]::NewGuid().ToString('N'))"
-$credentialSecret = "borg-test-$([Guid]::NewGuid().ToString('N'))"
+$credentialSecret = "  borg-test-$([Guid]::NewGuid().ToString('N')) with spaces  "
 try {
     $credentialSecret | & $executable --credential-set $credentialTarget
     if ($LASTEXITCODE -ne 0) { throw "Credential set command failed." }
-    $roundTrip = (& $executable --credential-get $credentialTarget | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $roundTrip -ne $credentialSecret) { throw "Credential did not round-trip through Windows Credential Manager." }
+    $roundTrip = (& $executable --credential-get $credentialTarget | Out-String).TrimEnd("`r", "`n")
+    if ($LASTEXITCODE -ne 0 -or $roundTrip -ne $credentialSecret) { throw "Credential did not round-trip exactly through Windows Credential Manager." }
 } finally {
     & $executable --credential-delete $credentialTarget | Out-Null
 }
