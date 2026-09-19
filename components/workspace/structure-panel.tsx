@@ -40,6 +40,7 @@ type StyleSystem = {
 };
 
 type StructuredPlan = {
+  status?: "proposed" | "approved" | "frontend_complete";
   sitemap?: SitemapPage[];
   components?: PlannedComponent[];
   styles?: StyleSystem;
@@ -143,7 +144,8 @@ export function StructurePanel({ view, docs, styleBusy = false, focusBusy = fals
     const fallback = docs.filter((doc) => view === "sitemap" ? /site.?map|page/i.test(`${doc.path} ${doc.title}`) : view === "components" ? /component/i.test(`${doc.path} ${doc.title}`) : /style|design/i.test(`${doc.path} ${doc.title}`));
     return <DocsPanel docs={fallback} />;
   }
-  if (view === "sitemap") return <SitemapView pages={plan.sitemap ?? []} busy={focusBusy} onOpenPage={onOpenPage} />;
-  if (view === "components") return <ComponentsView components={plan.components ?? []} pages={plan.sitemap ?? []} busy={focusBusy} onOpenComponent={onOpenComponent} />;
-  return <StylesView styles={plan.styles ?? null} busy={styleBusy} onFeedback={onStyleFeedback} />;
+  const focusedEditingReady = plan.status === "approved" || plan.status === "frontend_complete";
+  if (view === "sitemap") return <SitemapView pages={plan.sitemap ?? []} busy={focusBusy || !focusedEditingReady} onOpenPage={focusedEditingReady ? onOpenPage : undefined} />;
+  if (view === "components") return <ComponentsView components={plan.components ?? []} pages={plan.sitemap ?? []} busy={focusBusy || !focusedEditingReady} onOpenComponent={focusedEditingReady ? onOpenComponent : undefined} />;
+  return <StylesView styles={plan.styles ?? null} busy={styleBusy || !focusedEditingReady} onFeedback={focusedEditingReady ? onStyleFeedback : undefined} />;
 }
