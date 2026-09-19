@@ -541,7 +541,7 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
       await approveCoreTask(taskId);
       emitToClient({ type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
       await pipeExecution(taskId, session, emitToClient, controller);
-      if (sliceAction && sliceAction !== "backend") {
+      if (sliceAction && ["initial", "advance", "revise"].includes(sliceAction)) {
         const workflowState = await saveVerifiedFrontendSlice(taskId, session, emitToClient);
         await driveWorkflow(session, workflowState);
       }
