@@ -21,6 +21,7 @@ export interface WorktreeToolOptions {
   browser?: BrowserVerification;
   visualRegression?: VisualRegressionService;
   processRuntime?: ProcessRuntime;
+  environmentForTask?: (taskId: string) => Record<string, string>;
 }
 
 interface CommandResult {
@@ -167,6 +168,7 @@ async function runBounded(
   taskId?: string,
   kind: ProcessKind = "command",
   label?: string,
+  environment: Record<string, string> = {},
 ): Promise<CommandResult> {
   if (!allowedCommands.has(command)) throw new Error(`Command is not allowlisted: ${command}`);
   if (args.length > 40 || args.some((argument) => argument.length > 1_000 || argument.includes("\0"))) throw new Error("Command arguments exceed the bounded command policy.");
@@ -178,6 +180,8 @@ async function runBounded(
       command,
       args,
       cwd,
+      env: environment,
+      redact: Object.values(environment),
       timeoutMs: Math.max(1, Math.min(MAX_COMMAND_SECONDS, timeoutSeconds)) * 1_000,
     });
     return {
@@ -196,13 +200,14 @@ async function runBounded(
     execFile(invocation.executable, invocation.args, {
       cwd, timeout: Math.max(1, Math.min(MAX_COMMAND_SECONDS, timeoutSeconds)) * 1_000,
       maxBuffer: MAX_OUTPUT_BYTES * 2, windowsHide: true,
-      env: { ...process.env, CI: "1", NO_COLOR: "1" },
+      env: { ...process.env, CI: "1", NO_COLOR: "1", ...environment },
     }, (error, stdout, stderr) => {
       if (error && typeof (error as NodeJS.ErrnoException).code === "string" && (error as NodeJS.ErrnoException).code === "ENOENT") return reject(new Error(`Command was not found: ${command}`));
       const details = error as (Error & { code?: number | string; killed?: boolean }) | null;
       resolveResult({
         command, args, exitCode: typeof details?.code === "number" ? details.code : error ? 1 : 0,
-        stdout: bounded(String(stdout ?? "")), stderr: bounded(String(stderr ?? "")),
+        stdout: bounded(Object.values(environment).filter(Boolean).reduce((value, secret) => value.split(secret).join("***"), String(stdout ?? ""))),
+        stderr: bounded(Object.values(environment).filter(Boolean).reduce((value, secret) => value.split(secret).join("***"), String(stderr ?? ""))),
         timedOut: Boolean(details?.killed), durationMs: Date.now() - startedAt,
       });
     });
@@ -219,7 +224,7 @@ export class WorktreeTools {
     this.options = options;
     this.worktreeRoot = resolve(options.worktreeRoot);
     this.processRuntime = options.processRuntime ?? new ProcessRuntime();
-    this.browser = options.browser ?? new BrowserVerification({ processRuntime: this.processRuntime });
+    this.browser = options.browser ?? new BrowserVerification({ processRuntime: this.processRuntime, environmentForTask: options.environmentForTask });
     this.visualRegression = options.visualRegression ?? new VisualRegressionService();
   }
 
@@ -385,6 +390,7 @@ export class WorktreeTools {
       context.taskId,
       kind,
       [command, ...args].join(" "),
+      this.options.environmentForTask?.(context.taskId) ?? {},
     );
   }
 
@@ -431,7 +437,7 @@ export class WorktreeTools {
     try {
       if (!profile.commands.length) throw new Error(`No commands were detected for the ${profileId} verification profile.`);
       for (const command of profile.commands) {
-        const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS, this.processRuntime, context.taskId, "verification", command.label);
+        const result = await runBounded(command.command, command.args, root, MAX_COMMAND_SECONDS, this.processRuntime, context.taskId, "verification", command.label, this.options.environmentForTask?.(context.taskId) ?? {});
         results.push({ ...result, label: command.label });
         if (result.exitCode !== 0 || result.timedOut) break;
       }

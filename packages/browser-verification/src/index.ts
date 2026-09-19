@@ -286,9 +286,11 @@ export class BrowserVerification {
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly reports = new Map<string, BrowserEvidenceReport>();
   private readonly processRuntime: ProcessRuntime;
+  private readonly environmentForTask?: (taskId: string) => Record<string, string>;
 
-  constructor(options: { processRuntime?: ProcessRuntime } = {}) {
+  constructor(options: { processRuntime?: ProcessRuntime; environmentForTask?: (taskId: string) => Record<string, string> } = {}) {
     this.processRuntime = options.processRuntime ?? new ProcessRuntime();
+    this.environmentForTask = options.environmentForTask;
   }
 
   definitions() { return Object.values(browserToolDefinitions); }
@@ -348,7 +350,8 @@ export class BrowserVerification {
       args,
       cwd,
       url,
-      env: { HOST: "127.0.0.1", BROWSER: "none" },
+      env: { HOST: "127.0.0.1", BROWSER: "none", ...(this.environmentForTask?.(context.taskId) ?? {}) },
+      redact: Object.values(this.environmentForTask?.(context.taskId) ?? {}),
       startupTimeoutMs: numberInRange(input.timeout_seconds, 30, 1, MAX_STARTUP_SECONDS) * 1_000,
     });
     this.updateReport(context.taskId);

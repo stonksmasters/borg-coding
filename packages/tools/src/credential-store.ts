@@ -14,19 +14,19 @@ export class DesktopCredentialStore implements CredentialStore {
   }
 
   get(target: string): string | null {
-    if (!this.executable) return process.env.OLLAMA_API_KEY?.trim() || null;
+    if (!this.executable) return target === "BORG Code/OllamaWebApiKey" ? process.env.OLLAMA_API_KEY?.trim() || null : null;
     const result = spawnSync(this.executable, ["--credential-get", target], {
       encoding: "utf8",
       windowsHide: true,
       timeout: 5_000,
     });
     if (result.status !== 0) return null;
-    return result.stdout.trim() || null;
+    return result.stdout.length ? result.stdout : null;
   }
 
   set(target: string, secret: string): void {
-    const clean = secret.trim();
-    if (!clean) throw new Error("Credential cannot be empty.");
+    const clean = secret;
+    if (!clean.length) throw new Error("Credential cannot be empty.");
     if (!this.executable) throw new Error("The desktop credential bridge is unavailable. Launch BORG through the desktop application.");
     const result = spawnSync(this.executable, ["--credential-set", target], {
       input: clean,

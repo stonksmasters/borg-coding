@@ -223,3 +223,36 @@ test("visual director can reject a technically valid page on aesthetic dimension
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("design director propagates caller cancellation instead of waiting for its long timeout", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const observedSignals: AbortSignal[] = [];
+
+  globalThis.fetch = async (_input, init) => {
+    const signal = init?.signal as AbortSignal;
+    observedSignals.push(signal);
+    return await new Promise<Response>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason ?? new DOMException("Aborted", "AbortError")), { once: true });
+    });
+  };
+
+  try {
+    const pending = new DesignDirectorService("http://127.0.0.1:11434").createBrief({
+      taskId: "task-design-cancel",
+      request: "Build a premium homepage",
+      model: "fake-coder",
+      repositoryContext: "React app",
+      isGreenfield: true,
+      signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(observedSignals.length, 1);
+    controller.abort();
+    await assert.rejects(pending, /abort/i);
+    assert.equal(observedSignals[0]?.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

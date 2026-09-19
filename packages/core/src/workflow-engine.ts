@@ -317,7 +317,7 @@ export class WorkflowEngine {
   continueFromCheckpoint(
     task: Task,
     continuation: TaskContinuation,
-    options: { unresolvedReviewFindingIds?: string[] } = {},
+    options: { unresolvedReviewFindingIds?: string[]; resetAttempts?: boolean } = {},
   ): { task: Task; workflow: WorkflowState } {
     if (continuation.taskId !== task.id) throw new Error("Continuation does not belong to this task.");
     if (continuation.previousState !== task.state) {
@@ -325,7 +325,7 @@ export class WorkflowEngine {
     }
     const current = this.requireTask(task);
     const now = new Date().toISOString();
-    const updatedTask = { ...task, state: continuation.resultingState, updatedAt: now };
+    const updatedTask = { ...task, state: continuation.resultingState, attempts: options.resetAttempts ? 0 : task.attempts, updatedAt: now };
     const projection = taskProjection(continuation.resultingState);
     const workflow = WorkflowStateSchema.parse({
       ...current,

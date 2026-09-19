@@ -416,8 +416,10 @@ async function driveWorkflow(session: ChatSession, state: CoreWorkflowState | nu
   return null;
 }
 
-async function streamChat(session: ChatSession, prompt: string, emitToClient: EventSink, sliceAction?: string, workflowCommandId: string | null = null) {
+async function streamChat(session: ChatSession, prompt: string, emitToClient: EventSink, sliceAction?: string, workflowCommandId: string | null = null, externalSignal?: AbortSignal) {
   const controller = new AbortController();
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener("abort", () => controller.abort(), { once: true });
   activeStreams.set(session.id, controller);
   try {
     appendMessage({ sessionId: session.id, role: "user", kind: "prose", text: prompt });
@@ -738,6 +740,9 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/api/chat") {
+    const clientAbort = new AbortController();
+    request.once("aborted", () => clientAbort.abort());
+    response.once("close", () => { if (!response.writableEnded) clientAbort.abort(); });
     response.writeHead(200, headers("application/x-ndjson; charset=utf-8"));
     void readJson(request).then(async (input) => {
       const sessionId = String(input.sessionId ?? "");
@@ -746,7 +751,7 @@ const server = createServer((request, response) => {
       if (!session) throw new Error("A valid chat session is required.");
       if (!prompt) throw new Error("Request cannot be empty.");
       writeEvent(response, { type: "session.mode", sessionId, mode: session.activeMode });
-      await streamChat(session, prompt, (event) => writeEvent(response, event), typeof input.sliceAction === "string" ? input.sliceAction : undefined);
+      await streamChat(session, prompt, (event) => writeEvent(response, event), typeof input.sliceAction === "string" ? input.sliceAction : undefined, null, clientAbort.signal);
     }).catch((error) => writeEvent(response, { type: "stream.failed", message: error instanceof Error ? error.message : "Invalid chat request" }))
       .finally(() => response.end());
     return;
@@ -791,6 +796,47 @@ const server = createServer((request, response) => {
         : null;
       return send(response, 200, { ...body, session: updatedSession, startedSession, workflowStarted: Boolean(startedSession) });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
+    return;
+  }
+
+  const retryRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/retry$/);
+  if (request.method === "POST" && retryRoute) {
+    const taskId = decodeURIComponent(retryRoute[1]);
+    const session = chats.sessionForTask(taskId);
+    if (!session) return send(response, 404, { error: "Chat session for task was not found." });
+    if (activeStreams.has(session.id)) return send(response, 409, { error: "This session already has an active runtime." });
+    const controller = new AbortController();
+    request.once("aborted", () => controller.abort());
+    response.once("close", () => { if (!response.writableEnded) controller.abort(); });
+    activeStreams.set(session.id, controller);
+    response.writeHead(200, headers("application/x-ndjson; charset=utf-8"));
+    void (async () => {
+      const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/retry`, {
+        method: "POST",
+        signal: controller.signal,
+      });
+      const body = await upstream.json().catch(() => ({})) as { task?: { state?: string }; workflow?: CoreWorkflowState; error?: string };
+      if (!upstream.ok) throw new Error(body.error ?? `Retry failed (${upstream.status}).`);
+      appendMessage({
+        sessionId: session.id,
+        taskId,
+        role: "system",
+        kind: "status",
+        text: "Retrying the blocked task in its existing approved worktree with a fresh bounded repair budget.",
+      });
+      writeEvent(response, { type: "task.state", taskId, state: body.task?.state ?? "IMPLEMENTING", workflow: body.workflow ?? null });
+      await pipeExecution(taskId, session, (event) => writeEvent(response, event), controller);
+      if (session.repositoryPath) {
+        const root = rootWorkflowSession(session);
+        const deliveredWorkflow = await saveVerifiedFrontendSlice(taskId, root, (event) => writeEvent(response, event));
+        if (deliveredWorkflow) await driveWorkflow(root, deliveredWorkflow);
+      }
+      writeEvent(response, { type: "stream.completed", taskId });
+    })().catch((error) => writeEvent(response, { type: "runtime.failed", taskId, message: error instanceof Error ? error.message : "Retry failed" }))
+      .finally(() => {
+        if (activeStreams.get(session.id) === controller) activeStreams.delete(session.id);
+        response.end();
+      });
     return;
   }
 
