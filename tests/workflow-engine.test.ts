@@ -122,7 +122,7 @@ test("verified delivered slice schedules one durable advance command", () => {
   const started = engine.start(nextTask, "frontend_slice", "Advance", { commandId: delivered.workflow.pendingCommand!.id });
   assert.equal(started.pendingCommand?.id, delivered.workflow.pendingCommand!.id);
   assert.equal(started.pendingCommand?.claimedByTaskId, nextTask.id);
-  assert.equal(started.lastConsumedCommandId, null);
+  assert.equal(started.lastConsumedCommandId, command!.id);
 
   // A restart during planning may safely reclaim the same durable command.
   const replayTask = createTask({ id: "slice-2-replay", projectId: "project", request: "Slice 2 replay" });
