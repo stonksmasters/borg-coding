@@ -1,6 +1,6 @@
 # BORG Code Roadmap
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 
 This roadmap is product-oriented. Historical alpha documents describe implementation milestones; this file describes where BORG is going and what major capabilities are complete, active, or later.
 
@@ -74,7 +74,7 @@ Current repository capabilities include:
 
 The remaining challenge is not basic scaffolding. It is reliable autonomous continuation across a large multi-slice build.
 
-## 4. Phased autonomous frontend workflow - Active
+## 4. Phased autonomous frontend workflow - Built / hardening
 
 Target:
 
@@ -92,48 +92,37 @@ Key requirements:
 
 A large benchmark such as a social-commerce storefront should be able to run through multiple slices without losing coherence.
 
-## 5. Context Compiler and project memory - Next
+## 5. Context Compiler and project memory - Built / hardening
 
-Target:
+Current foundation:
 
-Build model context from durable project state instead of replaying the entire conversation and repository.
+- slice-scoped Context Compiler;
+- authoritative workflow plan/slice input;
+- pinned website product and design contracts;
+- bounded inclusion budgets;
+- source provenance manifests;
+- page/component registry context;
+- handoff and decision compression;
+- recorded model inputs for diagnostics;
+- tests for bounded relevance and exclusion.
 
-Deliverables:
+Hardening remains focused on dependency-aware source selection, richer entity-scoped profiles, and keeping critical contracts pinned under local-model context pressure.
 
-- first-class Context Compiler service;
-- typed context sections;
-- inclusion budgets;
-- source provenance;
-- project/slice/entity context profiles;
-- handoff compression;
-- context diagnostics;
-- tests for relevance and exclusion;
-- recovery from durable state.
+## 6. Execution observability - Built / consolidation
 
-This is the main scalability mechanism for long-running local builds.
+Current foundation:
 
-## 6. Execution observability - Next
+- server-owned RunView derived from durable task/workflow state;
+- structured activity feed and execution inspector;
+- current phase, slice, action, next transition, and blocker;
+- verification and repair visibility;
+- Preview / Plan / Changes / Evidence product surfaces;
+- advanced logs, project memory, and raw context diagnostics;
+- persisted state as the normal UI source of truth.
 
-Target:
+Consolidation work should continue to remove duplicate status derivation and improve evidence summaries without exposing unnecessary runtime internals.
 
-Eliminate the black-box feeling.
-
-Deliverables:
-
-- canonical execution stages;
-- structured activity feed;
-- current action summary;
-- current phase and slice;
-- verification progress;
-- repair attempt visibility;
-- blocking-reason display;
-- preview health;
-- context summary diagnostics;
-- persisted state as the UI source of truth.
-
-The user should always know where BORG is, what it is doing, and what happens next.
-
-## 7. First-class Pages and Components - Next
+## 7. First-class Pages and Components - Partial / next
 
 Target:
 
@@ -210,13 +199,12 @@ Backend should be driven by the approved product contract, not invented prematur
 
 The current priority order is:
 
-1. prove the multi-slice frontend workflow end to end;
-2. implement the Context Compiler;
-3. make execution state fully observable;
-4. introduce first-class Page and Component registries/workspaces;
-5. build a high-quality reusable corpus;
-6. add retrieval intelligence only after the corpus is trustworthy;
-7. expand reliable autonomy into full-stack implementation.
+1. benchmark and harden the completed multi-slice frontend workflow, Context Compiler, and RunView on difficult real projects;
+2. replace heuristic Page/Component source relationships with language-intelligence-backed mappings;
+3. introduce dedicated Page and Component workspaces using entity-scoped context and verification;
+4. build a high-quality reusable component/page corpus with evidence and provenance;
+5. add retrieval intelligence only after the corpus is trustworthy;
+6. expand the same durable workflow into reliable full-stack implementation.
 
 ## Benchmark principle
 
