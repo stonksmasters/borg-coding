@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, CircleAlert, ShieldCheck } from "lucide-react";
+import { Check, CircleAlert, ImageCheck, ShieldCheck } from "lucide-react";
 import type { DesignReviewView } from "./design-panel";
 import { Button } from "@/components/ui/button";
 
@@ -10,6 +10,10 @@ export function EvidencePanel({
   refinementCount,
   maxRefinements,
   blockingFindings,
+  baselineCandidates,
+  baselineBusy,
+  baselineError,
+  onAcceptBaselines,
   onOpenReviewHistory,
   onOpenLogs,
 }: {
@@ -18,6 +22,10 @@ export function EvidencePanel({
   refinementCount: number;
   maxRefinements: number;
   blockingFindings: number;
+  baselineCandidates: Array<{ profileId: string; screenshotName: string }>;
+  baselineBusy: boolean;
+  baselineError: string;
+  onAcceptBaselines(): void | Promise<void>;
   onOpenReviewHistory(): void;
   onOpenLogs(): void;
 }) {
@@ -43,6 +51,18 @@ export function EvidencePanel({
           <p className={`mt-2 text-sm font-medium ${blockingFindings ? "text-red-200" : "text-[#a7ff4f]"}`}>{blockingFindings}</p>
         </div>
       </section>
+
+      {baselineCandidates.length > 0 && <section className="rounded-xl border border-sky-300/20 bg-sky-300/[0.04] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-xl">
+            <div className="flex items-center gap-2 text-sky-100"><ImageCheck className="size-4" /><p className="text-sm font-medium">Visual baseline approval required</p></div>
+            <p className="mt-2 text-xs leading-5 text-slate-400">These screenshots passed the current implementation checks but do not yet have an operator-approved comparison baseline. BORG will not checkpoint this slice until you accept them.</p>
+            <div className="mt-3 flex flex-wrap gap-1.5">{baselineCandidates.map((candidate) => <span key={`${candidate.profileId}:${candidate.screenshotName}`} className="rounded border border-sky-300/10 bg-sky-300/[0.035] px-2 py-1 font-mono text-[10px] text-sky-100">{candidate.profileId}/{candidate.screenshotName}</span>)}</div>
+            {baselineError && <p className="mt-3 text-xs text-red-200">{baselineError}</p>}
+          </div>
+          <Button size="sm" disabled={baselineBusy} onClick={() => void onAcceptBaselines()} className="bg-sky-200 text-sky-950 hover:bg-sky-100">{baselineBusy ? "Accepting…" : "Accept baselines"}</Button>
+        </div>
+      </section>}
 
       {designReview && <section className="rounded-xl border border-white/8 bg-white/[0.025] p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
