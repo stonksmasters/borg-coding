@@ -28,14 +28,6 @@ export function prepareWebsiteWorkspace(projectPath: string, forcedKind?: Worksp
   return prepareWorkspaceContract(root, contract);
 }
 
-const templateCopy: Record<WebsiteTemplate, { kicker: string; description: string }> = {
-  "saas-landing": { kicker: "SAAS / PRODUCT", description: "A polished product canvas with room for a decisive hero, product proof, pricing, and conversion-focused calls to action." },
-  portfolio: { kicker: "PORTFOLIO / STORY", description: "A portfolio canvas built to foreground personality, selected work, credibility, and a clear path to contact." },
-  ecommerce: { kicker: "COMMERCE / CATALOG", description: "A commerce canvas prepared for product storytelling, collection discovery, merchandising, and confident purchase paths." },
-  dashboard: { kicker: "PRODUCT / WORKSPACE", description: "An application canvas prepared for navigation, dense information, useful empty states, and responsive operational workflows." },
-  waitlist: { kicker: "LAUNCH / WAITLIST", description: "A focused launch canvas designed around a crisp value proposition, trust signals, and one excellent signup journey." },
-};
-
 export function websiteRoot() {
   return resolve(process.env.BORG_WEBSITES_DIR ?? join(homedir(), "Documents", "BORG Websites"));
 }
@@ -63,7 +55,6 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
   prepareWebsiteWorkspace(projectPath, "vite-react");
   const title = name.trim();
   const template = websiteTemplates.includes(options.template as WebsiteTemplate) ? options.template as WebsiteTemplate : "saas-landing";
-  const starter = templateCopy[template];
   const createdAt = new Date().toISOString();
   const files: Record<string, string> = {
     "package.json": JSON.stringify({
