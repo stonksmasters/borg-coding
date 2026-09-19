@@ -10,6 +10,37 @@ export type ProjectSlice = {
   scope: string[];
   acceptanceCriteria: string[];
 };
+export type ProjectSitemapPage = {
+  id: string;
+  name: string;
+  route: string;
+  purpose: string;
+  sections: string[];
+  componentIds: string[];
+  acceptanceCriteria: string[];
+};
+export type PlannedComponent = {
+  id: string;
+  name: string;
+  kind: "layout" | "section" | "ui" | "feature";
+  purpose: string;
+  usedBy: string[];
+  variants: string[];
+  acceptanceCriteria: string[];
+};
+export type ProjectStyleSystem = {
+  direction: string;
+  colors: string[];
+  typography: string[];
+  spacing: string[];
+  radii: string[];
+  shadows: string[];
+  layoutPrinciples: string[];
+  motion: string[];
+  responsive: string[];
+  accessibility: string[];
+  avoid: string[];
+};
 export type ProjectPlan = {
   version: 2;
   revision: number;
@@ -19,6 +50,9 @@ export type ProjectPlan = {
   audience: string;
   pages: string[];
   features: string[];
+  sitemap: ProjectSitemapPage[];
+  components: PlannedComponent[];
+  styles: ProjectStyleSystem;
   visualDirection: string;
   backendRequired: boolean;
   slices: ProjectSlice[];
@@ -85,7 +119,93 @@ function list(value: unknown, fallback: string[] = []) {
 }
 function slug(value: string, index: number) {
   const next = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
-  return next || `slice-${index + 1}`;
+  return next || `item-${index + 1}`;
+}
+function route(value: unknown, fallback: string) {
+  const next = clean(value, fallback).replace(/\s+/g, "-").toLowerCase();
+  return next.startsWith("/") ? next : `/${next.replace(/^\/+/, "")}`;
+}
+function fallbackStyles(commerce: boolean): ProjectStyleSystem {
+  return {
+    direction: commerce
+      ? "Premium mobile-first commerce with strong product imagery, disciplined hierarchy, and trustworthy transaction surfaces."
+      : "A coherent premium visual system derived from the approved brief and Design Director direction.",
+    colors: commerce
+      ? ["Use a restrained neutral foundation.", "Reserve accent color for interaction, status, and merchandising emphasis.", "Maintain WCAG-aware foreground/background contrast."]
+      : ["Define semantic background, surface, text, muted, border, accent, success, warning, and danger roles.", "Avoid arbitrary one-off colors outside the shared token system."],
+    typography: ["Define display, heading, body, label, and code roles.", "Use a deliberate type scale and line-height rhythm.", "Preserve readable measure and hierarchy on mobile."],
+    spacing: ["Use a consistent spacing scale for page gutters, sections, stacks, and component internals.", "Prefer shared spacing tokens over isolated pixel values."],
+    radii: ["Define a small radius scale and use it consistently by component role."],
+    shadows: ["Use elevation sparingly and consistently; avoid random decorative shadows."],
+    layoutPrinciples: ["Use a shared content width and page gutter system.", "Vary section composition intentionally instead of repeating identical centered card grids.", "Keep alignment and visual rhythm consistent across routes."],
+    motion: ["Motion should reinforce hierarchy or state change.", "Respect reduced-motion preferences.", "Avoid decorative motion that competes with content."],
+    responsive: ["Recompose important layouts for narrow screens rather than merely shrinking desktop.", "Keep touch targets, spacing, and navigation intentional at mobile widths."],
+    accessibility: ["Maintain visible focus states.", "Do not rely on color alone for meaning.", "Keep text and interactive contrast accessible."],
+    avoid: ["Centered-everything layouts", "Repetitive generic card grids", "Arbitrary gradients", "Excessive pill styling", "One-off style values that bypass shared tokens"],
+  };
+}
+function fallbackSitemap(brief: string, commerce: boolean, dashboard: boolean, contentHeavy: boolean, seller: boolean, admin: boolean, accounts: boolean): ProjectSitemapPage[] {
+  const text = brief.toLowerCase();
+  const pages: Array<{ name: string; route: string; purpose: string; sections: string[] }> = [];
+  const add = (name: string, pageRoute: string, purpose: string, sections: string[]) => {
+    if (!pages.some((page) => page.route === pageRoute)) pages.push({ name, route: pageRoute, purpose, sections });
+  };
+  if (commerce) {
+    add("Home", "/", "Introduce the marketplace and drive product discovery.", ["Navigation", "Hero / discovery entry", "Featured products", "Categories", "Trust / social proof", "Primary CTA", "Footer"]);
+    add("Discovery", "/discover", "Browse personalized and editorial discovery feeds.", ["Discovery controls", "Feed", "Creator / seller recommendations", "Loading and empty states"]);
+    add("Search", "/search", "Search, filter, sort, and compare products.", ["Search input", "Filter / sort controls", "Results", "No-results state"]);
+    add("Product", "/products/:id", "Evaluate a product and choose a purchasable variant.", ["Media gallery", "Product summary", "Variant selection", "Seller summary", "Reviews", "Related products"]);
+    add("Cart", "/cart", "Review and edit intended purchases.", ["Cart groups", "Line items", "Totals", "Saved items", "Checkout CTA"]);
+    add("Checkout", "/checkout", "Complete the purchase flow with clear validation.", ["Contact / address", "Delivery", "Payment", "Order review", "Validation states"]);
+    add("Order confirmation", "/orders/:id/confirmation", "Confirm purchase and explain next steps.", ["Confirmation", "Order summary", "Next actions"]);
+    if (accounts) add("Account", "/account", "Manage identity, saved data, and order history.", ["Profile", "Addresses", "Wishlist", "Recently viewed", "Orders"]);
+    if (seller) {
+      add("Seller storefront", "/sellers/:id", "Present a seller's brand and catalog.", ["Seller identity", "Catalog", "Policies / trust", "Reviews"]);
+      add("Seller dashboard", "/seller", "Manage products, inventory, orders, and store performance.", ["Seller navigation", "Overview", "Products", "Inventory", "Orders", "Promotions", "Analytics"]);
+    }
+    if (admin) add("Admin", "/admin", "Operate marketplace-wide administration.", ["Admin navigation", "Overview", "Users", "Sellers", "Products", "Orders", "Reviews", "Categories", "Promotions"]);
+  } else if (dashboard) {
+    add("Dashboard", "/", "Provide the primary operational overview and navigation.", ["Application navigation", "Overview / KPI summary", "Primary work queue", "Recent activity", "Empty / loading states"]);
+    add("Activity", "/activity", "Inspect recent operational events and records.", ["Filters", "Activity list / table", "Detail state"]);
+    add("Settings", "/settings", "Manage application preferences and configuration.", ["Settings navigation", "Preferences", "Account / workspace settings"]);
+  } else {
+    add("Home", "/", "Communicate the primary value proposition and direct users into the site's core journey.", ["Navigation", "Hero", "Primary proof / value sections", "Primary CTA", "Footer"]);
+    if (/service|offering|solution/.test(text)) add("Services", "/services", "Explain services or solutions in enough detail to support a decision.", ["Services overview", "Service details", "Proof / process", "CTA"]);
+    if (/portfolio|project|work|case study/.test(text)) add("Work", "/work", "Show representative work and outcomes.", ["Work index", "Featured case studies", "Project cards", "CTA"]);
+    if (/about|team|company|story/.test(text)) add("About", "/about", "Explain the people, story, and credibility behind the site.", ["Story", "Team / credibility", "Values / approach", "CTA"]);
+    if (/pricing|plan|subscription/.test(text)) add("Pricing", "/pricing", "Explain plans, value, and purchasing choices.", ["Plan comparison", "Feature comparison", "FAQ", "CTA"]);
+    if (contentHeavy) add("Articles", "/articles", "Support content discovery and reading.", ["Featured content", "Categories / filters", "Article list", "Search"]);
+    if (/contact|lead|book|appointment|quote|waitlist|signup|sign up/.test(text)) add("Contact", "/contact", "Provide the primary conversion or contact path.", ["Contact / conversion form", "Trust details", "Alternative contact", "Success / error states"]);
+  }
+  return pages.map((page, index) => ({
+    id: slug(page.name, index),
+    ...page,
+    componentIds: [],
+    acceptanceCriteria: ["Route is reachable and intentional.", "All listed sections are represented.", "Responsive and accessible behavior is defined."],
+  }));
+}
+function fallbackComponents(sitemap: ProjectSitemapPage[]): PlannedComponent[] {
+  const components = new Map<string, PlannedComponent>();
+  const add = (name: string, kind: PlannedComponent["kind"], purpose: string, pageId: string, index: number) => {
+    const id = slug(name, index);
+    const existing = components.get(id);
+    if (existing) {
+      if (!existing.usedBy.includes(pageId)) existing.usedBy.push(pageId);
+      return id;
+    }
+    components.set(id, { id, name, kind, purpose, usedBy: [pageId], variants: [], acceptanceCriteria: ["Reusable where its role repeats.", "Responsive and accessible states are defined."] });
+    return id;
+  };
+  for (const page of sitemap) {
+    page.componentIds = page.sections.map((section, index) => add(
+      section,
+      /navigation|footer/i.test(section) ? "layout" : /form|search|filter|control|gallery|table|list|card/i.test(section) ? "feature" : "section",
+      `${section} for ${page.name}.`,
+      page.id,
+      index,
+    ));
+  }
+  return [...components.values()];
 }
 function writeState(root: string, state: SliceState) {
   const dir = docsDirectory(root);
