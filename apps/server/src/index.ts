@@ -1109,7 +1109,7 @@ const server = createServer((request, response) => {
           const summary = `Verified ${currentSlice(projectPlan, sliceState).title}.\n\nChanged files:\n${(status.stdout ?? "").slice(0, 1200)}\n\nVerification: passed.\n\nReview: ${review.summary.slice(0, 1200)}`;
           const changedPaths = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim()).filter((path) => path && !path.includes(" -> "));
           updateVerifiedProjectModel(approvedWorktreePath, changedPaths, currentSlice(projectPlan, sliceState).acceptanceCriteria);
-          const ready = markSliceReady(approvedWorktreePath, taskId, summary);
+          const ready = markSliceReady(approvedWorktreePath, taskId, summary, { plan: projectPlan, state: sliceState });
           if (ready) appendTaskEvent(taskId, "FRONTEND_SLICE_READY", { slice: ready.current, status: ready.status });
           status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
           diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
@@ -1293,7 +1293,9 @@ const server = createServer((request, response) => {
       const repositoryPath = access.load().repositoryPath;
       if (!repositoryPath) return send(response, 400, { error: "Approve a Git repository before continuing." });
       if (isProjectPlanApproval) {
-        const approvedProject = approveProjectPlan(repositoryPath, task.id);
+        const authoritativePlan = projectPlanFromWorkflow(workflow.get(task.projectId), repositoryPath);
+        if (!authoritativePlan) return send(response, 409, { error: "The durable project plan is missing from SQLite." });
+        const approvedProject = approveProjectPlan(repositoryPath, task.id, authoritativePlan);
         commitBuildDocs(repositoryPath, "Approve BORG frontend phase plan");
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
         const decided = workflow.decideApproval(task, approved, "project_plan");
@@ -1308,7 +1310,21 @@ const server = createServer((request, response) => {
         const website = websiteInfo(worktree.path);
         const approvedPlan = tasks.listEvents(task.id).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
         if (website) {
-          preparedSlice = prepareSlice(worktree.path, website.originalBrief || task.request, sliceIntent.action ?? "initial", sliceIntent.feedback ?? "", task.id, typeof approvedPlan === "string" ? approvedPlan : "");
+          const authoritativeWorkflow = workflow.get(task.projectId);
+          const authoritativePlan = projectPlanFromWorkflow(authoritativeWorkflow, worktree.path);
+          const authoritativeSlice = sliceStateFromWorkflow(authoritativeWorkflow, authoritativePlan, worktree.path);
+          const preparationState = authoritativeSlice
+            ? { ...authoritativeSlice, status: (sliceIntent.action === "initial" ? "ready" : "awaiting_feedback") as SliceState["status"] }
+            : null;
+          preparedSlice = prepareSlice(
+            worktree.path,
+            website.originalBrief || task.request,
+            sliceIntent.action ?? "initial",
+            sliceIntent.feedback ?? "",
+            task.id,
+            typeof approvedPlan === "string" ? approvedPlan : "",
+            authoritativePlan && preparationState ? { plan: authoritativePlan, state: preparationState } : undefined,
+          );
           setFrontendWorkflowStage(worktree.path, "slice_implementing", { currentSlice: preparedSlice.current, totalSlices: preparedSlice.total, taskId: task.id, detail: "Slice mini-plan approved automatically from the outer frontend approval. Implementation is starting." });
         }
       }
