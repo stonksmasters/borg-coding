@@ -459,6 +459,10 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
   try {
     appendMessage({ sessionId: session.id, role: "user", kind: "prose", text: prompt });
     if (session.title === "New chat") session = chats.updateSession(session.id, { title: compactTitle(prompt) }) ?? session;
+    if (session.repositoryPath) {
+      const currentAccess = access.load();
+      if (currentAccess.repositoryPath !== session.repositoryPath) access.save({ repositoryPath: session.repositoryPath, documents: currentAccess.documents });
+    }
 
     const focusedAction = session.workflowRole === "styles"
       ? "style"
