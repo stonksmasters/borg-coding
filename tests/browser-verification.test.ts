@@ -90,7 +90,7 @@ test("managed preview receives project environment without exposing the value in
   const port = await availablePort();
   const secret = "preview-secret-value";
   const runtime = new BrowserVerification({
-    environmentForTask: (taskId) => taskId === "browser-env-test" ? { PROJECT_SECRET: secret } : {},
+    environmentForTask: (taskId): Record<string, string> => taskId === "browser-env-test" ? { PROJECT_SECRET: secret } : {},
   });
   const context = { taskId: "browser-env-test", worktreePath: root };
   const url = `http://127.0.0.1:${port}`;
@@ -102,7 +102,6 @@ test("managed preview receives project environment without exposing the value in
       timeout_seconds: 10,
     }, context) as { stdout: string; stderr: string };
 
-    assert.equal((await fetch(url)).text instanceof Function, true);
     const response = await fetch(url);
     assert.equal(await response.text(), secret);
     assert.equal(started.stdout.includes(secret), false);
