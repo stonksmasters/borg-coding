@@ -19,7 +19,7 @@ A website build follows this hierarchy:
           -> Document
           -> Handoff
 
-Every new website begins with a frontend phase. BORG creates a tailored plan from the brief, including pages, features, design direction, ordered slices, and acceptance criteria. Each approved slice runs in its own bounded mini-loop. Backend work is a separate phase only when the finished product requires server behavior, persistence, accounts, integrations, payments, or similar capabilities.
+Every new website begins with a frontend phase. BORG creates a tailored plan from the brief, including pages, features, design direction, ordered slices, and acceptance criteria. Each approved slice runs in its own bounded mini-loop while the website continues to use one primary project session. Backend work is a separate phase only when the finished product requires server behavior, persistence, accounts, integrations, payments, or similar capabilities.
 
 The runtime underneath still provides durable tasks, permission modes, worktrees, checkpoints, role routing, browser verification, repair, review history, and Ollama-powered local agents. Those are implementation infrastructure; the website-building workflow is the product.
 
@@ -29,13 +29,13 @@ The main priority is reliable one-prompt, multi-slice frontend construction.
 
 The active sequence is:
 
-1. prove the autonomous frontend slice loop across difficult real projects;
-2. introduce a first-class Context Compiler so model calls use bounded relevant project state;
-3. make execution fully observable so the user always knows the active phase, slice, action, evidence, and blocking reason;
-4. make Pages and Components first-class entities with dedicated scoped workspaces;
-5. build a high-quality local component/page corpus;
-6. add library retrieval only after the corpus and quality gates are trustworthy;
-7. extend the same workflow into reliable full-stack construction.
+1. benchmark and harden the persistent multi-slice frontend workflow on difficult real projects;
+2. harden the implemented Context Compiler and RunView rather than adding parallel context/progress systems;
+3. replace heuristic page/component source relationships with language-intelligence-backed mappings;
+4. add dedicated Page and Component workspaces with entity-scoped context and verification;
+5. build a high-quality local component/page corpus with provenance and evidence;
+6. add retrieval only after that corpus is trustworthy;
+7. extend the same durable workflow into reliable full-stack construction.
 
 ## Canonical documentation
 
