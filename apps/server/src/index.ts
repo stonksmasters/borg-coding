@@ -803,21 +803,21 @@ const server = createServer((request, response) => {
     const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
     const designBrief = latestDesignBrief(taskId) ?? (parsedPersistedDesignBrief?.success ? parsedPersistedDesignBrief.data : null);
     const designContext = designBrief ? designBriefPrompt(designBrief) : "";
-    const priorDeliveredWebsiteTask = websiteProject
-      ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
-      : false;
-    const websiteWorkflow: WebsiteWorkflowKind = priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
-    const websiteContext = websiteProject && !readSliceState(approvedWorktreePath) ? websiteGenerationContext({
-      name: websiteProject.name,
-      template: websiteProject.template,
-      originalBrief: websiteProject.originalBrief,
-    }, websiteWorkflow) : "";
     const taskWorkflow = workflow.get(task.projectId);
     const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
     const projectPlan = websiteProject ? projectPlanFromWorkflow(ownedTaskWorkflow, approvedWorktreePath) : null;
     const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED")
       ? sliceStateFromWorkflow(ownedTaskWorkflow, projectPlan, approvedWorktreePath)
       : null;
+    const priorDeliveredWebsiteTask = websiteProject
+      ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
+      : false;
+    const websiteWorkflow: WebsiteWorkflowKind = sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+    const websiteContext = websiteProject ? websiteGenerationContext({
+      name: websiteProject.name,
+      template: websiteProject.template,
+      originalBrief: websiteProject.originalBrief,
+    }, websiteWorkflow) : "";
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
     const teamPolicy = teamPolicies.load(access.load().repositoryPath);
@@ -834,8 +834,16 @@ const server = createServer((request, response) => {
     let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
       let repairEvidence = "";
+      let implementationBudgetContinuations = 0;
+      let implementationBudgetExhausted = false;
       performPreflight("execution_start");
-      const compiledSlice = sliceState ? compileFrontendContext({ root: approvedWorktreePath, phase: "frontend", sliceIndex: sliceState.current }) : null;
+      const compiledSlice = sliceState && projectPlan ? compileFrontendContext({
+        root: approvedWorktreePath,
+        phase: "frontend",
+        sliceIndex: sliceState.current,
+        authority: { plan: projectPlan, state: sliceState },
+        productContract: websiteContext,
+      }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
@@ -869,7 +877,8 @@ const server = createServer((request, response) => {
           task = scheduleImplementationRetry(task, emit, decision.action, decision);
           continue;
         }
-        const { answer, usedTools } = implementationResult;
+        const { answer, usedTools, budgetExhausted } = implementationResult;
+        implementationBudgetExhausted = Boolean(budgetExhausted);
         if (sliceState) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
           const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
@@ -897,7 +906,20 @@ const server = createServer((request, response) => {
             continue;
           }
         }
-        appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, attempt: task.attempts });
+        if (sliceState && budgetExhausted && implementationBudgetContinuations < 1) {
+          implementationBudgetContinuations += 1;
+          appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_CONTINUATION", {
+            continuation: implementationBudgetContinuations,
+            toolBudgetExhausted: true,
+          });
+          if (activeRoleAssignment) finishRole(activeRoleAssignment, "completed", emit);
+          activeRoleAssignment = null;
+          repairEvidence = "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
+          emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same slice once with compact context instead of treating partial progress as complete." });
+          continue;
+        }
+        if (sliceState && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
+        appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, budgetExhausted: Boolean(budgetExhausted), attempt: task.attempts });
         finishRole(activeRoleAssignment, "completed", emit);
         recordHandoff({
           task,
@@ -979,7 +1001,7 @@ const server = createServer((request, response) => {
         }
 
         let visionReview: VisionReviewResult | null = null;
-        if (verification.browserEvidence) {
+        if (verification.browserEvidence && !designBrief) {
           const visionStatus = vision.status();
           appendTaskEvent(taskId, "VISION_REVIEW_STARTED", { provider: visionStatus.provider, model: visionStatus.model, attempt: task.attempts });
           emit({ type: "vision.review.started", provider: visionStatus.provider, model: visionStatus.model });
@@ -1107,7 +1129,22 @@ const server = createServer((request, response) => {
         emit({ type: "stage.updated", stage: "Review", status: "active" });
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, packs, emit);
-        const review = await runFreshReview({ ollamaUrl, model: reviewerModel, taskId, request: task.request, diff: diff.stdout ?? "", verification, specialistInstructions: specialistInstructions.reviewer, onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledSlice?.sliceId ?? null, [], body) : undefined });
+        const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
+        const review = await runFreshReview({
+          ollamaUrl,
+          model: reviewerModel,
+          taskId,
+          request: task.request,
+          projectGoal: projectPlan?.siteGoal,
+          sliceTitle: activeSlice?.title,
+          sliceOutcome: activeSlice?.outcome,
+          acceptanceCriteria: activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
+          implementationBudgetExhausted,
+          diff: diff.stdout ?? "",
+          verification,
+          specialistInstructions: specialistInstructions.reviewer,
+          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledSlice?.sliceId ?? null, [], body) : undefined,
+        });
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
         const reviewHistory = recordCompletedReview(
@@ -1466,7 +1503,15 @@ const server = createServer((request, response) => {
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "advance") throw new Error("The current slice is not ready to advance.");
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "revise") throw new Error("There is no completed slice waiting for revision.");
       const teamPolicy = teamPolicies.load(access.load().repositoryPath);
-      const route = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
+      const routed = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
+      const websiteFrontend = mode !== "ask" && Boolean(selectedWebsite) && rawSliceAction !== "backend";
+      const route = websiteFrontend && !routed.disciplines.includes("frontend")
+        ? {
+            primary: "frontend" as EngineeringDiscipline,
+            disciplines: ["frontend" as EngineeringDiscipline, ...routed.disciplines].slice(0, 6),
+            reasons: ["BORG website frontend phase", ...routed.reasons],
+          }
+        : routed;
       const packs = selectSpecialistPacks(route.disciplines);
       let task: Task = {
         ...createTask({ id: randomUUID(), projectId, request: requestText }),
@@ -1535,8 +1580,8 @@ const server = createServer((request, response) => {
       const priorDeliveredWebsiteTask = websiteProject
         ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== task.id && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
         : false;
-      const websiteWorkflow: WebsiteWorkflowKind = priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
-      const websiteContext = websiteProject && !slicedApplication ? websiteGenerationContext({
+      const websiteWorkflow: WebsiteWorkflowKind = projectPlanning || slicedApplication ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+      const websiteContext = websiteProject ? websiteGenerationContext({
         name: websiteProject.name,
         template: websiteProject.template,
         originalBrief: websiteProject.originalBrief,
@@ -1560,7 +1605,13 @@ const server = createServer((request, response) => {
         const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
         const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
         sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
-        compiledArchitectContext = compileFrontendContext({ root: websiteProject.path, phase: "frontend", sliceIndex: nextIndex });
+        compiledArchitectContext = compileFrontendContext({
+          root: websiteProject.path,
+          phase: "frontend",
+          sliceIndex: nextIndex,
+          authority: { plan: projectPlan, state: plannedSlice },
+          productContract: websiteContext,
+        });
         repositoryContext = compiledArchitectContext.text;
       }
       if (rawSliceAction === "backend" && websiteProject) {
