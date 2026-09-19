@@ -650,9 +650,11 @@ const server = createServer((request, response) => {
     const approval = tasks.findApproval(taskId);
     const recordedRoot = events.find((event) => event.type === "WEBSITE_REPOSITORY_SELECTED")?.payload.repositoryPath;
     const root = approval?.worktreePath ?? (typeof recordedRoot === "string" ? recordedRoot : access.load().repositoryPath);
-    const plan = root ? readProjectPlan(root) : null;
-    const slice = root ? readSliceState(root) : null;
-    return send(response, 200, { status: deriveWorkflowStatus(task, events, plan, slice, workflow.get(task.projectId)) });
+    const projectWorkflow = workflow.get(task.projectId);
+    const ownedWorkflow = projectWorkflow?.taskId === task.id ? projectWorkflow : null;
+    const plan = projectPlanFromWorkflow(ownedWorkflow, root);
+    const slice = sliceStateFromWorkflow(ownedWorkflow, plan, root);
+    return send(response, 200, { status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow) });
   }
 
   const changesRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/changes$/);
@@ -693,14 +695,10 @@ const server = createServer((request, response) => {
         if (isFrontendSlice && !repositoryPath) return send(response, 409, { error: "Project repository is unavailable for saving this slice." });
         const result = await delivery.deliver(taskId, approval.worktreePath, method, typeof input.message === "string" ? input.message : undefined,
           isFrontendSlice && repositoryPath ? { repositoryPath, expectedBaseCommit: approval.baseCommit! } : undefined);
-        appendTaskEvent(taskId, "DELIVERY_COMPLETED", { result });
-        task = transitionTask(task, "COMPLETE");
-        if (isFrontendSlice && repositoryPath) {
-          const state = readSliceState(repositoryPath);
-          const plan = readProjectPlan(repositoryPath);
-          if (state && plan) workflow.slice(task, { index: state.current, total: plan.slices.length, title: state.currentTitle, status: "awaiting_feedback" });
-        }
-        return send(response, 200, { task, workflow: workflow.get(task.projectId), delivery: result });
+        const completed = workflow.completeDelivery(task, result);
+        task = completed.task;
+        syncWorkflowProjection(task, completed.workflow);
+        return send(response, 200, { task, workflow: completed.workflow, delivery: result });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Delivery failed";
         appendTaskEvent(taskId, "DELIVERY_FAILED", { method, message });
@@ -1106,10 +1104,7 @@ const server = createServer((request, response) => {
           const changedPaths = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim()).filter((path) => path && !path.includes(" -> "));
           updateVerifiedProjectModel(approvedWorktreePath, changedPaths, currentSlice(projectPlan, sliceState).acceptanceCriteria);
           const ready = markSliceReady(approvedWorktreePath, taskId, summary);
-          if (ready) {
-            appendTaskEvent(taskId, "FRONTEND_SLICE_READY", { slice: ready.current, status: ready.status });
-            workflow.slice(task, { index: ready.current, total: ready.total, title: ready.currentTitle, status: "awaiting_feedback" });
-          }
+          if (ready) appendTaskEvent(taskId, "FRONTEND_SLICE_READY", { slice: ready.current, status: ready.status });
           status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
           diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
         }
