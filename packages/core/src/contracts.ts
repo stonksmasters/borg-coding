@@ -16,6 +16,46 @@ export const reviewFindingStates = ["open", "accepted", "fixed", "waived", "fals
 export const reviewDecisionActions = ["accept", "mark_fixed", "waive", "false_positive", "reopen", "supersede"] as const;
 export const reviewDecisionActors = ["operator", "reviewer", "system"] as const;
 export const reviewRunStatuses = ["running", "completed", "failed"] as const;
+export const workflowPhases = ["planning", "frontend", "backend", "delivery", "complete"] as const;
+export const workflowStatuses = ["idle", "planning", "awaiting_approval", "running", "verifying", "reviewing", "awaiting_feedback", "recovery_required", "complete", "blocked", "failed", "cancelled"] as const;
+export const workflowActions = ["plan", "await_approval", "start_slice", "implement", "verify", "repair", "checkpoint", "advance_slice", "request_feedback", "plan_backend", "deliver", "recover", "none"] as const;
+
+export const WorkflowProjectSliceSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  outcome: z.string(),
+  scope: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()),
+});
+export type WorkflowProjectSlice = z.infer<typeof WorkflowProjectSliceSchema>;
+
+export const WorkflowProjectPlanSchema = z.object({
+  version: z.literal(2),
+  revision: z.number().int().positive(),
+  status: z.enum(["proposed", "approved", "frontend_complete"]),
+  phase: z.literal("frontend"),
+  siteGoal: z.string(),
+  audience: z.string(),
+  pages: z.array(z.string()),
+  features: z.array(z.string()),
+  visualDirection: z.string(),
+  backendRequired: z.boolean(),
+  slices: z.array(WorkflowProjectSliceSchema).min(1),
+  acceptanceCriteria: z.array(z.string()),
+  proposedAt: z.string().datetime(),
+  approvedAt: z.string().datetime().nullable(),
+});
+export type WorkflowProjectPlan = z.infer<typeof WorkflowProjectPlanSchema>;
+
+export const WorkflowCommandSchema = z.object({
+  id: z.string().min(1),
+  action: z.enum(workflowActions),
+  workflowVersion: z.number().int().positive(),
+  createdAt: z.string().datetime(),
+  claimedByTaskId: z.string().min(1).nullable().default(null),
+  claimedAt: z.string().datetime().nullable().default(null),
+});
+export type WorkflowCommand = z.infer<typeof WorkflowCommandSchema>;
 
 export const TaskSchema = z.object({
   id: z.string().min(1), projectId: z.string().min(1), request: z.string().min(1),
@@ -76,6 +116,19 @@ export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
 
 export const TaskEventSchema = z.object({ id: z.string().min(1), taskId: z.string().min(1), type: z.string().min(1), payload: z.record(z.string(), z.unknown()), occurredAt: z.string().datetime() });
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
+
+export const WorkflowStateSchema = z.object({
+  projectId: z.string().min(1), taskId: z.string().min(1).nullable(),
+  phase: z.enum(workflowPhases), status: z.enum(workflowStatuses), nextAction: z.enum(workflowActions),
+  planApprovalId: z.string().min(1).nullable(), planApproved: z.boolean(),
+  projectPlan: WorkflowProjectPlanSchema.nullable().default(null),
+  sliceIndex: z.number().int().nonnegative().nullable(), sliceTotal: z.number().int().positive().nullable(), sliceTitle: z.string().nullable(),
+  feedback: z.array(z.string()).default([]), handoff: z.string().nullable().default(null),
+  pendingCommand: WorkflowCommandSchema.nullable().default(null), lastConsumedCommandId: z.string().nullable().default(null),
+  repairAttempt: z.number().int().nonnegative(), recoveryCategory: z.string().nullable(), detail: z.string(),
+  version: z.number().int().positive(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
+});
+export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
 
 
 export type EngineeringRole = (typeof engineeringRoles)[number];

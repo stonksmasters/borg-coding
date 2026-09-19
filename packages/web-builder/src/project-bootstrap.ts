@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
+import { contractForWorkspace, prepareWorkspaceContract, viteReactWorkspaceDirectories, type WorkspaceKind } from "./workspace-contract.ts";
 
 const execFileAsync = promisify(execFile);
 const marker = ".borg-website.json";
@@ -18,44 +19,13 @@ export type WebsiteProjectOptions = {
   originalBrief?: string;
 };
 
-export const websiteWorkspaceDirectories = [
-  "src",
-  "src/assets",
-  "src/components",
-  "src/components/layout",
-  "src/components/ui",
-  "src/data",
-  "src/design",
-  "src/features",
-  "src/hooks",
-  "src/lib",
-  "src/pages",
-  "src/sections",
-  "src/styles",
-  "src/types",
-  "public",
-  "server",
-  "server/lib",
-  "server/routes",
-  "server/services",
-  ".localcode",
-  ".localcode/build",
-] as const;
+export const websiteWorkspaceDirectories = viteReactWorkspaceDirectories;
 
-export function prepareWebsiteWorkspace(projectPath: string): string[] {
+export function prepareWebsiteWorkspace(projectPath: string, forcedKind?: WorkspaceKind): string[] {
   const root = resolve(projectPath);
   mkdirSync(root, { recursive: true });
-  const created: string[] = [];
-  for (const directory of websiteWorkspaceDirectories) {
-    const absolute = join(root, directory);
-    if (existsSync(absolute)) {
-      if (!lstatSync(absolute).isDirectory()) throw new Error(`Website workspace path is not a directory: ${directory}`);
-      continue;
-    }
-    mkdirSync(absolute, { recursive: true });
-    created.push(directory);
-  }
-  return created;
+  const contract = contractForWorkspace(root, forcedKind ?? (!existsSync(join(root, "package.json")) ? "vite-react" : undefined));
+  return prepareWorkspaceContract(root, contract);
 }
 
 const templateCopy: Record<WebsiteTemplate, { kicker: string; description: string }> = {
@@ -90,7 +60,7 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
   const projectPath = resolve(root, slug);
   if (existsSync(projectPath)) throw new Error(`A website named “${slug}” already exists.`);
   mkdirSync(root, { recursive: true });
-  prepareWebsiteWorkspace(projectPath);
+  prepareWebsiteWorkspace(projectPath, "vite-react");
   const title = name.trim();
   const template = websiteTemplates.includes(options.template as WebsiteTemplate) ? options.template as WebsiteTemplate : "saas-landing";
   const starter = templateCopy[template];
@@ -108,7 +78,7 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
     "index.html": `<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="theme-color" content="#0b0d0f" /><title>${title.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;")}</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>\n`,
     "vite.config.ts": "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\nimport tailwindcss from '@tailwindcss/vite';\nimport { borgLocalApi } from './server/local-api';\n\nexport default defineConfig({ plugins: [react(), tailwindcss(), borgLocalApi()] });\n",
     "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ES2022", useDefineForClassFields: true, lib: ["ES2022", "DOM", "DOM.Iterable"], types: ["node", "vite/client"], module: "ESNext", skipLibCheck: true, moduleResolution: "Bundler", allowImportingTsExtensions: true, resolveJsonModule: true, isolatedModules: true, noEmit: true, jsx: "react-jsx", strict: true }, include: ["src", "server", "vite.config.ts"] }, null, 2) + "\n",
-    ".gitignore": "node_modules\ndist\n.env\n.env.*\n.borg/evidence\n.borg/data.sqlite*\n",
+    ".gitignore": "node_modules\ndist\n.env\n.env.*\n.borg/evidence\n.borg/data.sqlite*\n.localcode/build/workflow-state.json\n",
     "src/main.tsx": "import React from 'react';\nimport { createRoot } from 'react-dom/client';\nimport App from './App';\nimport './style.css';\n\ncreateRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);\n",
     "server/db.ts": `import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -354,3 +324,4 @@ export class WebsitePreviewManager {
 
   stopAll() { for (const projectPath of this.processes.keys()) this.stop(projectPath); }
 }
+

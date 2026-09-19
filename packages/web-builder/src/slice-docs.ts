@@ -333,7 +333,7 @@ export function persistProposedProjectPlan(root: string, brief: string, plan: Pr
   mkdirSync(dir, { recursive: true });
   const previousPlan = readProjectPlan(root);
   const proposed = { ...plan, revision: previousPlan ? previousPlan.revision + 1 : Math.max(1, plan.revision), status: "proposed" as const, approvedAt: null };
-  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are the durable source of truth. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
+  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are a generated knowledge projection of the durable SQLite workflow state. SQLite owns progression; these files provide portable, inspectable context for slice sessions and may be rebuilt from the workflow record. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
   writeFileSync(join(dir, "brief.md"), `# Product brief\n\n${brief.trim()}\n`);
   writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.pages.map((page) => `- ${page}`).join("\n")}\n`);
   initializeProjectModel(root, proposed);
@@ -351,8 +351,8 @@ export function persistProposedProjectPlan(root: string, brief: string, plan: Pr
   return proposed;
 }
 
-export function approveProjectPlan(root: string, taskId: string) {
-  const plan = readProjectPlan(root);
+export function approveProjectPlan(root: string, taskId: string, authoritativePlan?: ProjectPlan) {
+  const plan = authoritativePlan ?? readProjectPlan(root);
   const state = readSliceState(root);
   if (!plan) throw new Error("No proposed project plan exists.");
   const approved: ProjectPlan = { ...plan, status: "approved", approvedAt: new Date().toISOString() };
@@ -371,9 +371,17 @@ export function currentSlice(plan: ProjectPlan, state: SliceState) {
   return plan.slices[Math.max(0, Math.min(state.current, plan.slices.length - 1))];
 }
 
-export function prepareSlice(root: string, brief: string, action: SliceAction, feedback: string, taskId: string, approvedPlan = ""): SliceState {
-  const plan = readProjectPlan(root);
-  const previous = readSliceState(root);
+export function prepareSlice(
+  root: string,
+  brief: string,
+  action: SliceAction,
+  feedback: string,
+  taskId: string,
+  approvedPlan = "",
+  authority?: { plan: ProjectPlan; state: SliceState },
+): SliceState {
+  const plan = authority?.plan ?? readProjectPlan(root);
+  const previous = authority?.state ?? readSliceState(root);
   if (!plan) throw new Error("Approve the frontend phase plan before starting a slice.");
   if (!previous) throw new Error("Frontend project state is missing.");
   if (previous.status === "frontend_complete" || plan.status === "frontend_complete") throw new Error("Frontend is complete.");
@@ -405,9 +413,14 @@ export function prepareSlice(root: string, brief: string, action: SliceAction, f
   return next;
 }
 
-export function markSliceReady(root: string, taskId: string, summary: string): SliceState | null {
-  const plan = readProjectPlan(root);
-  const state = readSliceState(root);
+export function markSliceReady(
+  root: string,
+  taskId: string,
+  summary: string,
+  authority?: { plan: ProjectPlan; state: SliceState },
+): SliceState | null {
+  const plan = authority?.plan ?? readProjectPlan(root);
+  const state = authority?.state ?? readSliceState(root);
   if (!plan || !state || state.lastTaskId !== taskId) return null;
   const complete = state.current === plan.slices.length - 1;
   const next: SliceState = { ...state, status: complete ? "frontend_complete" : "awaiting_feedback" };

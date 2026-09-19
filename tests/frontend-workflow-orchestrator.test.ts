@@ -100,6 +100,18 @@ test("approving a frontend plan server-side starts slice 1, mutates source, and 
           projectPlanApproved: true,
           task: { id: "plan-task", state: "COMPLETE" },
           approval: { id: "plan-approval", taskId: "plan-task", status: "APPROVED", worktreePath: null, baseCommit: null },
+          workflow: {
+            projectId: "integration-site",
+            taskId: "plan-task",
+            status: "idle",
+            nextAction: "start_slice",
+            pendingCommand: {
+              id: "integration-site:1:start_slice",
+              action: "start_slice",
+              workflowVersion: 1,
+              createdAt: new Date().toISOString(),
+            },
+          },
         });
       }
 
@@ -189,19 +201,20 @@ test("approving a frontend plan server-side starts slice 1, mutates source, and 
     assert.equal(approval.status, 200);
     assert.equal(approvalBody.workflowStarted, true);
     assert.equal(approvalBody.startedSession?.activeMode, "edit");
-    assert.equal(approvalBody.startedSession?.parentSessionId, "plan-session");
-    assert.equal(approvalBody.startedSession?.workflowRole, "frontend_slice");
+    assert.equal(approvalBody.startedSession?.parentSessionId, null);
+    assert.equal(approvalBody.startedSession?.workflowRole, "primary");
 
     await waitFor(() => deliveryCalls === 1);
     assert.equal((chatRequest as Record<string, unknown> | null)?.mode, "edit");
     assert.equal((chatRequest as Record<string, unknown> | null)?.sliceAction, "initial");
+    assert.equal((chatRequest as Record<string, unknown> | null)?.workflowCommandId, "integration-site:1:start_slice");
     assert.match(readFileSync(join(src, "App.tsx"), "utf8"), /Slice 1 built/);
     assert.equal(deliveryCalls, 1);
 
     const sessionsResponse = await fetch(`http://127.0.0.1:${gatewayPort}/api/sessions`);
     const sessionsBody = await sessionsResponse.json() as { sessions: Array<{ id: string; parentSessionId: string | null; workflowRole: string }> };
     assert.equal(sessionsBody.sessions.filter((session) => session.workflowRole === "primary").length, 1);
-    assert.equal(sessionsBody.sessions.filter((session) => session.workflowRole === "frontend_slice").length, 1);
+    assert.equal(sessionsBody.sessions.filter((session) => session.workflowRole === "frontend_slice").length, 0);
 
     const deleteResponse = await fetch(`http://127.0.0.1:${gatewayPort}/api/sessions/plan-session`, { method: "DELETE" });
     assert.equal(deleteResponse.status, 200);
