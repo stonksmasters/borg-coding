@@ -74,8 +74,7 @@ try {
     $setInfo.CreateNoWindow = $true
     $setInfo.RedirectStandardInput = $true
     $setInfo.RedirectStandardError = $true
-    [void]$setInfo.ArgumentList.Add("--credential-set")
-    [void]$setInfo.ArgumentList.Add($credentialTarget)
+    $setInfo.Arguments = "--credential-set `"$credentialTarget`""
     $setProcess = [System.Diagnostics.Process]::new()
     $setProcess.StartInfo = $setInfo
     [void]$setProcess.Start()
@@ -91,8 +90,7 @@ try {
     $getInfo.CreateNoWindow = $true
     $getInfo.RedirectStandardOutput = $true
     $getInfo.RedirectStandardError = $true
-    [void]$getInfo.ArgumentList.Add("--credential-get")
-    [void]$getInfo.ArgumentList.Add($credentialTarget)
+    $getInfo.Arguments = "--credential-get `"$credentialTarget`""
     $getProcess = [System.Diagnostics.Process]::new()
     $getProcess.StartInfo = $getInfo
     [void]$getProcess.Start()
