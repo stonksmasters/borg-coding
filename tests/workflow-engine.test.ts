@@ -111,7 +111,7 @@ test("verified delivered slice schedules one durable advance command", () => {
   task = engine.transition(task, "VERIFYING").task;
   task = engine.transition(task, "REVIEWING").task;
   task = engine.transition(task, "DELIVERY_READY").task;
-  task = engine.transition(task, "DELIVERING").task;
+  task = engine.beginDelivery(task, { method: "commit", expectedBaseCommit: "abc" }).task;
   const delivered = engine.completeDelivery(task, { commit: "def" });
 
   assert.equal(delivered.workflow.nextAction, "advance_slice");
