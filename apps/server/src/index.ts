@@ -326,8 +326,55 @@ async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, re
   return continuation;
 }
 
-function recoverInterruptedTasks(): void {
+async function reconcileInterruptedDelivery(task: Task): Promise<boolean> {
+  if (task.state !== "DELIVERING") return false;
+  const approval = tasks.findApproval(task.id);
+  const started = tasks.listEvents(task.id).findLast((event) => event.type === "DELIVERY_STARTED");
+  const method = started?.payload.method;
+  const recordedRoot = tasks.listEvents(task.id).find((event) => event.type === "WEBSITE_REPOSITORY_SELECTED")?.payload.repositoryPath;
+  const current = workflow.get(task.projectId);
+  if (
+    method !== "commit"
+    || !approval?.worktreePath
+    || !approval.baseCommit
+    || typeof recordedRoot !== "string"
+    || current?.taskId !== task.id
+    || current.phase !== "frontend"
+  ) return false;
+
+  try {
+    const reconciled = await delivery.reconcilePromotion(task.id, approval.worktreePath, {
+      repositoryPath: recordedRoot,
+      expectedBaseCommit: approval.baseCommit,
+    });
+    if (reconciled.state !== "promoted" || !reconciled.commit) return false;
+
+    const completed = workflow.completeDelivery(task, {
+      method: "commit",
+      commit: reconciled.commit,
+      worktreePath: approval.worktreePath,
+      reconciledAfterRestart: true,
+    });
+    syncWorkflowProjection(completed.task, completed.workflow);
+    syncDeliveredWorkflowProjection(completed.task, completed.workflow, recordedRoot);
+    appendTaskEvent(task.id, "DELIVERY_RECONCILED_AFTER_RESTART", {
+      commit: reconciled.commit,
+      detail: reconciled.detail,
+      workflowVersion: completed.workflow.version,
+      pendingCommandId: completed.workflow.pendingCommand?.id ?? null,
+    });
+    return true;
+  } catch (error) {
+    appendTaskEvent(task.id, "DELIVERY_RECONCILIATION_FAILED", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+async function recoverInterruptedTasks(): Promise<void> {
   for (const task of tasks.listInterruptedTasks()) {
+    if (await reconcileInterruptedDelivery(task)) continue;
     const checkpoint = createCheckpointSnapshot(task, "interrupted");
     const recovered = workflow.transition(task, "RECOVERY_REQUIRED");
     syncWorkflowProjection(recovered.task, recovered.workflow);
@@ -531,8 +578,6 @@ function scheduleImplementationRetry(task: Task, emit: (event: Record<string, un
   return result.task;
 }
 
-recoverInterruptedTasks();
-
 const server = createServer((request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, null);
   if (request.method === "GET" && request.url === "/health") {
@@ -703,11 +748,14 @@ const server = createServer((request, response) => {
       if (blockingFindings.length) return send(response, 409, { error: "Unresolved high or critical review findings block delivery.", findingIds: blockingFindings.map((value) => value.id) });
       const method = String(input.method ?? "").toLowerCase();
       if (method !== "export" && method !== "commit") return send(response, 400, { error: "Delivery method must be export or commit." });
-      task = transitionTask(task, "DELIVERING");
+      const isFrontendSlice = tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED");
+      const repositoryPath = access.load().repositoryPath;
+      if (isFrontendSlice && !repositoryPath) return send(response, 409, { error: "Project repository is unavailable for saving this slice." });
+
+      const begun = workflow.beginDelivery(task, { method, expectedBaseCommit: approval.baseCommit });
+      task = begun.task;
+      syncWorkflowProjection(task, begun.workflow);
       try {
-        const isFrontendSlice = tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED");
-        const repositoryPath = access.load().repositoryPath;
-        if (isFrontendSlice && !repositoryPath) return send(response, 409, { error: "Project repository is unavailable for saving this slice." });
         const result = await delivery.deliver(taskId, approval.worktreePath, method, typeof input.message === "string" ? input.message : undefined,
           isFrontendSlice && repositoryPath ? { repositoryPath, expectedBaseCommit: approval.baseCommit! } : undefined);
         const completed = workflow.completeDelivery(task, result);
@@ -719,9 +767,10 @@ const server = createServer((request, response) => {
         return send(response, 200, { task, workflow: completed.workflow, delivery: result });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Delivery failed";
-        appendTaskEvent(taskId, "DELIVERY_FAILED", { method, message });
-        task = transitionTask(task, "DELIVERY_READY");
-        return send(response, 400, { task, error: message });
+        const failed = workflow.failDelivery(task, message);
+        task = failed.task;
+        syncWorkflowProjection(task, failed.workflow);
+        return send(response, 400, { task, workflow: failed.workflow, error: message });
       }
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid delivery request" }));
     return;
@@ -1677,7 +1726,9 @@ const server = createServer((request, response) => {
   send(response, 404, { error: "Not found" });
 });
 
-server.listen(port, "127.0.0.1", () => console.log(`BORG server listening on http://127.0.0.1:${port}`));
+void recoverInterruptedTasks()
+  .catch((error) => console.error("[workflow] startup recovery failed", error))
+  .finally(() => server.listen(port, "127.0.0.1", () => console.log(`BORG server listening on http://127.0.0.1:${port}`)));
 
 async function shutdown(signal: string) {
   console.log(`[lifecycle] core shutdown requested: ${signal}`);
