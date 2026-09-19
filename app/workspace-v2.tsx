@@ -8,9 +8,11 @@ import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel
 import { PlanPanel } from "@/components/workspace/plan-panel";
 import { DocsPanel, type BuildDoc } from "@/components/workspace/docs-panel";
 import { TerminalPanel, type TaskProcess, type TaskProcessEvent } from "@/components/workspace/terminal-panel";
-import { DesignPanel, type DesignBriefView, type DesignReviewView } from "@/components/workspace/design-panel";
-import { isUnsupportedLanguageTool, stageProgress, toolProgress } from "./agent-progress";
-import { executionIsRunning, taskIsRunning, taskNeedsAttention, taskProgress } from "./task-activity";
+import type { DesignBriefView, DesignReviewView } from "@/components/workspace/design-panel";
+import { EvidencePanel } from "@/components/workspace/evidence-panel";
+import { RunStatusCard, type RunView } from "@/components/workspace/run-status-card";
+import { isUnsupportedLanguageTool, toolProgress } from "./agent-progress";
+import { executionIsRunning, taskIsRunning, taskNeedsAttention } from "./task-activity";
 import { previewChangeFingerprint, shouldRefreshPreview } from "./preview-refresh";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -35,10 +37,9 @@ const WEBSITE_EXAMPLES = [
   "Build an internal operations dashboard with a sidebar, KPI cards, activity table, useful empty states, and responsive navigation.",
   "Build a booking website for a premium local service business with services, trust signals, availability CTA, FAQ, and lead form.",
 ] as const;
-const BUILDER_STEPS = ["Understand", "Design", "Build", "Test", "Ready"] as const;
 type PermissionMode = "ask" | "plan" | "edit" | "agent";
 type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string; parentSessionId: string | null; workflowRole: "primary" | "frontend_slice" | "backend" };
-type WorkflowStatus = { source: "sqlite" | "legacy_projection"; workflowVersion: number | null; taskState: string; phase: string; status: string; detail: string | null; sliceIndex: number | null; sliceTotal: number | null; sliceTitle: string | null; objective: string; currentAction: string; completed: string[]; pending: string[]; verificationPassed: boolean | null; repairAttempt: number; nextAction: string; activity: Array<{ type: string; occurredAt: string; detail: string }> };
+type WorkflowStatus = { source: "sqlite" | "legacy_projection"; workflowVersion: number | null; taskState: string; phase: string; status: string; detail: string | null; sliceIndex: number | null; sliceTotal: number | null; sliceTitle: string | null; objective: string; currentAction: string; completed: string[]; pending: string[]; verificationPassed: boolean | null; repairAttempt: number; nextAction: string; run: RunView; activity: Array<{ type: string; occurredAt: string; detail: string }> };
 type ContextRecord = { id: string; role: string; model: string; sliceId: string | null; createdAt: string; inputSha256: string; manifest: Array<{ path: string; reason: string; characters: number; sha256: string }> };
 type ChatMessage = RenderableMessage & { sessionId: string; taskId: string | null; createdAt: string; metadata?: Record<string, unknown> };
 type AccessConfig = { repositoryPath: string | null; documents: string[]; repositoryName: string | null; documentNames: string[]; updatedAt: string };
@@ -53,6 +54,19 @@ type ToolConfig = {
   updatedAt: string;
 };
 type RuntimeStatus = { runtime: string; runtimeConnected: boolean; model: string; modelAvailable: boolean };
+type VisionConfig = {
+  enabled: boolean;
+  provider: "ollama";
+  model: string;
+  maxScreenshots: number;
+  timeoutMs: number;
+  blockingSeverity: "medium" | "high" | "critical";
+  configured: boolean;
+  modelAvailable: boolean;
+  availabilityState: "available" | "missing" | "connection_failed";
+  availabilityError: string | null;
+  updatedAt: string;
+};
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
 type Escalation = { id: string; sessionId: string; taskId: string; fromMode: "plan"; requestedMode: "edit"; reason: string; planText: string; createdAt: string };
 type TaskCheckpoint = { id: string; taskId: string; sessionId: string | null; name: string; kind: string; taskState: string; mode: PermissionMode; repositoryPath: string | null; worktreePath: string | null; baseCommit: string | null; contextSummary: string; completedSteps: string[]; remainingSteps: string[]; createdAt: string };
@@ -127,15 +141,18 @@ export function BorgWorkspaceV2() {
   const [clearApiKeyDraft, setClearApiKeyDraft] = useState(false);
   const [toolsError, setToolsError] = useState("");
   const [savingTools, setSavingTools] = useState(false);
+  const [visionConfig, setVisionConfig] = useState<VisionConfig | null>(null);
+  const [visionEnabledDraft, setVisionEnabledDraft] = useState(false);
+  const [visionModelDraft, setVisionModelDraft] = useState("qwen3-vl:8b");
+  const [visionBlockingDraft, setVisionBlockingDraft] = useState<"medium" | "high" | "critical">("high");
   const [sessionError, setSessionError] = useState("");
-  const [progress, setProgress] = useState<{ title: string; detail: string } | null>(null);
   const [liveActivity, setLiveActivity] = useState<string[]>([]);
   const [activities, setActivities] = useState<AgentActivity[]>([]);
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus | null>(null);
   const [contextRecords, setContextRecords] = useState<ContextRecord[]>([]);
   const [selectedContext, setSelectedContext] = useState<(ContextRecord & { inputText: string }) | null>(null);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
-  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "docs" | "terminal" | "design">("preview");
+  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "evidence" | "logs" | "memory">("preview");
   const [buildDocs, setBuildDocs] = useState<BuildDoc[]>([]);
   const [sliceState, setSliceState] = useState<SliceState | null>(null);
   const [sliceFeedback, setSliceFeedback] = useState("");
@@ -185,12 +202,6 @@ export function BorgWorkspaceV2() {
   const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
   const canStop = streaming && !executionIsRunning(taskState);
   const actionLabel = executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
-  const currentProgress = progress
-    ?? (taskState === "COMPLETE" && sliceState?.status === "awaiting_feedback"
-      ? { title: `Slice ${sliceState.current + 1} is verified`, detail: "The slice is checkpointed and the next approved slice starts automatically. Review Preview, Changes, Docs, and verification evidence at any time." }
-      : taskState === "COMPLETE" && sliceState?.status === "frontend_complete"
-        ? { title: "Frontend complete", detail: "All approved frontend slices passed their completion gates." }
-        : taskProgress(taskState));
   const activityMessages = useMemo(() => messages.filter((message) => message.role === "tool" || (message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.role !== "tool" && !(message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const activityItems = useMemo(() => [...activityMessages.map((message) => message.text), ...liveActivity].slice(-60), [activityMessages, liveActivity]);
@@ -200,14 +211,6 @@ export function BorgWorkspaceV2() {
   }, [escalation, messages]);
   const runningProcesses = useMemo(() => processes.filter((process) => process.status === "starting" || process.status === "running"), [processes]);
   const previewProcess = useMemo(() => processes.find((process) => process.kind === "dev_server" && (process.status === "starting" || process.status === "running")) ?? processes.findLast((process) => process.kind === "dev_server") ?? null, [processes]);
-  const builderStep = useMemo(() => {
-    if (taskState === "COMPLETE" && sliceState?.status === "frontend_complete") return 4;
-    if (["DELIVERY_READY", "VERIFYING", "REVIEWING", "REPAIRING"].includes(taskState) || (taskState === "COMPLETE" && sliceState?.status === "awaiting_feedback")) return 3;
-    if (["IMPLEMENTING"].includes(taskState)) return 2;
-    if (designBrief || ["AWAITING_APPROVAL"].includes(taskState) || (taskState === "COMPLETE" && sliceState?.status === "ready")) return 1;
-    return 0;
-  }, [designBrief, sliceState?.status, taskState]);
-
   const activatePreview = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST" });
     if (response.ok) {
