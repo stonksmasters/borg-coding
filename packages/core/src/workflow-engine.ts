@@ -3,6 +3,7 @@ import {
   WorkflowStateSchema,
   type Approval,
   type Task,
+  type TaskContinuation,
   type TaskEvent,
   type TaskState,
   type WorkflowProjectPlan,
@@ -14,6 +15,7 @@ export type WorkflowMutation = {
   state: WorkflowState;
   task?: Task;
   approval?: Approval;
+  continuation?: TaskContinuation;
   events?: TaskEvent[];
 };
 
@@ -310,6 +312,44 @@ export class WorkflowEngine {
       detail,
       repairAttempt: task.attempts,
     }, "WORKFLOW_RECOVERY_UPDATED", { category, detail, fatal });
+  }
+
+  continueFromCheckpoint(task: Task, continuation: TaskContinuation): { task: Task; workflow: WorkflowState } {
+    if (continuation.taskId !== task.id) throw new Error("Continuation does not belong to this task.");
+    if (continuation.previousState !== task.state) {
+      throw new Error(`Continuation expected task state ${continuation.previousState}, but task is ${task.state}.`);
+    }
+    const current = this.requireTask(task);
+    const now = new Date().toISOString();
+    const updatedTask = { ...task, state: continuation.resultingState, updatedAt: now };
+    const projection = taskProjection(continuation.resultingState);
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      ...projection,
+      pendingCommand: null,
+      repairAttempt: updatedTask.attempts,
+      recoveryCategory: continuation.status === "recovery_required" ? current.recoveryCategory ?? "checkpoint_continuation" : null,
+      detail: continuation.detail,
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    const eventType = continuation.status === "recovery_required" ? "TASK_RECOVERY_REQUIRED" : "TASK_CONTINUED";
+    this.store.commitWorkflowMutation({
+      task: updatedTask,
+      continuation,
+      state: workflow,
+      events: [taskEvent(task.id, eventType, {
+        continuationId: continuation.id,
+        checkpointId: continuation.checkpointId,
+        previousState: continuation.previousState,
+        resultingState: continuation.resultingState,
+        restoredMode: continuation.restoredMode,
+        repositoryState: continuation.repositoryState,
+        resumeAction: continuation.resumeAction,
+        workflowVersion: workflow.version,
+      }, now)],
+    });
+    return { task: updatedTask, workflow };
   }
 
   beginDelivery(task: Task, input: { method: "commit" | "export"; expectedBaseCommit?: string | null }): { task: Task; workflow: WorkflowState } {
