@@ -118,10 +118,26 @@ test("verified delivered slice schedules one durable advance command", () => {
   assert.equal(delivered.workflow.pendingCommand?.action, "advance_slice");
   assert.equal(delivered.workflow.status, "awaiting_feedback");
 
-  const nextTask = createTask({ id: "slice-2", projectId: "project", request: "Slice 2" });
+  let nextTask = createTask({ id: "slice-2", projectId: "project", request: "Slice 2" });
   const started = engine.start(nextTask, "frontend_slice", "Advance", { commandId: delivered.workflow.pendingCommand!.id });
-  assert.equal(started.pendingCommand, null);
-  assert.equal(started.lastConsumedCommandId, delivered.workflow.pendingCommand!.id);
+  assert.equal(started.pendingCommand?.id, delivered.workflow.pendingCommand!.id);
+  assert.equal(started.pendingCommand?.claimedByTaskId, nextTask.id);
+  assert.equal(started.lastConsumedCommandId, null);
+
+  // A restart during planning may safely reclaim the same durable command.
+  const replayTask = createTask({ id: "slice-2-replay", projectId: "project", request: "Slice 2 replay" });
+  const replayed = engine.start(replayTask, "frontend_slice", "Replay after restart", { commandId: delivered.workflow.pendingCommand!.id });
+  assert.equal(replayed.pendingCommand?.claimedByTaskId, replayTask.id);
+
+  nextTask = replayTask;
+  nextTask = engine.transition(nextTask, "CLASSIFYING").task;
+  nextTask = engine.transition(nextTask, "DISCOVERING").task;
+  nextTask = engine.transition(nextTask, "PLANNING").task;
+  const nextApproval = createApproval({ id: "next-approval", taskId: nextTask.id });
+  const awaiting = engine.requestApproval(nextTask, nextApproval, "execution");
+  assert.equal(awaiting.workflow.pendingCommand, null);
+  assert.equal(awaiting.workflow.lastConsumedCommandId, delivered.workflow.pendingCommand!.id);
+
   assert.throws(
     () => engine.start(createTask({ id: "duplicate", projectId: "project", request: "Duplicate" }), "frontend_slice", "Duplicate", { commandId: delivered.workflow.pendingCommand!.id }),
     /already consumed|no longer pending/,
