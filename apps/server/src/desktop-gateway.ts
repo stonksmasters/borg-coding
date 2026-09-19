@@ -198,7 +198,8 @@ function toolStatus() {
 
 async function loadSessionRuntime(session: ChatSession) {
   const latestTaskId = chats.latestTaskId(session.id);
-  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, projectPlanApproval: false, runtimeAvailable: true };
+  const runtimeActive = activeStreams.has(session.id);
+  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, projectPlanApproval: false, runtimeAvailable: true, runtimeActive };
   try {
     const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(latestTaskId)}/approval`, { signal: AbortSignal.timeout(5_000) });
     if (!upstream.ok) throw new Error(`Core task state returned ${upstream.status}.`);
@@ -225,9 +226,10 @@ async function loadSessionRuntime(session: ChatSession) {
       escalation: pending ? escalation : null,
       projectPlanApproval: pending && body.projectPlanApproval === true,
       runtimeAvailable: true,
+      runtimeActive,
     };
   } catch {
-    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), projectPlanApproval: false, runtimeAvailable: false };
+    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), projectPlanApproval: false, runtimeAvailable: false, runtimeActive };
   }
 }
 

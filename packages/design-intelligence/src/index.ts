@@ -137,7 +137,7 @@ export class DesignDirectorService {
     const response = await fetch(this.ollamaUrl + "/api/chat", {
       method: "POST", headers: { "content-type": "application/json" },
       body: requestBody,
-      signal: AbortSignal.timeout(180000),
+      signal: AbortSignal.timeout(600_000),
     });
     const body = await response.json().catch(() => ({})) as { message?: { content?: string }; error?: string };
     if (!response.ok || body.error) throw new Error(body.error ?? "Design Director failed (" + response.status + ").");

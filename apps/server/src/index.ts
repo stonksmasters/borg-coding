@@ -1,8 +1,8 @@
 import { createServer, type ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
 import {
   createApproval,
   createHandoff,
@@ -431,6 +431,59 @@ function workflowProjectionRoot(task: Task): string | null {
   return approval?.status === "APPROVED" && approval.worktreePath ? approval.worktreePath : null;
 }
 
+function taskProjectRoot(taskId: string): string | null {
+  const task = tasks.findTask(taskId);
+  if (!task) return null;
+  const approval = tasks.findApproval(taskId);
+  const recorded = tasks.listEvents(taskId).find((event) => event.type === "WEBSITE_REPOSITORY_SELECTED")?.payload.repositoryPath;
+  if (approval?.worktreePath && existsSync(approval.worktreePath)) return approval.worktreePath;
+  return typeof recorded === "string" ? recorded : access.load().repositoryPath;
+}
+
+function isSensitiveProjectPath(requested: string): boolean {
+  const name = requested.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+  return name === ".env" || name.startsWith(".env.") || name === ".npmrc" || name === ".pypirc"
+    || /(^|[._-])(secret|credential|token|private[-_]?key)([._-]|$)/i.test(name)
+    || /\.(pem|key|p12|pfx)$/i.test(name);
+}
+
+function projectPath(root: string, requested: string): string {
+  if (isSensitiveProjectPath(requested)) throw new Error("Sensitive project files are managed through their dedicated settings.");
+  const target = resolve(root, requested.replaceAll("/", sep));
+  const rel = relative(resolve(root), target);
+  if (rel.startsWith("..") || resolve(root) === target) throw new Error("Project path must stay inside the selected workspace.");
+  return target;
+}
+
+const PROJECT_TREE_IGNORES = new Set([".git", "node_modules", ".next", "dist", "build", ".wrangler"]);
+
+function projectTree(root: string) {
+  const entries: Array<{ path: string; type: "file" | "directory" }> = [];
+  const visit = (directory: string, depth: number) => {
+    if (depth > 8 || entries.length >= 2500) return;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const candidatePath = relative(root, resolve(directory, entry.name)).split(sep).join("/");
+      if (PROJECT_TREE_IGNORES.has(entry.name) || isSensitiveProjectPath(candidatePath) || entry.isSymbolicLink()) continue;
+      const absolute = resolve(directory, entry.name);
+      const path = relative(root, absolute).split(sep).join("/");
+      const type = entry.isDirectory() ? "directory" as const : "file" as const;
+      entries.push({ path, type });
+      if (type === "directory") visit(absolute, depth + 1);
+    }
+  };
+  visit(root, 0);
+  return entries;
+}
+
+function environmentVariables(root: string) {
+  const path = resolve(root, ".env");
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8").split(/\r?\n/).flatMap((line) => {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
+    return match ? [{ name: match[1], hasValue: match[2].trim().length > 0 }] : [];
+  });
+}
+
 function recordWorkflowProjectionFailure(taskId: string, state: WorkflowState, root: string, error: unknown) {
   appendTaskEvent(taskId, "WORKFLOW_PROJECTION_FAILED", {
     workflowVersion: state.version,
@@ -626,6 +679,50 @@ const server = createServer((request, response) => {
       send(response, 200, { status: "ok", runtime: "ollama", runtimeConnected: runtimeResponse.ok, model, modelAvailable: models.includes(model) });
     }).catch(() => send(response, 200, { status: "ok", runtime: "ollama", runtimeConnected: false, model, modelAvailable: false }));
     return;
+  }
+  const projectRoute = request.url?.match(/^\/api\/tasks\/([^/?]+)\/project(?:\?(.+))?$/);
+  if (request.method === "GET" && projectRoute) {
+    const taskId = decodeURIComponent(projectRoute[1]);
+    const root = taskProjectRoot(taskId);
+    if (!root || !existsSync(root)) return send(response, 404, { error: "Project workspace not found." });
+    const query = new URL(request.url!, `http://localhost:${port}`).searchParams;
+    const requested = query.get("path");
+    if (!requested) return send(response, 200, { entries: projectTree(root) });
+    try {
+      const target = projectPath(root, requested);
+      if (!existsSync(target) || !statSync(target).isFile()) return send(response, 404, { error: "Project file not found." });
+      if (statSync(target).size > 512_000) return send(response, 413, { error: "This file is too large to display." });
+      return send(response, 200, { path: requested, content: readFileSync(target, "utf8") });
+    } catch (error) {
+      return send(response, 400, { error: error instanceof Error ? error.message : "Unable to read project file." });
+    }
+  }
+  const environmentRoute = request.url?.match(/^\/api\/tasks\/([^/?]+)\/environment$/);
+  if (environmentRoute) {
+    const taskId = decodeURIComponent(environmentRoute[1]);
+    const root = taskProjectRoot(taskId);
+    if (!root || !existsSync(root)) return send(response, 404, { error: "Project workspace not found." });
+    if (request.method === "GET") return send(response, 200, { variables: environmentVariables(root) });
+    if (request.method === "POST") {
+      void readJson(request).then((input) => {
+        const name = typeof input.name === "string" ? input.name.trim() : "";
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error("Use a valid environment variable name.");
+        const path = resolve(root, ".env");
+        const previous = existsSync(path) ? readFileSync(path, "utf8") : "";
+        const lines = previous.split(/\r?\n/).filter((line) => line.length > 0);
+        const index = lines.findIndex((line) => new RegExp(`^\\s*${name}\\s*=`).test(line));
+        if (input.remove === true) {
+          if (index >= 0) lines.splice(index, 1);
+        } else {
+          if (typeof input.value !== "string" || !input.value.length) throw new Error("Enter a value to save.");
+          const next = `${name}=${input.value.replaceAll("\r", "").replaceAll("\n", "\\n")}`;
+          if (index >= 0) lines[index] = next; else lines.push(next);
+        }
+        writeFileSync(path, lines.length ? `${lines.join("\n")}\n` : "", "utf8");
+        return send(response, 200, { variables: environmentVariables(root) });
+      }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to update environment variables." }));
+      return;
+    }
   }
   const processStopRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/processes\/([^/]+)\/stop$/);
   if (request.method === "POST" && processStopRoute) {
@@ -1045,6 +1142,10 @@ const server = createServer((request, response) => {
           emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
         }
         if (!verification.passed) {
+          const verificationFailure = [
+            ...(verification.browserEvidence?.issues ?? []),
+            ...(verification.specialistEvidence?.failures ?? []),
+          ].filter(Boolean).join(" ") || "Deterministic verification failed.";
           finishRole(activeRoleAssignment, "completed", emit);
           recordHandoff({
             task,
@@ -1052,7 +1153,7 @@ const server = createServer((request, response) => {
             toRole: "implementer",
             objective: task.request,
             evidence: [JSON.stringify(verification).slice(0, 20_000)],
-            openRisks: ["Deterministic verification failed."],
+            openRisks: [verificationFailure],
             requiredNextAction: "Repair only the evidenced verification failure.",
           }, emit);
           activeRoleAssignment = null;
@@ -1068,10 +1169,10 @@ const server = createServer((request, response) => {
           const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
           const recentChanges = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim());
           const context = buildRepairContext({ sliceId: compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
-          repairEvidence = formatRepairContext(context);
+          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({ browserEvidence: verification.browserEvidence, specialistEvidence: verification.specialistEvidence }).slice(0, 40_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
           setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, "Deterministic verification failed.");
+          task = scheduleRepair(task, emit, verificationFailure);
           continue;
         }
 
@@ -1145,7 +1246,7 @@ const server = createServer((request, response) => {
           emit({ type: "design.review.started", provider: policy.provider, model: policy.model });
           designReview = await visualDirector.review({
             taskId,
-            request: task.request,
+            request: [task.request, activeSlicePrompt].filter(Boolean).join("\n\n"),
             worktreePath: approvedWorktreePath,
             browserEvidence: verification.browserEvidence,
             brief: designBrief,
@@ -1171,7 +1272,16 @@ const server = createServer((request, response) => {
               response.end();
               return;
             }
-            repairEvidence = `VISUAL DIRECTOR REFINEMENT REQUIRED. This is not a functional bug repair. Rework the visual design against the persisted Design Brief and the screenshot evidence below. Preserve working behavior, then recapture responsive browser evidence.\n\n${JSON.stringify(designReview).slice(0, 70000)}`;
+            repairEvidence = `VISUAL DIRECTOR REFINEMENT REQUIRED. This is not a functional bug repair. Rework the visual design against the persisted Design Brief and the screenshot evidence below. Preserve working behavior, then recapture responsive browser evidence.
+
+Work from the actual repository and rendered page:
+- Use worktree_list first, then read the real files before editing. Do not guess paths, components, or CSS selectors.
+- Trace every style change to markup that actually uses it. Remove or avoid selectors that are not present in the rendered DOM.
+- Address the highest-severity visible findings with a material composition change, not small token or spacing adjustments.
+- Stay within the current approved slice. Do not add future sections solely to satisfy a full-site critique.
+- Capture mobile, tablet, and desktop evidence after editing and inspect whether the cited visual problem visibly changed before finishing.
+
+${JSON.stringify(designReview).slice(0, 70000)}`;
             setExecutionState("REPAIR");
             task = scheduleDesignRefinement(task, emit, designReview.summary);
             continue;
@@ -1591,10 +1701,11 @@ const server = createServer((request, response) => {
       const rawSliceAction = String(input.sliceAction ?? "initial");
       const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
       const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
+      const retryingBlockedSlice = rawSliceAction === "retry" && durableWorkflow?.status === "blocked";
       const miniLoop = slicedApplication;
       if (rawSliceAction === "backend" && (previousSlice?.status !== "frontend_complete" || projectPlan?.backendRequired !== true)) throw new Error("Backend planning is available only after an approved frontend completion gate for a site that requires backend work.");
       const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
-      if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready") throw new Error("Review the finished slice before starting another.");
+      if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready" && !retryingBlockedSlice) throw new Error("Review the finished slice before starting another.");
       if (slicedApplication && previousSlice?.status === "frontend_complete") throw new Error("Frontend is complete. Start backend planning only if the approved project plan requires it.");
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "advance") throw new Error("The current slice is not ready to advance.");
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "revise") throw new Error("There is no completed slice waiting for revision.");
@@ -1615,7 +1726,7 @@ const server = createServer((request, response) => {
         riskLevel: minimumRiskFor(packs),
       };
       const explicitWorkflowCommandId = typeof input.workflowCommandId === "string" && input.workflowCommandId.trim() ? input.workflowCommandId.trim() : null;
-      const expectedCommandAction = slicedApplication && sliceAction === "initial"
+      const expectedCommandAction = slicedApplication && sliceAction === "initial" && !retryingBlockedSlice
         ? "start_slice"
         : slicedApplication && sliceAction === "advance"
           ? "advance_slice"
@@ -1727,14 +1838,24 @@ const server = createServer((request, response) => {
       if (designRequired) {
         emit({ type: "stage.updated", stage: "Design Direction", status: "active" });
         appendTaskEvent(task.id, "DESIGN_BRIEF_STARTED", { model: architectModel, isGreenfield: isGreenfieldDesign });
-        designBrief = await designDirector.createBrief({
-          taskId: task.id,
-          request: requestText,
-          model: architectModel,
-          repositoryContext,
-          isGreenfield: isGreenfieldDesign,
-          onRequestBody: websiteProject ? (body) => recordModelInput(task.id, "design_director", architectModel, null, [], body) : undefined,
-        });
+        try {
+          designBrief = await designDirector.createBrief({
+            taskId: task.id,
+            request: requestText,
+            model: architectModel,
+            repositoryContext,
+            isGreenfield: isGreenfieldDesign,
+            onRequestBody: websiteProject ? (body) => recordModelInput(task.id, "design_director", architectModel, null, [], body) : undefined,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Design Director failed";
+          appendTaskEvent(task.id, "DESIGN_BRIEF_FAILED", { model: architectModel, message });
+          if (!["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "FAILED", emit);
+          emit({ type: "runtime.failed", stage: "Design Direction", message });
+          emit({ type: "stage.updated", stage: "Design Direction", status: "failed", message });
+          response.end();
+          return;
+        }
         if (websiteProject && projectPlanning) persistDesignBrief(websiteProject.path, designBrief);
         appendTaskEvent(task.id, "DESIGN_BRIEF_CREATED", { brief: designBrief, model: architectModel });
         emit({ type: "design.brief.created", brief: designBrief });

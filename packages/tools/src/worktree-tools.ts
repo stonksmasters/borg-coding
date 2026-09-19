@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BrowserVerification } from "../../browser-verification/src/index.ts";
@@ -41,6 +41,21 @@ const MAX_COMMAND_SECONDS = 900;
 const allowedCommands = new Set(["node", "npm", "python", "python3", "dotnet", "cargo", "go"]);
 
 export const worktreeToolDefinitions = {
+  worktree_list: {
+    type: "function",
+    function: {
+      name: "worktree_list",
+      description: "List real files and directories inside the approved task worktree before choosing paths to read or edit.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          depth: { type: "integer", minimum: 0, maximum: 5 },
+          max_entries: { type: "integer", minimum: 1, maximum: 500 },
+        },
+      },
+    },
+  },
   worktree_read: {
     type: "function",
     function: {
@@ -261,6 +276,7 @@ export class WorktreeTools {
 
   async execute(name: string, input: Record<string, unknown>, context?: TaskToolContext): Promise<unknown> {
     const root = this.approvedRoot(context);
+    if (name === "worktree_list") return this.list(root, input);
     if (name === "worktree_read") {
       const path = this.resolveExisting(root, input.path);
       if (!lstatSync(path).isFile() || statSync(path).size > MAX_FILE_BYTES) throw new Error("Worktree file is not a bounded regular file.");
@@ -280,6 +296,29 @@ export class WorktreeTools {
     if (name.startsWith("browser_")) return this.browser.execute(name, input, { taskId: context!.taskId, worktreePath: root });
     if (name === "verification_run") return this.verify(root, String(input.profile ?? "quick"), context!);
     throw new Error(`Unknown worktree tool: ${name}`);
+  }
+
+  private list(root: string, input: Record<string, unknown>) {
+    const requested = String(input.path ?? "").trim().replaceAll("\\", "/");
+    const start = requested && requested !== "." ? this.resolveExisting(root, requested) : root;
+    if (!statSync(start).isDirectory()) throw new Error("Worktree list path must be a directory.");
+    const maximumDepth = Math.max(0, Math.min(5, Math.floor(Number(input.depth ?? 3))));
+    const maximumEntries = Math.max(1, Math.min(500, Math.floor(Number(input.max_entries ?? 300))));
+    const entries: { path: string; type: "file" | "directory" }[] = [];
+    const visit = (directory: string, depth: number) => {
+      if (entries.length >= maximumEntries) return;
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entries.length >= maximumEntries) return;
+        if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist") continue;
+        const candidate = join(directory, entry.name);
+        if (entry.isSymbolicLink()) continue;
+        const type = entry.isDirectory() ? "directory" as const : "file" as const;
+        entries.push({ path: relative(root, candidate).replaceAll("\\", "/"), type });
+        if (type === "directory" && depth < maximumDepth) visit(candidate, depth + 1);
+      }
+    };
+    visit(start, 0);
+    return { root: relative(root, start).replaceAll("\\", "/") || ".", entries, truncated: entries.length >= maximumEntries };
   }
 
   private write(root: string, input: Record<string, unknown>) {
@@ -397,6 +436,7 @@ export class WorktreeTools {
         if (result.exitCode !== 0 || result.timedOut) break;
       }
     } finally {
+      await this.browser.ensureEvidenceForVerification({ taskId: context.taskId, worktreePath: root }).catch(() => null);
       browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
     const commandPassed = results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut);

@@ -294,6 +294,13 @@ export class BrowserVerification {
   definitions() { return Object.values(browserToolDefinitions); }
   latest(taskId: string) { return this.reports.get(taskId) ?? null; }
 
+  async ensureEvidenceForVerification(context: BrowserTaskContext) {
+    const server = this.processRuntime.findRunning(context.taskId, "dev_server");
+    if (!server?.url || server.status !== "running") return this.latest(context.taskId);
+    await this.responsive({ url: server.url }, context);
+    return this.latest(context.taskId);
+  }
+
   async execute(name: string, input: Record<string, unknown>, context: BrowserTaskContext): Promise<unknown> {
     if (name === "browser_server_start") return this.startServer(input, context);
     if (name === "browser_server_stop") return this.stopServer(context.taskId);
@@ -309,8 +316,10 @@ export class BrowserVerification {
   async closeForVerification(taskId: string) {
     const hadEvidence = this.reports.has(taskId);
     const hasServer = Boolean(this.processRuntime.findRunning(taskId, "dev_server"));
+    const hadSession = this.sessions.has(taskId);
+    if (hadSession) this.updateReport(taskId);
     await this.close(taskId);
-    if (hadEvidence || hasServer) this.updateReport(taskId);
+    if (!hadSession && (hadEvidence || hasServer)) this.updateReport(taskId);
     return this.latest(taskId);
   }
 
@@ -617,12 +626,13 @@ export class BrowserVerification {
   private updateReport(taskId: string) {
     const session = this.sessions.get(taskId);
     const server = this.processRuntime.findRunning(taskId, "dev_server");
-    const dom = session?.dom ?? [];
-    const consoleEvidence = session?.console ?? [];
-    const network = session?.network ?? [];
-    const accessibility = session?.accessibility ?? null;
-    const screenshots = session?.screenshots ?? [];
-    const responsive = session?.responsive ?? [];
+    const previous = this.reports.get(taskId);
+    const dom = session?.dom ?? previous?.dom ?? [];
+    const consoleEvidence = session?.console ?? previous?.console ?? [];
+    const network = session?.network ?? previous?.network ?? [];
+    const accessibility = session?.accessibility ?? previous?.accessibility ?? null;
+    const screenshots = session?.screenshots ?? previous?.screenshots ?? [];
+    const responsive = session?.responsive ?? previous?.responsive ?? [];
     const accessibilityResults = [accessibility, ...responsive.map((item) => item.accessibility)].filter((item): item is AccessibilityEvidence => item !== null);
     const blockingA11y = accessibilityResults.flatMap((item) => item.violations).filter((item) => item.impact === "critical" || item.impact === "serious").length;
     const issues: string[] = [];
@@ -637,7 +647,7 @@ export class BrowserVerification {
       passed: issues.length === 0,
       issues,
       url: session?.page.url() ?? server?.url ?? this.reports.get(taskId)?.url ?? null,
-      viewport: session?.viewport ?? null,
+      viewport: session?.viewport ?? previous?.viewport ?? null,
       capturedAt: new Date().toISOString(),
       dom,
       console: consoleEvidence,

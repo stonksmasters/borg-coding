@@ -11,6 +11,8 @@ import { TerminalPanel, type TaskProcess, type TaskProcessEvent } from "@/compon
 import type { DesignBriefView, DesignReviewView } from "@/components/workspace/design-panel";
 import { EvidencePanel } from "@/components/workspace/evidence-panel";
 import { RunStatusCard, type RunView } from "@/components/workspace/run-status-card";
+import { ProjectBrowser, type ProjectEntry } from "@/components/workspace/project-browser";
+import { EnvironmentPanel, type EnvironmentVariable } from "@/components/workspace/environment-panel";
 import { isUnsupportedLanguageTool, toolProgress } from "./agent-progress";
 import { executionIsRunning, taskIsRunning, taskNeedsAttention } from "./task-activity";
 import { previewChangeFingerprint, shouldRefreshPreview } from "./preview-refresh";
@@ -119,6 +121,7 @@ export function BorgWorkspaceV2() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [request, setRequest] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [runtimeActive, setRuntimeActive] = useState(false);
   const [serverAvailable, setServerAvailable] = useState(false);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -156,7 +159,7 @@ export function BorgWorkspaceV2() {
   const [contextRecords, setContextRecords] = useState<ContextRecord[]>([]);
   const [selectedContext, setSelectedContext] = useState<(ContextRecord & { inputText: string }) | null>(null);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
-  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "evidence" | "logs" | "memory">("preview");
+  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "sitemap" | "components" | "files" | "environment" | "changes" | "evidence" | "logs" | "memory">("preview");
   const [buildDocs, setBuildDocs] = useState<BuildDoc[]>([]);
   const [sliceState, setSliceState] = useState<SliceState | null>(null);
   const [sliceFeedback, setSliceFeedback] = useState("");
@@ -189,8 +192,16 @@ export function BorgWorkspaceV2() {
   const [blockingFindingIds, setBlockingFindingIds] = useState<string[]>([]);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState("");
+  const [projectEntries, setProjectEntries] = useState<ProjectEntry[]>([]);
+  const [projectFile, setProjectFile] = useState<{ path: string; content: string } | null>(null);
+  const [projectLoading, setProjectLoading] = useState(false);
+  const [projectError, setProjectError] = useState("");
+  const [environmentVariables, setEnvironmentVariables] = useState<EnvironmentVariable[]>([]);
+  const [environmentBusy, setEnvironmentBusy] = useState(false);
+  const [environmentError, setEnvironmentError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const followTranscriptRef = useRef(true);
   const liveAssistantId = useRef<string | null>(null);
   const changeFingerprintRef = useRef<string | null>(null);
   const activeMode = activeSession?.activeMode ?? "plan";
@@ -205,7 +216,8 @@ export function BorgWorkspaceV2() {
   const displayTitle = activeWebsiteRoot?.title ?? activeSession?.title ?? "Choose a website";
   const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
   const canStop = streaming && !executionIsRunning(taskState);
-  const actionLabel = executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
+  const canRetry = Boolean(activeSession && !streaming && !runtimeActive && (taskIsRunning(taskState) || taskState === "BLOCKED" || taskState === "FAILED"));
+  const actionLabel = canRetry ? "Retry" : executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
   const activityMessages = useMemo(() => messages.filter((message) => message.role === "tool" || (message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.role !== "tool" && !(message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const activityItems = useMemo(() => [...activityMessages.map((message) => message.text), ...liveActivity].slice(-60), [activityMessages, liveActivity]);
@@ -213,6 +225,12 @@ export function BorgWorkspaceV2() {
     const message = [...messages].reverse().find((item) => item.role === "assistant" && item.kind === "plan");
     return message?.text?.trim() || escalation?.planText?.trim() || null;
   }, [escalation, messages]);
+  const sitemapDocs = useMemo(() => buildDocs.filter((doc) => /site.?map|page/i.test(`${doc.path} ${doc.title}`)), [buildDocs]);
+  const componentDocs = useMemo(() => buildDocs.filter((doc) => /component/i.test(`${doc.path} ${doc.title}`)), [buildDocs]);
+  const panelGroup = rightPanel === "sitemap" || rightPanel === "components" ? "structure"
+    : rightPanel === "files" || rightPanel === "environment" || rightPanel === "memory" ? "project"
+      : rightPanel === "changes" || rightPanel === "evidence" || rightPanel === "logs" ? "review"
+        : rightPanel;
   const runningProcesses = useMemo(() => processes.filter((process) => process.status === "starting" || process.status === "running"), [processes]);
   const previewProcess = useMemo(() => processes.find((process) => process.kind === "dev_server" && (process.status === "starting" || process.status === "running")) ?? processes.findLast((process) => process.kind === "dev_server") ?? null, [processes]);
   const activatePreview = useCallback(async (sessionId: string) => {
@@ -296,6 +314,51 @@ export function BorgWorkspaceV2() {
     setSliceState(result.slice ?? null);
   }, []);
 
+  const refreshProject = useCallback(async (taskId: string) => {
+    setProjectLoading(true);
+    setProjectError("");
+    try {
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/project`);
+      const result = await response.json() as { entries?: ProjectEntry[]; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Unable to load the project files.");
+      setProjectEntries(result.entries ?? []);
+    } catch (error) { setProjectError(error instanceof Error ? error.message : "Unable to load the project files."); }
+    finally { setProjectLoading(false); }
+  }, []);
+
+  const openProjectFile = useCallback(async (path: string) => {
+    if (!activeTaskId) return;
+    setProjectLoading(true);
+    setProjectError("");
+    try {
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/project?path=${encodeURIComponent(path)}`);
+      const result = await response.json() as { path?: string; content?: string; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Unable to read this file.");
+      setProjectFile({ path: result.path ?? path, content: result.content ?? "" });
+    } catch (error) { setProjectError(error instanceof Error ? error.message : "Unable to read this file."); }
+    finally { setProjectLoading(false); }
+  }, [activeTaskId]);
+
+  const refreshEnvironment = useCallback(async (taskId: string) => {
+    setEnvironmentError("");
+    const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/environment`);
+    const result = await response.json() as { variables?: EnvironmentVariable[]; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "Unable to load environment variables.");
+    setEnvironmentVariables(result.variables ?? []);
+  }, []);
+
+  const updateEnvironment = useCallback(async (name: string, value?: string, remove = false) => {
+    if (!activeTaskId) return;
+    setEnvironmentBusy(true); setEnvironmentError("");
+    try {
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/environment`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, value, remove }) });
+      const result = await response.json() as { variables?: EnvironmentVariable[]; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Unable to update environment variables.");
+      setEnvironmentVariables(result.variables ?? []);
+    } catch (error) { setEnvironmentError(error instanceof Error ? error.message : "Unable to update environment variables."); }
+    finally { setEnvironmentBusy(false); }
+  }, [activeTaskId]);
+
   const refreshDesign = useCallback(async (taskId: string) => {
     const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/design`);
     if (!response.ok) return;
@@ -333,6 +396,7 @@ export function BorgWorkspaceV2() {
       escalation: Escalation | null;
       projectPlanApproval?: boolean;
       runtimeAvailable: boolean;
+      runtimeActive?: boolean;
     };
     const pendingApproval = result.approval?.status === "REQUESTED" ? result.approval : null;
     const pendingEscalation = result.task?.state === "AWAITING_APPROVAL" ? result.escalation : null;
@@ -363,6 +427,7 @@ export function BorgWorkspaceV2() {
     setPlanApproval(Boolean(pendingApproval && result.projectPlanApproval));
     setDeliveryReady(result.task?.state === "DELIVERY_READY");
     setTaskState(result.task?.state ?? (result.latestTaskId && !result.runtimeAvailable ? "RUNTIME UNAVAILABLE" : "READY"));
+    setRuntimeActive(Boolean(result.runtimeActive));
     if (restorePreview) {
       setPreviewUrl(null);
       setPreviewError("");
@@ -468,7 +533,8 @@ export function BorgWorkspaceV2() {
   }, [activeSession?.repositoryPath]);
 
   useEffect(() => {
-    transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
+    if (!followTranscriptRef.current) return;
+    transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: streaming ? "auto" : "smooth" });
   }, [messages, streaming]);
 
   useEffect(() => {
@@ -727,13 +793,14 @@ export function BorgWorkspaceV2() {
     if (buffer.trim()) applyEvent(JSON.parse(buffer) as StreamEvent);
   }
 
-  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend", targetSession = activeSession, force = false) {
+  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend" | "retry", targetSession = activeSession, force = false) {
     const clean = prompt.trim();
     if (!targetSession || !clean || (taskBusy && !force)) return;
     const controller = new AbortController();
     abortRef.current = controller;
     liveAssistantId.current = null;
     setStreaming(true);
+    setRuntimeActive(true);
     setLiveActivity([]);
     setActivities([]);
     setChanges(EMPTY_CHANGE_SET);
@@ -760,8 +827,19 @@ export function BorgWorkspaceV2() {
     } finally {
       liveAssistantId.current = null;
       setStreaming(false);
+      setRuntimeActive(false);
       abortRef.current = null;
     }
+  }
+
+  function retryTask() {
+    if (!activeSession || !canRetry) return;
+    const prompt = [...messages].reverse().find((message) => message.role === "user")?.text.trim();
+    if (!prompt) {
+      setSessionError("The original request is unavailable. Start a new chat to try again.");
+      return;
+    }
+    void runTask(prompt, taskState === "BLOCKED" ? "retry" : undefined, activeSession, true);
   }
 
   async function acceptVisualBaselines() {
@@ -1187,9 +1265,9 @@ export function BorgWorkspaceV2() {
       </SidebarContent>
       <SidebarFooter className="border-t border-white/8 p-4">
         <div className="flex items-start gap-2 text-xs text-slate-400">
-          <span className={`mt-1 size-2 rounded-full ${serverAvailable && runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : serverAvailable ? "bg-amber-300" : "bg-slate-600"}`} />
+          <span className={`mt-1 size-2 rounded-full ${serverAvailable && runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable && (!activeSession?.model || activeSession.model === runtimeStatus.model) ? "bg-[#a7ff4f] shadow-[0_0_10px_#a7ff4f]" : serverAvailable ? "animate-pulse bg-amber-300" : "bg-slate-600"}`} />
           <div className="min-w-0">
-            <p>{serverAvailable ? (runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable ? "Local model connected" : "BORG ready · model unavailable") : "BORG offline"}</p>
+            <p>{serverAvailable ? (runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable && (!activeSession?.model || activeSession.model === runtimeStatus.model) ? `Connected to ${runtimeStatus.model}` : `Initializing ${activeSession?.model ?? runtimeStatus?.model ?? "local model"}…`) : "BORG offline"}</p>
             <p className="mt-0.5 truncate font-mono text-[10px] text-slate-600">{runtimeStatus?.model ?? activeSession?.model ?? "No model detected"}</p>
           </div>
         </div>
@@ -1227,7 +1305,7 @@ export function BorgWorkspaceV2() {
       </header>
 
       <section className="flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1 flex-col lg:flex-row"><div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-7 sm:px-8 lg:basis-[35%] lg:flex-none lg:px-8"><div className="mx-auto max-w-3xl">
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row"><div ref={transcriptRef} onScroll={(event) => { const element = event.currentTarget; followTranscriptRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 96; }} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-7 sm:px-8 lg:basis-[35%] lg:flex-none lg:px-8"><div className="mx-auto max-w-3xl">
           <div className="mb-6 flex items-start justify-between gap-4"><div><p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#a7ff4f]">{isWebsite ? "Website workspace" : "Developer workspace"}</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">{displayTitle}</h1>{activeSession?.parentSessionId && <p className="mt-1 text-xs text-slate-600">{activeSession.title.replace(`${displayTitle} · `, "")}</p>}</div>{activeTaskId && <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1 text-xs capitalize text-slate-400">{taskState.replaceAll("_", " ").toLowerCase()}</span>}</div>
           {sessionError && <div className="mb-5 rounded-lg border border-red-400/20 bg-red-400/8 px-4 py-3 text-sm text-red-200">{sessionError}</div>}
           <div className="space-y-4">
@@ -1240,6 +1318,12 @@ export function BorgWorkspaceV2() {
               </div>
             </div> : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">Developer session</p><p className="mt-1 text-sm text-slate-500">Use this advanced workspace for repository tasks that are not tied to a BORG website.</p></div></div>}
             {workflowStatus?.run && isWebsite && <RunStatusCard run={workflowStatus.run} active={streaming || taskIsRunning(taskState)} />}
+            {isWebsite && (workflowStatus || designReview || changes.files.length > 0) && <section className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#a7ff4f]">Project summary</p>
+              {workflowStatus && <p className="mt-2 text-sm leading-6 text-slate-300">{workflowStatus.currentAction || workflowStatus.detail || workflowStatus.objective}</p>}
+              <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-slate-500">{workflowStatus?.sliceTitle && <span className="rounded-full border border-white/8 px-2 py-1">{workflowStatus.sliceTitle}</span>}{changes.files.length > 0 && <span className="rounded-full border border-white/8 px-2 py-1">{changes.files.length} files changed</span>}{designReview && <span className="rounded-full border border-white/8 px-2 py-1">Visual review: {designReview.status}</span>}</div>
+              {designReview?.summary && <p className="mt-3 border-t border-white/6 pt-3 text-xs leading-5 text-slate-500">{designReview.summary}</p>}
+            </section>}
             {activeTaskId && <details className="rounded-xl border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500">
               <summary className="cursor-pointer select-none font-medium text-slate-400">Execution inspector</summary>
               <div className="mt-4 space-y-4">
@@ -1258,39 +1342,51 @@ export function BorgWorkspaceV2() {
             </details>}
           </div>
         </div></div>{(activeTaskId || previewUrl || previewError || latestPlan || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden overscroll-contain border-t border-white/8 lg:min-h-0 lg:basis-[65%] lg:flex-none lg:border-l lg:border-t-0">
-          <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-1.5">
-            <div className="flex items-center gap-1">
-              <button type="button" disabled={!isWebsite} onClick={() => { setRightPanel("preview"); if (activeSession && !previewUrl) void activatePreview(activeSession.id); }} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "preview" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
-              <button type="button" disabled={!latestPlan && !designBrief} onClick={() => setRightPanel("plan")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "plan" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
-              <button type="button" onClick={() => setRightPanel("changes")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "changes" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Changes{changes.files.length ? ` (${changes.files.length})` : ""}</button>
-              <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("evidence")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "evidence" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Evidence{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</button>
-              <details className="relative">
-                <summary className="list-none cursor-pointer rounded px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-white/5 hover:text-slate-300">Advanced</summary>
-                <div className="absolute left-0 z-40 mt-2 w-44 rounded-lg border border-white/10 bg-[#11161e] p-1.5 shadow-2xl">
-                  <button type="button" onClick={() => setRightPanel("logs")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Logs{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
-                  <button type="button" onClick={() => { setRightPanel("memory"); if (activeTaskId) void refreshDocs(activeTaskId); }} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Project memory</button>
-                </div>
-              </details>
-            </div>
-            {rightPanel === "preview" && <div className="flex items-center gap-1">
-              {previewUrl && <>
-                <button type="button" aria-label="Desktop preview" onClick={() => setPreviewViewport("desktop")} className={`rounded p-1.5 ${previewViewport === "desktop" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Monitor className="size-3.5" /></button>
-                <button type="button" aria-label="Tablet preview" onClick={() => setPreviewViewport("tablet")} className={`rounded p-1.5 ${previewViewport === "tablet" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Tablet className="size-3.5" /></button>
-                <button type="button" aria-label="Mobile preview" onClick={() => setPreviewViewport("mobile")} className={`rounded p-1.5 ${previewViewport === "mobile" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Smartphone className="size-3.5" /></button>
-                <span className="mx-1 h-4 w-px bg-white/10" />
-                <Button size="sm" variant="ghost" onClick={() => setPreviewVersion((value) => value + 1)} className="h-7 gap-1 px-2 text-xs text-slate-500"><RotateCcw className="size-3.5" /><span className="hidden sm:inline">Refresh</span></Button>
-                <a href={previewUrl} target="_blank" rel="noreferrer" aria-label="Open preview in a new window" className="inline-flex rounded p-1.5 text-slate-500 hover:bg-white/5 hover:text-white"><ExternalLink className="size-3.5" /></a>
-              </>}
-            </div>}
+          <div className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-2">
+            <nav aria-label="Workspace views" className="grid min-w-0 flex-1 grid-cols-5 gap-1 rounded-lg border border-white/8 bg-black/20 p-1">
+              <button type="button" disabled={!isWebsite} onClick={() => { setRightPanel("preview"); if (activeSession && !previewUrl) void activatePreview(activeSession.id); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "preview" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
+              <button type="button" disabled={!latestPlan && !designBrief} onClick={() => setRightPanel("plan")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "plan" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
+              <button type="button" disabled={!activeTaskId} onClick={() => { setRightPanel("sitemap"); if (activeTaskId) void refreshDocs(activeTaskId); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "structure" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Structure</button>
+              <button type="button" disabled={!activeTaskId} onClick={() => { setRightPanel("files"); if (activeTaskId) void refreshProject(activeTaskId); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "project" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Project</button>
+              <button type="button" onClick={() => setRightPanel("changes")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "review" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300"}`}>Review{changes.files.length || blockingFindingIds.length ? ` (${changes.files.length + blockingFindingIds.length})` : ""}</button>
+            </nav>
           </div>
+          {panelGroup === "structure" && <nav aria-label="Structure views" className="flex h-10 shrink-0 items-center gap-1 border-b border-white/8 bg-[#0c1016] px-3">
+            <button type="button" onClick={() => setRightPanel("sitemap")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "sitemap" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Sitemap &amp; pages</button>
+            <button type="button" onClick={() => setRightPanel("components")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "components" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Components</button>
+          </nav>}
+          {panelGroup === "project" && <nav aria-label="Project views" className="flex h-10 shrink-0 items-center gap-1 border-b border-white/8 bg-[#0c1016] px-3">
+            <button type="button" onClick={() => { setRightPanel("files"); if (activeTaskId && !projectEntries.length) void refreshProject(activeTaskId); }} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "files" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Files</button>
+            <button type="button" onClick={() => { setRightPanel("environment"); if (activeTaskId) void refreshEnvironment(activeTaskId).catch((error) => setEnvironmentError(error instanceof Error ? error.message : "Unable to load environment variables.")); }} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "environment" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Environment</button>
+            <button type="button" onClick={() => { setRightPanel("memory"); if (activeTaskId) void refreshDocs(activeTaskId); }} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "memory" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Memory</button>
+          </nav>}
+          {panelGroup === "review" && <nav aria-label="Review views" className="flex h-10 shrink-0 items-center gap-1 border-b border-white/8 bg-[#0c1016] px-3">
+            <button type="button" onClick={() => setRightPanel("changes")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "changes" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Changes{changes.files.length ? ` · ${changes.files.length}` : ""}</button>
+            <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("evidence")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "evidence" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Evidence{blockingFindingIds.length ? ` · ${blockingFindingIds.length}` : ""}</button>
+            <button type="button" onClick={() => setRightPanel("logs")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "logs" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Logs{runningProcesses.length ? ` · ${runningProcesses.length}` : ""}</button>
+          </nav>}
           {rightPanel === "preview" && previewUrl && <div className="flex h-9 shrink-0 items-center gap-2 border-b border-white/8 bg-[#0c1016] px-3 text-[10px] text-slate-600">
             <span className={`size-1.5 rounded-full ${previewProcess?.status === "failed" ? "bg-red-300" : "bg-[#a7ff4f]"}`} />
             <span className="min-w-0 flex-1 truncate font-mono">{previewUrl}</span>
             <span>{previewVersion > 0 ? "Preview updated" : previewProcess?.status === "starting" ? "Starting…" : "Live"}</span>
+            <span className="h-4 w-px bg-white/10" />
+            <button type="button" aria-label="Desktop preview" onClick={() => setPreviewViewport("desktop")} className={`rounded p-1 ${previewViewport === "desktop" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Monitor className="size-3.5" /></button>
+            <button type="button" aria-label="Tablet preview" onClick={() => setPreviewViewport("tablet")} className={`rounded p-1 ${previewViewport === "tablet" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Tablet className="size-3.5" /></button>
+            <button type="button" aria-label="Mobile preview" onClick={() => setPreviewViewport("mobile")} className={`rounded p-1 ${previewViewport === "mobile" ? "bg-white/8 text-slate-200" : "text-slate-600 hover:text-slate-300"}`}><Smartphone className="size-3.5" /></button>
+            <button type="button" onClick={() => setPreviewVersion((value) => value + 1)} aria-label="Refresh preview" className="rounded p-1 text-slate-600 hover:text-slate-300"><RotateCcw className="size-3.5" /></button>
+            <a href={previewUrl} target="_blank" rel="noreferrer" aria-label="Open preview in a new window" className="rounded p-1 text-slate-600 hover:text-slate-300"><ExternalLink className="size-3.5" /></a>
           </div>}
           <div className="flex min-h-0 flex-1 overflow-hidden">
             {rightPanel === "plan"
               ? <PlanPanel plan={latestPlan} designBrief={designBrief} />
+              : rightPanel === "sitemap"
+                ? <DocsPanel docs={sitemapDocs} />
+              : rightPanel === "components"
+                ? <DocsPanel docs={componentDocs} />
+              : rightPanel === "files"
+                ? <ProjectBrowser entries={projectEntries} content={projectFile?.content ?? ""} selectedPath={projectFile?.path ?? null} loading={projectLoading} error={projectError} onOpen={openProjectFile} />
+              : rightPanel === "environment"
+                ? <EnvironmentPanel variables={environmentVariables} busy={environmentBusy} error={environmentError} onSave={(name, value) => updateEnvironment(name, value)} onDelete={(name) => updateEnvironment(name, undefined, true)} />
               : rightPanel === "changes"
                 ? <ChangesPanel changes={changes} />
                 : rightPanel === "evidence"
@@ -1318,7 +1414,7 @@ export function BorgWorkspaceV2() {
           </div>}
           <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); if (taskBusy) return; const value = request; setRequest(""); void runTask(value); }}>
             <Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={taskBusy || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={isWebsite ? "Describe a change to this website…" : `Ask BORG in ${activeMode.toUpperCase()} mode…`} />
-            <Button type={canStop ? "button" : "submit"} disabled={taskBusy && !canStop} onClick={() => { if (canStop) { abortRef.current?.abort(); setStreaming(false); setTaskState("CANCELLED"); } }} className={`h-11 gap-2 px-5 ${taskBusy ? "bg-white/8 text-slate-200" : "bg-[#a7ff4f] text-[#071007]"}`}>{canStop ? <CircleStop className="size-4" /> : <Play className="size-4" />}{actionLabel}</Button>
+            <Button type={canStop || canRetry ? "button" : "submit"} disabled={taskBusy && !canStop && !canRetry} onClick={() => { if (canStop) { abortRef.current?.abort(); setStreaming(false); setRuntimeActive(false); setTaskState("CANCELLED"); } else if (canRetry) retryTask(); }} className={`h-11 gap-2 px-5 ${canRetry ? "bg-amber-300 text-[#171005]" : taskBusy ? "bg-white/8 text-slate-200" : "bg-[#a7ff4f] text-[#071007]"}`}>{canStop ? <CircleStop className="size-4" /> : canRetry ? <RotateCcw className="size-4" /> : <Play className="size-4" />}{actionLabel}</Button>
           </form>
         </div>
       </section>
