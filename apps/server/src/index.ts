@@ -329,10 +329,12 @@ async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, re
 function recoverInterruptedTasks(): void {
   for (const task of tasks.listInterruptedTasks()) {
     const checkpoint = createCheckpointSnapshot(task, "interrupted");
-    tasks.saveTask({ ...task, state: "RECOVERY_REQUIRED", updatedAt: new Date().toISOString() });
+    const recovered = workflow.transition(task, "RECOVERY_REQUIRED");
+    syncWorkflowProjection(recovered.task, recovered.workflow);
     appendTaskEvent(task.id, "TASK_RECOVERY_REQUIRED", {
       checkpointId: checkpoint.id,
       previousState: task.state,
+      workflowVersion: recovered.workflow.version,
       reason: "The server restarted while a mutation-capable lifecycle stage was active.",
     });
   }
