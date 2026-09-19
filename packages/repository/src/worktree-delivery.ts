@@ -37,6 +37,42 @@ export class WorktreeDelivery {
     }
   }
 
+  async reconcilePromotion(taskId: string, worktreePath: string, promote: { repositoryPath: string; expectedBaseCommit: string }) {
+    const root = this.validate(taskId, worktreePath);
+    const projectRoot = realpathSync(resolve(promote.repositoryPath));
+    const projectGit = await this.git(projectRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const worktreeGit = await this.git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    if (resolve(projectGit).toLowerCase() !== resolve(worktreeGit).toLowerCase()) {
+      return { state: "diverged" as const, commit: null, detail: "The delivery worktree no longer belongs to the project repository." };
+    }
+
+    const projectStatus = await this.git(projectRoot, ["status", "--porcelain"]);
+    if (projectStatus) return { state: "diverged" as const, commit: null, detail: "The project has uncommitted changes, so interrupted delivery cannot be reconciled automatically." };
+
+    const projectHead = await this.git(projectRoot, ["rev-parse", "HEAD"]);
+    const worktreeHead = await this.git(root, ["rev-parse", "HEAD"]);
+    if (worktreeHead === promote.expectedBaseCommit) {
+      return { state: "not_committed" as const, commit: null, detail: "The interrupted delivery never created a worktree commit." };
+    }
+
+    let mergeBase = "";
+    try { mergeBase = await this.git(root, ["merge-base", promote.expectedBaseCommit, worktreeHead]); }
+    catch { return { state: "diverged" as const, commit: null, detail: "The worktree delivery commit is not descended from the approved base." }; }
+    if (mergeBase !== promote.expectedBaseCommit) {
+      return { state: "diverged" as const, commit: null, detail: "The worktree delivery commit is not descended from the approved base." };
+    }
+
+    if (projectHead === worktreeHead) {
+      return { state: "promoted" as const, commit: worktreeHead, detail: "The delivery commit had already been promoted before the process stopped." };
+    }
+    if (projectHead !== promote.expectedBaseCommit) {
+      return { state: "diverged" as const, commit: null, detail: "The project HEAD changed after approval, so interrupted delivery cannot be promoted automatically." };
+    }
+
+    await this.git(projectRoot, ["merge", "--ff-only", worktreeHead]);
+    return { state: "promoted" as const, commit: worktreeHead, detail: "Recovered the committed slice and completed its pending fast-forward promotion." };
+  }
+
   async deliver(taskId: string, worktreePath: string, method: "export" | "commit", message?: string, promote?: { repositoryPath: string; expectedBaseCommit: string }) {
     const root = this.validate(taskId, worktreePath);
     const projectRoot = promote ? realpathSync(resolve(promote.repositoryPath)) : null;
