@@ -1779,10 +1779,14 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const rawSliceAction = String(input.sliceAction ?? "initial");
       if (rawSliceAction === "retry") throw new Error("Blocked tasks must be retried through their existing task continuation endpoint.");
       const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
-      const styleFocus = mode !== "ask" && rawSliceAction === "style" && Boolean(selectedWebsite && projectPlan && projectPlan.status !== "proposed");
+      const focusedPlanReady = Boolean(selectedWebsite && projectPlan && projectPlan.status !== "proposed");
+      if (mode !== "ask" && ["style", "page", "component"].includes(rawSliceAction) && !focusedPlanReady) {
+        throw new Error("Approve the website plan before starting a focused Page, Component, or Styles workspace.");
+      }
+      const styleFocus = mode !== "ask" && rawSliceAction === "style" && focusedPlanReady;
       const focusType = rawSliceAction === "page" || rawSliceAction === "component" ? rawSliceAction as "page" | "component" : null;
       const focusId = focusType ? String(input.scopeId ?? "").trim() : "";
-      const objectFocus = mode !== "ask" && Boolean(focusType && focusId && selectedWebsite && projectPlan && projectPlan.status !== "proposed");
+      const objectFocus = mode !== "ask" && Boolean(focusType && focusId && focusedPlanReady);
       if (focusType && !focusId) throw new Error(`${focusType} workspace is missing its durable scope id.`);
       const slicedApplication = mode !== "ask" && !["backend", "style", "page", "component"].includes(rawSliceAction) && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
       const miniLoop = slicedApplication || styleFocus || objectFocus;
