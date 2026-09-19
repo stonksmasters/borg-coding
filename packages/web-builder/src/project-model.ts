@@ -177,9 +177,13 @@ export function updateVerifiedProjectModel(root: string, changedPaths: string[],
   const sourceFiles = [...changed].filter((path) => sourceExtensions.has(extname(path).toLowerCase()) && !path.startsWith(".localcode/")).map((path) => validateProjectSource(root, path));
   for (const path of sourceFiles) {
     const name = basename(path).replace(/\.[^.]+$/, "");
-    if (/\.(tsx|jsx)$/.test(path) && name !== "App" && name !== "main" && /component|section|ui/i.test(path) && !model.components.some((item) => item.files.includes(path))) {
+    if (/\.(tsx|jsx)$/.test(path) && name !== "App" && name !== "main") {
       const id = slug(name);
-      if (!model.components.some((item) => item.id === id)) model.components.push({ id, name, kind: "ui", purpose: `${name} discovered from verified source.`, files: [path], usedBy: [], dependencies: [], variants: [], status: "verified", acceptanceCriteria });
+      const planned = model.components.find((item) => item.id === id || slug(item.name) === id);
+      if (planned && !planned.files.includes(path)) planned.files.push(path);
+      else if (/component|section|ui/i.test(path) && !model.components.some((item) => item.files.includes(path))) {
+        model.components.push({ id, name, kind: "ui", purpose: `${name} discovered from verified source.`, files: [path], usedBy: [], dependencies: [], variants: [], status: "verified", acceptanceCriteria });
+      }
     }
     const page = model.pages.find((item) => path.toLowerCase().includes(`/${item.id}/`) || slug(name) === item.id || (item.id === "home" && path === "src/App.tsx"));
     if (page && !page.files.includes(path)) {
