@@ -680,7 +680,16 @@ const server = createServer((request, response) => {
       const action = rawAction as "initial" | "advance" | "revise" | "backend";
       const feedback = String(input.feedback ?? "");
       if ((action === "revise" || action === "backend") && !feedback.trim()) return send(response, 400, { error: "Feedback is required for this workflow action." });
-      const session = await launchFrontendWorkflowSession(parent, action, feedback);
+      let session: ChatSession;
+      if (action === "initial" || action === "advance") {
+        const runtime = await coreProjectRuntime(parent.workspaceId);
+        const expectedAction = action === "initial" ? "start_slice" : "advance_slice";
+        const command = runtime.workflow?.pendingCommand;
+        if (!command || command.action !== expectedAction) return send(response, 409, { error: `Core has no pending ${expectedAction} workflow command.` });
+        session = await launchFrontendWorkflowSession(parent, action, feedback, command.id);
+      } else {
+        session = await launchFrontendWorkflowSession(parent, action, feedback);
+      }
       return send(response, 202, { session, workflowStarted: true });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to continue frontend workflow." }));
     return;
@@ -717,14 +726,8 @@ const server = createServer((request, response) => {
       const body = await upstream.json().catch(() => ({})) as Record<string, unknown>;
       if (!upstream.ok) return send(response, upstream.status, body);
 
-      const persistedPlan = session.repositoryPath ? readProjectPlan(session.repositoryPath) : null;
-      const persistedSlice = session.repositoryPath ? readSliceState(session.repositoryPath) : null;
-      const persistedProjectPlanApproval = decision === "approve"
-        && session.workflowRole === "primary"
-        && persistedPlan?.status === "approved"
-        && persistedSlice?.status === "ready"
-        && persistedSlice.lastTaskId === taskId;
-      const projectPlanApproved = body.projectPlanApproved === true || persistedProjectPlanApproval;
+      const workflowState = body.workflow as CoreWorkflowState | undefined;
+      const projectPlanApproved = body.projectPlanApproved === true;
       const escalated = decision === "approve" && session.activeMode === "plan" && !projectPlanApproved;
       const updatedSession = escalated ? chats.updateSession(session.id, { activeMode: "edit" }) ?? session : session;
       chats.deleteModeEscalation(taskId);
@@ -742,7 +745,7 @@ const server = createServer((request, response) => {
               : `${updatedSession.activeMode.toUpperCase()} authorization was confirmed.`,
       });
       const startedSession = projectPlanApproved && decision === "approve"
-        ? await launchFrontendWorkflowSession(updatedSession, "initial")
+        ? await driveWorkflow(updatedSession, workflowState)
         : null;
       return send(response, 200, { ...body, session: updatedSession, startedSession, workflowStarted: Boolean(startedSession) });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
@@ -759,50 +762,44 @@ const server = createServer((request, response) => {
 });
 
 async function recoverApprovedFrontendPlans() {
-  const sessions = chats.listSessions();
-  const repositories = new Map<string, ChatSession>();
-  for (const session of sessions) {
-    if (!session.repositoryPath || session.parentSessionId) continue;
-    if (!repositories.has(session.repositoryPath.toLowerCase())) repositories.set(session.repositoryPath.toLowerCase(), session);
-  }
-  for (const parent of repositories.values()) {
+  const primarySessions = chats.listSessions().filter((session) => session.repositoryPath && !session.parentSessionId);
+  for (const parent of primarySessions) {
     try {
-      if (!parent.repositoryPath || !websiteInfo(parent.repositoryPath)) continue;
-      const plan = readProjectPlan(parent.repositoryPath);
-      const slice = readSliceState(parent.repositoryPath);
-      if (plan?.status !== "approved" || !slice) continue;
-      if (slice.status === "awaiting_feedback" && slice.current + 1 < plan.slices.length) {
-        const latest = sessions.filter((candidate) => candidate.repositoryPath?.toLowerCase() === parent.repositoryPath!.toLowerCase() && candidate.workflowRole === "frontend_slice")
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-        if (latest && chats.latestTaskId(latest.id) === slice.lastTaskId) await launchFrontendWorkflowSession(parent, "advance");
+      if (!parent.repositoryPath || !websiteInfo(parent.repositoryPath) || activeStreams.has(parent.id)) continue;
+      const project = await coreProjectRuntime(parent.workspaceId);
+      const state = project.workflow;
+      if (!state) continue;
+
+      if (state.taskId && chats.latestTaskId(parent.id) !== state.taskId) chats.bindTask(parent.id, state.taskId);
+
+      if (state.pendingCommand) {
+        await driveWorkflow(parent, state);
         continue;
       }
-      if (slice.status !== "ready") continue;
-      const existing = sessions.find((candidate) => candidate.repositoryPath?.toLowerCase() === parent.repositoryPath!.toLowerCase()
-        && candidate.activeMode === "edit"
-        && candidate.title.includes("Slice 1")
-        && chats.latestTaskId(candidate.id));
-      if (!existing) {
-        await launchFrontendWorkflowSession(parent, "initial");
-        continue;
-      }
-      const runtime = await loadSessionRuntime(existing);
-      if (!runtime.latestTaskId) continue;
+
+      if (!state.taskId) continue;
+      const runtime = await coreTaskRuntime(state.taskId);
       if (runtime.task?.state === "AWAITING_APPROVAL" && runtime.approval?.status === "REQUESTED") {
-        await approveCoreTask(runtime.latestTaskId);
+        if (runtime.projectPlanApproval || !["edit", "agent"].includes(parent.activeMode)) continue;
+        await approveCoreTask(state.taskId);
         const controller = new AbortController();
-        activeStreams.set(existing.id, controller);
+        activeStreams.set(parent.id, controller);
         try {
-          await pipeExecution(runtime.latestTaskId, existing, () => undefined, controller);
-          await saveVerifiedFrontendSlice(runtime.latestTaskId, existing, () => undefined);
+          await pipeExecution(state.taskId, parent, () => undefined, controller);
+          const next = await saveVerifiedFrontendSlice(state.taskId, parent, () => undefined);
+          await driveWorkflow(parent, next);
         } finally {
-          if (activeStreams.get(existing.id) === controller) activeStreams.delete(existing.id);
+          if (activeStreams.get(parent.id) === controller) activeStreams.delete(parent.id);
         }
-      } else if (runtime.task?.state === "DELIVERY_READY") {
-        await saveVerifiedFrontendSlice(runtime.latestTaskId, existing, () => undefined);
+        continue;
+      }
+
+      if (runtime.task?.state === "DELIVERY_READY") {
+        const next = await saveVerifiedFrontendSlice(state.taskId, parent, () => undefined);
+        await driveWorkflow(parent, next);
       }
     } catch (error) {
-      console.error("[frontend-workflow] recovery failed", error);
+      console.error("[frontend-workflow] SQLite recovery failed", error);
     }
   }
 }
