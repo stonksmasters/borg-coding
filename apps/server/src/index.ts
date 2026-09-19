@@ -346,6 +346,8 @@ function workflowProjectionRoot(task: Task): string | null {
 }
 
 function syncWorkflowProjection(task: Task, state: WorkflowState): WorkflowState {
+  const approval = tasks.findApproval(task.id);
+  if (state.planApproved && task.state !== "COMPLETE" && (!approval?.worktreePath || approval.status !== "APPROVED")) return state;
   const root = workflowProjectionRoot(task);
   if (!root) return state;
   try {
@@ -753,10 +755,14 @@ const server = createServer((request, response) => {
       template: websiteProject.template,
       originalBrief: websiteProject.originalBrief,
     }, websiteWorkflow) : "";
-    const projectPlan = websiteProject ? readProjectPlan(approvedWorktreePath) : null;
-    const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED") ? readSliceState(approvedWorktreePath) : null;
+    const taskWorkflow = workflow.get(task.projectId);
+    const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
+    const projectPlan = websiteProject ? projectPlanFromWorkflow(ownedTaskWorkflow, approvedWorktreePath) : null;
+    const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED")
+      ? sliceStateFromWorkflow(ownedTaskWorkflow, projectPlan, approvedWorktreePath)
+      : null;
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
-      ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
+      ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
     const teamPolicy = teamPolicies.load(access.load().repositoryPath);
     const activeDisciplines = (task.disciplines.length ? task.disciplines : [teamPolicy.defaultDiscipline]) as EngineeringDiscipline[];
     const primaryDiscipline = activeDisciplines[0];
@@ -798,7 +804,7 @@ const server = createServer((request, response) => {
           const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
           if (decision.disposition === "fatal") {
-            workflow.recovery(task, decision.category, decision.action, true);
+            syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
             throw error;
           }
           const recoveryPreflight = performPreflight("implementation_recovery");
@@ -825,7 +831,7 @@ const server = createServer((request, response) => {
             appendTaskEvent(taskId, "IMPLEMENTATION_NO_PROGRESS", { attempt: task.attempts, toolFailures, decision });
             appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
             if (decision.disposition === "fatal") {
-              workflow.recovery(task, decision.category, decision.action, true);
+              syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
               throw new Error(`Slice recovery stopped: ${decision.reason}`);
             }
             const recoveryPreflight = performPreflight("no_progress_recovery");
@@ -869,7 +875,7 @@ const server = createServer((request, response) => {
           const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "verification" });
           if (decision.disposition === "fatal") {
-            workflow.recovery(task, decision.category, decision.action, true);
+            syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
             throw error;
           }
           const recoveryPreflight = performPreflight("verification_recovery");
