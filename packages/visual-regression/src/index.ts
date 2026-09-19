@@ -67,6 +67,7 @@ export interface VisualComparison {
 export interface VisualRegressionReport {
   status: VisualRegressionStatus;
   passed: boolean;
+  requiresAcceptance: boolean;
   verificationProfile: "quick" | "full";
   configPath: string;
   comparedAt: string;
@@ -314,21 +315,21 @@ export class VisualRegressionService {
     try { loaded = this.load(worktreePath); }
     catch (error) {
       return {
-        status: "failed", passed: false, verificationProfile, configPath: ".localcode/visual-regression.json",
+        status: "failed", passed: false, requiresAcceptance: false, verificationProfile, configPath: ".localcode/visual-regression.json",
         comparedAt, comparisons: [], summary: error instanceof Error ? error.message : "Visual regression configuration failed.",
       };
     }
     if (!loaded.config) return {
-      status: "disabled", passed: true, verificationProfile, configPath: loaded.configPath,
+      status: "disabled", passed: true, requiresAcceptance: false, verificationProfile, configPath: loaded.configPath,
       comparedAt, comparisons: [], summary: "No repository visual regression configuration was found.",
     };
     if (!evidence) return {
-      status: "failed", passed: false, verificationProfile, configPath: loaded.configPath,
+      status: "failed", passed: false, requiresAcceptance: false, verificationProfile, configPath: loaded.configPath,
       comparedAt, comparisons: [], summary: "Visual regression profiles are configured but no browser evidence was captured.",
     };
     const profiles = loaded.config.profiles.filter((profile) => profile.verificationProfiles.includes(verificationProfile));
     if (!profiles.length) return {
-      status: "disabled", passed: true, verificationProfile, configPath: loaded.configPath,
+      status: "disabled", passed: true, requiresAcceptance: false, verificationProfile, configPath: loaded.configPath,
       comparedAt, comparisons: [], summary: `No visual profiles are assigned to ${verificationProfile} verification.`,
     };
     const worktree = realpathSync(resolve(worktreePath));
@@ -357,11 +358,12 @@ export class VisualRegressionService {
       : statuses.has("regression") ? "regression"
       : statuses.has("missing-baseline") ? "missing-baseline"
       : "pass";
-    const passed = status === "pass" || status === "disabled";
+    const requiresAcceptance = status === "missing-baseline";
+    const passed = !["failed", "dimension-mismatch", "regression"].includes(status);
     const changed = comparisons.reduce((sum, item) => sum + item.changedPixels, 0);
     const missing = comparisons.filter((item) => item.status === "missing-baseline").length;
     return {
-      status, passed, verificationProfile, configPath: loaded.configPath, comparedAt, comparisons,
+      status, passed, requiresAcceptance, verificationProfile, configPath: loaded.configPath, comparedAt, comparisons,
       summary: status === "pass" ? `Visual regression passed across ${comparisons.length} screenshot(s).`
         : status === "missing-baseline" ? `${missing} visual baseline(s) require explicit acceptance.`
         : status === "regression" ? `Visual regression detected ${changed} changed pixel(s) above configured limits.`
