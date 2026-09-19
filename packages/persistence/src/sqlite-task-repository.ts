@@ -167,15 +167,17 @@ export class SqliteTaskRepository {
     return row ? WorkflowStateSchema.parse(JSON.parse(row.data)) : null;
   }
 
-  commitWorkflowMutation(input: { state: WorkflowState; task?: Task; approval?: Approval; events?: TaskEvent[] }): void {
+  commitWorkflowMutation(input: { state: WorkflowState; task?: Task; approval?: Approval; continuation?: TaskContinuation; events?: TaskEvent[] }): void {
     const workflowValue = WorkflowStateSchema.parse(input.state);
     const taskValue = input.task ? TaskSchema.parse(input.task) : null;
     const approvalValue = input.approval ? ApprovalSchema.parse(input.approval) : null;
+    const continuationValue = input.continuation ? TaskContinuationSchema.parse(input.continuation) : null;
     const eventValues = (input.events ?? []).map((event) => TaskEventSchema.parse(event));
     this.database.exec("BEGIN IMMEDIATE");
     try {
       if (taskValue) this.saveTask(taskValue);
       if (approvalValue) this.saveApproval(approvalValue);
+      if (continuationValue) this.saveContinuation(continuationValue);
       for (const event of eventValues) this.appendEvent(event);
       this.saveWorkflow(workflowValue);
       this.database.exec("COMMIT");
