@@ -379,13 +379,13 @@ async function reconcileInterruptedDelivery(task: Task): Promise<boolean> {
   const approval = tasks.findApproval(task.id);
   const started = tasks.listEvents(task.id).findLast((event) => event.type === "DELIVERY_STARTED");
   const method = started?.payload.method;
-  const recordedRoot = tasks.listEvents(task.id).find((event) => event.type === "WEBSITE_REPOSITORY_SELECTED")?.payload.repositoryPath;
+  const recordedRoot = taskProjectRepository(task.id);
   const current = workflow.get(task.projectId);
   if (
     method !== "commit"
     || !approval?.worktreePath
     || !approval.baseCommit
-    || typeof recordedRoot !== "string"
+    || !recordedRoot
     || current?.taskId !== task.id
     || current.phase !== "frontend"
   ) return false;
@@ -1008,6 +1008,7 @@ const server = createServer((request, response) => {
         ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
         : "";
       let executionState: ExecutionState = blockedRetry ? "REPAIR" : "IMPLEMENT";
+      taskContext.executionState = executionState;
       const setExecutionState = (next: ExecutionState) => {
         if (next !== executionState) assertExecutionTransition(executionState, next);
         executionState = next;
