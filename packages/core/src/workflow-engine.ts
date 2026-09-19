@@ -312,6 +312,58 @@ export class WorkflowEngine {
     }, "WORKFLOW_RECOVERY_UPDATED", { category, detail, fatal });
   }
 
+  beginDelivery(task: Task, input: { method: "commit" | "export"; expectedBaseCommit?: string | null }): { task: Task; workflow: WorkflowState } {
+    assertTransition(task.state, "DELIVERING");
+    const current = this.requireTask(task);
+    const now = new Date().toISOString();
+    const updatedTask = { ...task, state: "DELIVERING" as const, updatedAt: now };
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      status: "running",
+      nextAction: "deliver",
+      detail: `Delivery started using ${input.method}.`,
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    this.store.commitWorkflowMutation({
+      task: updatedTask,
+      state: workflow,
+      events: [
+        taskEvent(task.id, "DELIVERY_STARTED", {
+          method: input.method,
+          expectedBaseCommit: input.expectedBaseCommit ?? null,
+          workflowVersion: workflow.version,
+        }, now),
+        taskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: "DELIVERING", workflowVersion: workflow.version }, now),
+      ],
+    });
+    return { task: updatedTask, workflow };
+  }
+
+  failDelivery(task: Task, message: string): { task: Task; workflow: WorkflowState } {
+    assertTransition(task.state, "DELIVERY_READY");
+    const current = this.requireTask(task);
+    const now = new Date().toISOString();
+    const updatedTask = { ...task, state: "DELIVERY_READY" as const, updatedAt: now };
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      status: "awaiting_feedback",
+      nextAction: "checkpoint",
+      detail: `Delivery failed: ${message}`,
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    this.store.commitWorkflowMutation({
+      task: updatedTask,
+      state: workflow,
+      events: [
+        taskEvent(task.id, "DELIVERY_FAILED", { message, workflowVersion: workflow.version }, now),
+        taskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: "DELIVERY_READY", workflowVersion: workflow.version }, now),
+      ],
+    });
+    return { task: updatedTask, workflow };
+  }
+
   completeDelivery(task: Task, result: unknown): { task: Task; workflow: WorkflowState } {
     assertTransition(task.state, "COMPLETE");
     const current = this.requireTask(task);
