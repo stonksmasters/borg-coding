@@ -24,7 +24,11 @@ test("approved website state yields scoped, durable context and registries", () 
     assert.ok(model.pages.length > 0);
     model.components.push({ id: "product-card", name: "Product Card", files: ["src/components/ProductCard.tsx"], usedBy: [], dependencies: [], variants: [], status: "planned", acceptanceCriteria: ["Card is responsive"] });
     writeProjectModel(root, model);
-    const approvedPlan = fallbackProjectPlan("Authoritative product store", "ecommerce");
+    const approvedPlan = {
+      ...fallbackProjectPlan("Authoritative product store", "ecommerce"),
+      status: "approved" as const,
+      approvedAt: new Date().toISOString(),
+    };
     const compiled = compileFrontendContext({
       root,
       phase: "frontend",
@@ -90,7 +94,7 @@ test("workflow status after restart follows durable failure and verification evi
     const restored = deriveWorkflowStatus(reopened.findTask(task.id)!, reopened.listEvents(task.id), null, null);
     assert.equal(restored.currentAction, "failed");
     assert.equal(restored.verificationPassed, false);
-    assert.match(restored.nextAction, /Inspect the failure/);
+    assert.match(restored.nextAction, /Inspect the blocking evidence/);
     assert.equal(restored.activity.length, 2);
     reopened.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
