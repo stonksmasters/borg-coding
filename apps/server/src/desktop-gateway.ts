@@ -85,6 +85,34 @@ function compactTitle(request: string): string {
 }
 
 function formatProjectPlan(plan: ProjectPlan): string {
+  const sitemap = plan.sitemap?.length ? plan.sitemap.map((page) => [
+    `### ${page.name} · \`${page.route}\``,
+    page.purpose,
+    `Sections: ${page.sections.join(" · ") || "None specified"}`,
+    `Components: ${page.componentIds.join(", ") || "None assigned"}`,
+  ].join("\n")).join("\n\n") : plan.pages.map((page) => `- ${page}`).join("\n");
+
+  const components = plan.components?.length ? plan.components.map((component) => [
+    `### ${component.name} · ${component.kind}`,
+    component.purpose,
+    `Used by: ${component.usedBy.join(", ") || "shared/global"}`,
+    `Variants: ${component.variants.join(", ") || "default"}`,
+  ].join("\n")).join("\n\n") : "- Components will be derived from the approved sitemap.";
+
+  const styles = plan.styles ? [
+    plan.styles.direction,
+    `- Colors: ${plan.styles.colors.join("; ")}`,
+    `- Typography: ${plan.styles.typography.join("; ")}`,
+    `- Spacing: ${plan.styles.spacing.join("; ")}`,
+    `- Radii: ${plan.styles.radii.join("; ")}`,
+    `- Shadows: ${plan.styles.shadows.join("; ")}`,
+    `- Layout: ${plan.styles.layoutPrinciples.join("; ")}`,
+    `- Motion: ${plan.styles.motion.join("; ")}`,
+    `- Responsive: ${plan.styles.responsive.join("; ")}`,
+    `- Accessibility: ${plan.styles.accessibility.join("; ")}`,
+    `- Avoid: ${plan.styles.avoid.join("; ")}`,
+  ].join("\n") : plan.visualDirection;
+
   const slices = plan.slices.map((slice, index) => [
     `## ${index + 1}. ${slice.title}`,
     "",
@@ -105,8 +133,14 @@ function formatProjectPlan(plan: ProjectPlan): string {
     `**Visual direction:** ${plan.visualDirection}`,
     `**Backend after frontend:** ${plan.backendRequired ? "Required" : "Not required"}`,
     "",
-    "## Planned pages",
-    ...plan.pages.map((page) => `- ${page}`),
+    "## Sitemap",
+    sitemap,
+    "",
+    "## Component inventory",
+    components,
+    "",
+    "## Global style system",
+    styles,
     "",
     "## Planned capabilities",
     ...plan.features.map((feature) => `- ${feature}`),
@@ -612,6 +646,28 @@ const server = createServer((request, response) => {
       return send(response, 201, { session, messages: [] });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create chat session" }));
     return;
+  }
+
+  const styleFocusRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)\/focus\/styles$/);
+  if (styleFocusRoute && request.method === "POST") {
+    const source = chats.findSession(decodeURIComponent(styleFocusRoute[1]));
+    if (!source) return send(response, 404, { error: "Session not found." });
+    const root = rootWorkflowSession(source);
+    if (!root.repositoryPath) return send(response, 409, { error: "Styles workspace requires a website repository." });
+    const existing = chats.listSessions().find((candidate) => candidate.parentSessionId === root.id && candidate.workflowRole === "styles");
+    const session = existing ?? createChatSession({
+      id: randomUUID(),
+      title: `${root.title} · Styles`,
+      activeMode: root.activeMode,
+      repositoryPath: root.repositoryPath,
+      workspaceId: `${root.workspaceId}::styles`,
+      provider: root.provider,
+      model: root.model,
+      parentSessionId: root.id,
+      workflowRole: "styles",
+    });
+    if (!existing) chats.saveSession(session);
+    return send(response, 200, { session });
   }
 
   const sessionRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)$/);
