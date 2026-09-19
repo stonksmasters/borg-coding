@@ -16,6 +16,7 @@ import { AccessController } from "../../../packages/repository/src/access-contro
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
 import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { readProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import type { ProjectPlan } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const gatewayPort = Number(process.env.BORG_GATEWAY_PORT ?? 4312);
@@ -665,9 +666,40 @@ const server = createServer((request, response) => {
       model: root.model,
       parentSessionId: root.id,
       workflowRole: "styles",
+      focusId: "global",
     });
     if (!existing) chats.saveSession(session);
     return send(response, 200, { session });
+  }
+
+  const objectFocusRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)\/focus\/(page|component)\/([^/?]+)$/);
+  if (objectFocusRoute && request.method === "POST") {
+    const source = chats.findSession(decodeURIComponent(objectFocusRoute[1]));
+    if (!source) return send(response, 404, { error: "Session not found." });
+    const root = rootWorkflowSession(source);
+    if (!root.repositoryPath) return send(response, 409, { error: "Focused workspace requires a website repository." });
+    const role = objectFocusRoute[2] as "page" | "component";
+    const focusId = decodeURIComponent(objectFocusRoute[3]);
+    const model = readProjectModel(root.repositoryPath);
+    const target = role === "page"
+      ? model.pages.find((page) => page.id === focusId)
+      : model.components.find((component) => component.id === focusId);
+    if (!target) return send(response, 404, { error: `Unknown ${role} scope: ${focusId}` });
+    const existing = chats.listSessions().find((candidate) => candidate.parentSessionId === root.id && candidate.workflowRole === role && candidate.focusId === focusId);
+    const session = existing ?? createChatSession({
+      id: randomUUID(),
+      title: `${root.title} · ${role === "page" ? "Page" : "Component"} · ${target.name}`,
+      activeMode: root.activeMode,
+      repositoryPath: root.repositoryPath,
+      workspaceId: `${root.workspaceId}::${role}::${focusId}`,
+      provider: root.provider,
+      model: root.model,
+      parentSessionId: root.id,
+      workflowRole: role,
+      focusId,
+    });
+    if (!existing) chats.saveSession(session);
+    return send(response, 200, { session, target });
   }
 
   const sessionRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)$/);
