@@ -52,6 +52,8 @@ function command(projectId: string, workflowVersion: number, action: WorkflowSta
     action,
     workflowVersion,
     createdAt: now,
+    claimedByTaskId: null,
+    claimedAt: null,
   };
 }
 
@@ -69,8 +71,10 @@ export class WorkflowEngine {
   ): WorkflowState {
     const existing = this.store.findWorkflow(task.projectId);
     if (options.commandId) {
-      if (existing?.lastConsumedCommandId === options.commandId) throw new Error(`Workflow command ${options.commandId} was already consumed.`);
-      if (existing?.pendingCommand?.id !== options.commandId) throw new Error(`Workflow command ${options.commandId} is no longer pending.`);
+      if (existing?.pendingCommand?.id !== options.commandId) {
+        if (existing?.lastConsumedCommandId === options.commandId) throw new Error(`Workflow command ${options.commandId} was already consumed.`);
+        throw new Error(`Workflow command ${options.commandId} is no longer pending.`);
+      }
     }
     const now = new Date().toISOString();
     const state = WorkflowStateSchema.parse({
@@ -87,8 +91,10 @@ export class WorkflowEngine {
       sliceTitle: existing?.sliceTitle ?? null,
       feedback: options.feedback?.trim() ? [...(existing?.feedback ?? []), options.feedback.trim().slice(0, 4000)] : existing?.feedback ?? [],
       handoff: existing?.handoff ?? null,
-      pendingCommand: null,
-      lastConsumedCommandId: options.commandId ?? existing?.lastConsumedCommandId ?? null,
+      pendingCommand: options.commandId && existing?.pendingCommand
+        ? { ...existing.pendingCommand, claimedByTaskId: task.id, claimedAt: now }
+        : null,
+      lastConsumedCommandId: existing?.lastConsumedCommandId ?? null,
       repairAttempt: 0,
       recoveryCategory: null,
       detail,
@@ -141,12 +147,14 @@ export class WorkflowEngine {
     const current = this.requireTask(task);
     const now = new Date().toISOString();
     const updatedTask = { ...task, state: "AWAITING_APPROVAL" as const, updatedAt: now };
+    const claimedCommand = current.pendingCommand?.claimedByTaskId === task.id ? current.pendingCommand : null;
     const workflow = WorkflowStateSchema.parse({
       ...current,
       planApprovalId: kind === "project_plan" ? approval.id : current.planApprovalId,
       status: "awaiting_approval",
       nextAction: "await_approval",
-      pendingCommand: null,
+      pendingCommand: claimedCommand ? null : current.pendingCommand,
+      lastConsumedCommandId: claimedCommand?.id ?? current.lastConsumedCommandId,
       detail: kind === "project_plan" ? "Project plan is awaiting operator approval." : "Execution is awaiting operator approval.",
       version: current.version + 1,
       updatedAt: now,
@@ -156,7 +164,7 @@ export class WorkflowEngine {
       approval,
       state: workflow,
       events: [
-        taskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, kind, workflowVersion: workflow.version }, now),
+        taskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, kind, workflowVersion: workflow.version, consumedCommandId: claimedCommand?.id ?? null }, now),
         taskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: "AWAITING_APPROVAL", workflowVersion: workflow.version }, now),
       ],
     });
