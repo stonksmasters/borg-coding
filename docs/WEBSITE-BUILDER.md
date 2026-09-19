@@ -1,6 +1,6 @@
 # BORG Website Builder Workflow
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 
 ## Goal
 
@@ -67,7 +67,7 @@ Approval applies to the plan and scope, not every individual tool call inside an
 
 ### Slice execution
 
-Each slice gets its own mini-loop.
+Each slice gets its own mini-loop inside the same primary website session. `WorkflowEngine` persists the command that starts or advances the slice, so the UI and gateway do not need a second manual "start next slice" path.
 
 #### Context
 
@@ -83,7 +83,9 @@ Refresh or restart the live preview only when needed. Preview should not constan
 
 #### Verify
 
-Collect deterministic and browser evidence appropriate to the slice.
+Collect deterministic and browser evidence appropriate to the slice. The independent fresh reviewer must explicitly account for the slice outcome and every supplied acceptance criterion; missing proof is not a pass.
+
+Visual regression failures repair the implementation. A first verified screenshot with no baseline instead becomes an explicit operator-acceptance gate in Evidence; baseline bytes are never accepted automatically.
 
 #### Repair
 
@@ -182,7 +184,7 @@ The user should see:
 - relevant failures;
 - completion state.
 
-Low-level engineering details remain available when useful but should not dominate the primary experience.
+Low-level engineering details remain available when useful but do not dominate the primary experience. The normal workspace surfaces are Preview, Plan, Changes, and Evidence. Project memory, process logs, raw model-context manifests, review history, and checkpoints are advanced diagnostics.
 
 ## Completion definition
 
