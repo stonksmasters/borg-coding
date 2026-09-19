@@ -1420,7 +1420,17 @@ const server = createServer((request, response) => {
         disciplines: route.disciplines,
         riskLevel: minimumRiskFor(packs),
       };
-      const workflowCommandId = typeof input.workflowCommandId === "string" && input.workflowCommandId.trim() ? input.workflowCommandId.trim() : null;
+      const explicitWorkflowCommandId = typeof input.workflowCommandId === "string" && input.workflowCommandId.trim() ? input.workflowCommandId.trim() : null;
+      const expectedCommandAction = slicedApplication && sliceAction === "initial"
+        ? "start_slice"
+        : slicedApplication && sliceAction === "advance"
+          ? "advance_slice"
+          : null;
+      const workflowCommandId = explicitWorkflowCommandId
+        ?? (expectedCommandAction && durableWorkflow?.pendingCommand?.action === expectedCommandAction ? durableWorkflow.pendingCommand.id : null);
+      if (durableWorkflow?.projectPlan && expectedCommandAction && !workflowCommandId) {
+        throw new Error(`Core has no pending ${expectedCommandAction} command for this project.`);
+      }
       const startedWorkflow = workflow.start(
         task,
         rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : slicedApplication ? "frontend_slice" : "general",
