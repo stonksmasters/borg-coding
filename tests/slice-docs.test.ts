@@ -35,6 +35,12 @@ test("website types receive appropriately sized fallback phase plans", () => {
   assert.equal(landing.backendRequired, false);
   assert.equal(ecommerce.backendRequired, true);
   assert.equal(dashboard.backendRequired, true);
+  assert.ok(landing.sitemap.length >= 1);
+  assert.equal(landing.sitemap[0].route, "/");
+  assert.ok(landing.components.length >= 3);
+  assert.ok(landing.styles.typography.length > 0);
+  assert.ok(ecommerce.sitemap.some((page) => page.route === "/checkout"));
+  assert.ok(ecommerce.components.some((component) => component.usedBy.length > 0));
 });
 
 test("commerce fallback preserves vertical product slices when model formatting fails", () => {
@@ -57,12 +63,16 @@ test("commerce fallback preserves vertical product slices when model formatting 
 
 test("structured model plans replace the fixed slice list", () => {
   const answer = `Plan summary.
-<borg-project-plan>{"siteGoal":"Launch a collector marketplace","audience":"Collectors","pages":["Home","Browse","Listing"],"features":["Search","Listing detail"],"visualDirection":"Editorial dark","backendRequired":true,"slices":[{"id":"shell","title":"Shell","outcome":"Navigable shell","scope":["navigation"],"acceptanceCriteria":["mobile works"]},{"id":"browse","title":"Browse","outcome":"Browse works","scope":["catalog"],"acceptanceCriteria":["filters work"]},{"id":"review","title":"Review","outcome":"Frontend gate passes","scope":["browser review"],"acceptanceCriteria":["build passes"]}],"acceptanceCriteria":["all pages navigable"]}</borg-project-plan>`;
+<borg-project-plan>{"siteGoal":"Launch a collector marketplace","audience":"Collectors","pages":["Home","Browse","Listing"],"features":["Search","Listing detail"],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"Introduce the marketplace","sections":["Navigation","Hero","Featured cards"],"componentIds":["site-header","product-card"],"acceptanceCriteria":["home works"]},{"id":"browse","name":"Browse","route":"/browse","purpose":"Discover cards","sections":["Search","Filters","Results"],"componentIds":["site-header","search-controls","product-card"],"acceptanceCriteria":["browse works"]},{"id":"listing","name":"Listing","route":"/cards/:id","purpose":"Inspect a card","sections":["Gallery","Details"],"componentIds":["site-header","card-detail"],"acceptanceCriteria":["listing works"]}],"components":[{"id":"site-header","name":"Site Header","kind":"layout","purpose":"Global navigation","usedBy":["home","browse","listing"],"variants":["desktop","mobile"],"acceptanceCriteria":["navigation works"]},{"id":"product-card","name":"Product Card","kind":"ui","purpose":"Reusable card summary","usedBy":["home","browse"],"variants":["featured","compact"],"acceptanceCriteria":["card is responsive"]},{"id":"search-controls","name":"Search Controls","kind":"feature","purpose":"Search and filter inventory","usedBy":["browse"],"variants":[],"acceptanceCriteria":["filters update results"]},{"id":"card-detail","name":"Card Detail","kind":"section","purpose":"Detailed listing presentation","usedBy":["listing"],"variants":[],"acceptanceCriteria":["details render"]}],"styles":{"direction":"Editorial dark collector experience","colors":["charcoal surfaces","warm paper text","electric accent"],"typography":["high contrast display","neutral body"],"spacing":["large editorial section rhythm"],"radii":["restrained radius scale"],"shadows":["minimal elevation"],"layoutPrinciples":["asymmetric editorial composition"],"motion":["restrained state motion"],"responsive":["recompose mobile layouts"],"accessibility":["visible focus","AA contrast"],"avoid":["generic card grids"]},"visualDirection":"Editorial dark","backendRequired":true,"slices":[{"id":"shell","title":"Shell","outcome":"Navigable shell","scope":["navigation"],"acceptanceCriteria":["mobile works"]},{"id":"browse","title":"Browse","outcome":"Browse works","scope":["catalog"],"acceptanceCriteria":["filters work"]},{"id":"review","title":"Review","outcome":"Frontend gate passes","scope":["browser review"],"acceptanceCriteria":["build passes"]}],"acceptanceCriteria":["all pages navigable"]}</borg-project-plan>`;
   const plan = parseProjectPlan(answer, "Build a marketplace", "ecommerce");
   assert.equal(plan.slices.length, 3);
   assert.equal(plan.slices[1].title, "Browse");
   assert.equal(plan.backendRequired, true);
   assert.equal(plan.siteGoal, "Launch a collector marketplace");
+  assert.equal(plan.sitemap[1].route, "/browse");
+  assert.deepEqual(plan.sitemap[1].componentIds, ["site-header", "search-controls", "product-card"]);
+  assert.equal(plan.components.find((component) => component.id === "product-card")?.kind, "ui");
+  assert.match(plan.styles.direction, /Editorial dark/);
 });
 
 test("project plan approval is separate from slice execution", () => {
@@ -84,6 +94,9 @@ test("project plan approval is separate from slice execution", () => {
     persistDesignBrief(root, designBrief);
     assert.deepEqual(readPersistedDesignBrief(root), designBrief);
     assert.ok(readProjectDocs(root).some((doc) => doc.path.endsWith("/design-brief.md")));
+    assert.ok(readProjectDocs(root).some((doc) => doc.path.endsWith("/site-map.md")));
+    assert.ok(readProjectDocs(root).some((doc) => doc.path.endsWith("/components.md")));
+    assert.ok(readProjectDocs(root).some((doc) => doc.path.endsWith("/styles.md")));
 
     const plan = readProjectPlan(root)!;
     const planPrompt = slicePlanningPrompt(plan, approved.state);
