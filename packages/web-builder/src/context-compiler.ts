@@ -75,6 +75,8 @@ export function compileFrontendContext(input: ContextInput): CompiledContext {
   add("document", ".localcode/build/brief.md", "Approved project brief", readFileSync(briefPath, "utf8"), true);
   add("document", ".localcode/build/plan.md", "Approved frontend phase and slice", JSON.stringify({ siteGoal: plan.siteGoal, audience: plan.audience, visualDirection: plan.visualDirection, acceptanceCriteria: plan.acceptanceCriteria, slice }, null, 2), true);
   if (design) add("document", ".localcode/build/design-brief.md", "Approved design direction", JSON.stringify(design, null, 2), true);
+  const stylesPath = join(root, ".localcode", "build", "styles.md");
+  if (existsSync(stylesPath) && lstatSync(stylesPath).isFile()) add("document", ".localcode/build/styles.md", "Approved global style system", readFileSync(stylesPath, "utf8").slice(0, 12_000), true);
   const page = input.scope?.type === "page" ? model.pages.find((item) => item.id === input.scope?.id) : null;
   const component = input.scope?.type === "component" ? model.components.find((item) => item.id === input.scope?.id) : null;
   if (input.scope && !page && !component) throw new Error(`Unknown ${input.scope.type} scope: ${input.scope.id}`);
