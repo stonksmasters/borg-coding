@@ -696,6 +696,7 @@ export function BorgWorkspaceV2() {
   function applyEvent(event: StreamEvent) {
     if (event.type === "task.created" && event.task) {
       setActiveTaskId(event.task.id);
+      activeTaskRef.current = event.task.id;
       setTaskState(event.task.state);
       setActivities([]);
       setChanges(EMPTY_CHANGE_SET);
