@@ -671,6 +671,32 @@ const server = createServer((request, response) => {
     return;
   }
 
+  const visualBaselineRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/visual-baselines$/);
+  if (request.method === "POST" && visualBaselineRoute) {
+    const taskId = decodeURIComponent(visualBaselineRoute[1]);
+    void readJson(request).then(async (input) => {
+      const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/visual-baselines`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const body = await upstream.json().catch(() => ({})) as { accepted?: unknown[]; error?: string };
+      if (!upstream.ok) return send(response, upstream.status, body);
+
+      const session = chats.sessionForTask(taskId);
+      const runtime = await coreTaskRuntime(taskId);
+      let workflowStarted = false;
+      if (session?.repositoryPath && runtime.workflow?.projectPlan && runtime.task?.state === "DELIVERY_READY") {
+        const root = rootWorkflowSession(session);
+        const deliveredWorkflow = await saveVerifiedFrontendSlice(taskId, root, () => {});
+        if (deliveredWorkflow) workflowStarted = Boolean(await driveWorkflow(root, deliveredWorkflow));
+      }
+      return send(response, 200, { ...body, workflowStarted });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to accept visual baselines." }));
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/frontend-workflow/continue") {
     void readJson(request).then(async (input) => {
       const parent = chats.findSession(String(input.sessionId ?? ""));
