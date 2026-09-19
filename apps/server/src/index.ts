@@ -23,6 +23,7 @@ import {
   type WorkflowState,
 } from "../../../packages/core/src/contracts.ts";
 import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
+import { assertExecutionTransition, buildRepairContext, formatRepairContext, type ExecutionState } from "../../../packages/core/src/execution-state.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
 import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
@@ -835,7 +836,7 @@ const server = createServer((request, response) => {
       "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-cache, no-transform",
       "access-control-allow-origin": "http://localhost:5173", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type",
     });
-    const taskContext = { taskId };
+    const taskContext: { taskId: string; executionState?: ExecutionState } = { taskId, executionState: "IMPLEMENT" };
     const emit = (event: Record<string, unknown>) => {
       const enriched = { ...event, taskId };
       writeEvent(response, enriched);
@@ -890,8 +891,17 @@ const server = createServer((request, response) => {
     let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
       let repairEvidence = "";
+      let executionState: ExecutionState = "IMPLEMENT";
+      const setExecutionState = (next: ExecutionState) => {
+        if (next !== executionState) assertExecutionTransition(executionState, next);
+        executionState = next;
+        taskContext.executionState = next;
+        appendTaskEvent(taskId, "EXECUTION_STATE_CHANGED", { state: next, repairAttempt: task?.attempts ?? 0 });
+        emit({ type: "execution.state.changed", state: next, repairAttempt: task?.attempts ?? 0 });
+      };
       let implementationBudgetContinuations = 0;
       let implementationBudgetExhausted = false;
+      appendTaskEvent(taskId, "EXECUTION_STATE_CHANGED", { state: executionState, repairAttempt: task.attempts });
       performPreflight("execution_start");
       const compiledSlice = sliceState && projectPlan ? compileFrontendContext({
         root: approvedWorktreePath,
@@ -906,7 +916,7 @@ const server = createServer((request, response) => {
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
         const repairPrompt = repairEvidence
-          ? `Evidence-driven follow-up. Address only the concrete failure or refinement evidence below, then inspect the diff.\n\n${repairEvidence}`
+          ? repairEvidence
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
         let implementationResult: Awaited<ReturnType<typeof runOllamaAgent>>;
         try {
@@ -915,6 +925,7 @@ const server = createServer((request, response) => {
           limits: sliceState ? { toolRounds: 12, toolCalls: 28 } : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledSlice?.sliceId ?? null, compiledSlice?.manifest ?? [], body) : undefined,
           messages: [
+            ...(taskContext.executionState === "REPAIR" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
             { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
@@ -989,13 +1000,14 @@ const server = createServer((request, response) => {
         }, emit);
         const verifierModel = teamPolicies.modelFor(teamPolicy, "verifier", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "verifier", primaryDiscipline, verifierModel, packs, emit);
+        setExecutionState("VERIFY");
         task = transitionTask(task, "VERIFYING", emit);
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_verifying", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Implementation produced source changes. Deterministic and browser verification are running." });
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         emit({ type: "tool.started", tool: "verification_run", input: { profile: verificationProfile } });
         let deterministicVerification: {
           passed?: boolean;
-          results?: unknown[];
+          results?: Array<{ label?: string; command?: string; args?: string[]; exitCode?: number; stdout?: string; stderr?: string }>;
           browserEvidence?: BrowserEvidenceReport | null;
           visualRegression?: VisualRegressionReport;
         };
@@ -1015,6 +1027,7 @@ const server = createServer((request, response) => {
           }
           const recoveryPreflight = performPreflight("verification_recovery");
           repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+          setExecutionState("REPAIR");
           task = scheduleRepair(task, emit, decision.action, decision);
           continue;
         }
@@ -1045,19 +1058,26 @@ const server = createServer((request, response) => {
           activeRoleAssignment = null;
           emit({ type: "stage.updated", stage: "Verification", status: "failed" });
           if (task.attempts >= maxRepairAttempts) {
+            setExecutionState("BLOCKED");
             task = transitionTask(task, "BLOCKED", emit);
             appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, verification });
             emit({ type: "stream.blocked", message: `Verification still failed after ${maxRepairAttempts} repair attempts. Changes remain isolated for inspection.` });
             response.end();
             return;
           }
-          repairEvidence = `Deterministic verification failed:\n${JSON.stringify(verification).slice(0, 80_000)}`;
+          const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
+          const recentChanges = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim());
+          const context = buildRepairContext({ sliceId: compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
+          repairEvidence = formatRepairContext(context);
+          appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
+          setExecutionState("REPAIR");
           task = scheduleRepair(task, emit, "Deterministic verification failed.");
           continue;
         }
 
         let visionReview: VisionReviewResult | null = null;
         if (verification.browserEvidence && !designBrief) {
+          setExecutionState("BROWSER_VERIFY");
           const visionStatus = vision.status();
           appendTaskEvent(taskId, "VISION_REVIEW_STARTED", { provider: visionStatus.provider, model: visionStatus.model, attempt: task.attempts });
           emit({ type: "vision.review.started", provider: visionStatus.provider, model: visionStatus.model });
@@ -1091,6 +1111,7 @@ const server = createServer((request, response) => {
             emit({ type: "review.history.updated" });
             emit({ type: "stage.updated", stage: "Verification", status: "failed" });
             if (task.attempts >= maxRepairAttempts) {
+              setExecutionState("BLOCKED");
               task = transitionTask(task, "BLOCKED", emit);
               appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, visionReview });
               emit({ type: "stream.blocked", message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.` });
@@ -1098,6 +1119,7 @@ const server = createServer((request, response) => {
               return;
             }
             repairEvidence = `Local vision review requires repair:\n${JSON.stringify(visionReview).slice(0, 60_000)}`;
+            setExecutionState("REPAIR");
             task = scheduleRepair(task, emit, "Local vision review found a blocking visual defect.");
             continue;
           }
@@ -1105,10 +1127,12 @@ const server = createServer((request, response) => {
 
         let designReview: DesignReviewResult | null = null;
         if (designBrief) {
+          setExecutionState("BROWSER_VERIFY");
           if (!verification.browserEvidence) {
             finishRole(activeRoleAssignment, "completed", emit);
             activeRoleAssignment = null;
             appendTaskEvent(taskId, "DESIGN_REVIEW_BLOCKED", { reason: "Missing browser evidence.", attempt: task.attempts });
+            setExecutionState("BLOCKED");
             task = transitionTask(task, "BLOCKED", emit);
             emit({ type: "design.review.blocked", message: "Premium frontend delivery requires responsive browser screenshots for aesthetic review." });
             emit({ type: "stream.blocked", message: "Design quality could not be verified because responsive browser evidence is missing." });
@@ -1140,6 +1164,7 @@ const server = createServer((request, response) => {
             emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
             const refinements = designRefinementCount(taskId);
             if (refinements >= maxDesignRefinements) {
+              setExecutionState("BLOCKED");
               task = transitionTask(task, "BLOCKED", emit);
               appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", { refinements, maximum: maxDesignRefinements, review: designReview });
               emit({ type: "stream.blocked", message: `Visual Director still requires refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
@@ -1147,6 +1172,7 @@ const server = createServer((request, response) => {
               return;
             }
             repairEvidence = `VISUAL DIRECTOR REFINEMENT REQUIRED. This is not a functional bug repair. Rework the visual design against the persisted Design Brief and the screenshot evidence below. Preserve working behavior, then recapture responsive browser evidence.\n\n${JSON.stringify(designReview).slice(0, 70000)}`;
+            setExecutionState("REPAIR");
             task = scheduleDesignRefinement(task, emit, designReview.summary);
             continue;
           }
@@ -1154,6 +1180,7 @@ const server = createServer((request, response) => {
           if (designReview.status !== "pass") {
             finishRole(activeRoleAssignment, "completed", emit);
             activeRoleAssignment = null;
+            setExecutionState("BLOCKED");
             task = transitionTask(task, "BLOCKED", emit);
             emit({ type: "design.review.blocked", designReview, message: designReview.summary });
             emit({ type: "stream.blocked", message: `Premium frontend delivery is blocked because mandatory aesthetic review is ${designReview.status}: ${designReview.summary}` });
@@ -1180,6 +1207,7 @@ const server = createServer((request, response) => {
         }, emit);
         activeRoleAssignment = null;
         emit({ type: "stage.updated", stage: "Verification", status: "complete" });
+        setExecutionState("REVIEW");
         task = transitionTask(task, "REVIEWING", emit);
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_reviewing", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Verification passed. Fresh review and visual quality gates are running." });
         emit({ type: "stage.updated", stage: "Review", status: "active" });
@@ -1233,6 +1261,7 @@ const server = createServer((request, response) => {
           }, emit);
           emit({ type: "stage.updated", stage: "Review", status: "failed" });
           if (task.attempts >= maxRepairAttempts) {
+            setExecutionState("BLOCKED");
             task = transitionTask(task, "BLOCKED", emit);
             appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, review });
             emit({ type: "stream.blocked", message: `Fresh review still found a blocking issue after ${maxRepairAttempts} repair attempts.` });
@@ -1240,6 +1269,7 @@ const server = createServer((request, response) => {
             return;
           }
           repairEvidence = `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 60_000)}`;
+          setExecutionState("REPAIR");
           task = scheduleRepair(task, emit, "Fresh-context review found a blocking issue.");
           continue;
         }
@@ -1267,6 +1297,7 @@ const server = createServer((request, response) => {
         appendTaskEvent(taskId, "CHANGESET_CAPTURED", { status: status.stdout ?? "", diff: diff.stdout ?? "" });
         emit({ type: "implementation.summary", status, diff, worktreePath: approval.worktreePath });
         emit({ type: "stage.updated", stage: "Review", status: "complete" });
+        setExecutionState("COMPLETE");
         task = transitionTask(task, "DELIVERY_READY", emit);
         appendTaskEvent(taskId, "DELIVERY_READY", { worktreePath: approval.worktreePath });
         emit({ type: "delivery.ready", worktreePath: approval.worktreePath, message: "Verified and independently reviewed. Choose how to deliver the isolated changes." });

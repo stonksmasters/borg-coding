@@ -2,7 +2,7 @@ import type { Task, TaskEvent, WorkflowState } from "../../../packages/core/src/
 import type { ProjectPlan, SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const steps = ["IMPLEMENTATION_RESPONSE_COMPLETED", "VERIFICATION_COMPLETED", "REVIEW_COMPLETED", "FRONTEND_SLICE_READY", "DELIVERY_READY"];
-const visibleEvents = new Set(["AGENT_ACTIVITY", "TOOL_STARTED", "TOOL_COMPLETED", "TOOL_FAILED", "VERIFICATION_COMPLETED", "VISUAL_REGRESSION_COMPLETED", "DESIGN_REVIEW_COMPLETED", "DESIGN_REVIEW_BLOCKED", "FRONTEND_SLICE_READY", "RUNTIME_FAILED", "REPAIR_LIMIT_REACHED", "MODEL_CONTEXT_RECORDED", "IMPLEMENTATION_BUDGET_CONTINUATION", "IMPLEMENTATION_BUDGET_EXHAUSTED"]);
+const visibleEvents = new Set(["AGENT_ACTIVITY", "TOOL_STARTED", "TOOL_COMPLETED", "TOOL_FAILED", "VERIFICATION_COMPLETED", "VISUAL_REGRESSION_COMPLETED", "DESIGN_REVIEW_COMPLETED", "DESIGN_REVIEW_BLOCKED", "FRONTEND_SLICE_READY", "RUNTIME_FAILED", "REPAIR_LIMIT_REACHED", "MODEL_CONTEXT_RECORDED", "IMPLEMENTATION_BUDGET_CONTINUATION", "IMPLEMENTATION_BUDGET_EXHAUSTED", "EXECUTION_STATE_CHANGED", "REPAIR_CONTEXT_CREATED"]);
 
 export type RunStage =
   | "planning"
@@ -40,6 +40,8 @@ function activityDetail(event: TaskEvent) {
   if (event.type === "MODEL_CONTEXT_RECORDED") return `Saved ${String(event.payload.role ?? "model")} input`;
   if (event.type === "IMPLEMENTATION_BUDGET_CONTINUATION") return "Implementation budget reached; continuing the same slice with compact context";
   if (event.type === "IMPLEMENTATION_BUDGET_EXHAUSTED") return "Implementation budget exhausted; completion must be proven by verification";
+  if (event.type === "EXECUTION_STATE_CHANGED") return `${String(event.payload.state ?? "execution").replaceAll("_", " ")} · repair ${Number(event.payload.repairAttempt ?? 0)}`;
+  if (event.type === "REPAIR_CONTEXT_CREATED") return "Compiled bounded repair evidence";
   return event.type.replaceAll("_", " ").toLowerCase();
 }
 

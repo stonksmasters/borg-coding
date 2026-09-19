@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { BrowserVerification } from "../../browser-verification/src/index.ts";
 import { VisualRegressionService } from "../../visual-regression/src/index.ts";
 import { ProcessRuntime, type ProcessKind } from "../../process-runtime/src/index.ts";
+import type { ExecutionState } from "../../core/src/execution-state.ts";
 
 export interface RecordedApproval {
   taskId: string;
@@ -13,7 +14,7 @@ export interface RecordedApproval {
   baseCommit: string | null;
 }
 
-export interface TaskToolContext { taskId: string; }
+export interface TaskToolContext { taskId: string; executionState?: ExecutionState; }
 export interface WorktreeToolOptions {
   worktreeRoot: string;
   findApproval(taskId: string): RecordedApproval | null;
