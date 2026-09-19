@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { compileFrontendContext } from "../packages/web-builder/src/context-compiler.ts";
+import { compileFocusedFrontendContext, compileFrontendContext } from "../packages/web-builder/src/context-compiler.ts";
 import { readProjectModel, updateVerifiedProjectModel, writeProjectModel } from "../packages/web-builder/src/project-model.ts";
 import { approveProjectPlan, fallbackProjectPlan, persistProposedProjectPlan, persistDesignBrief } from "../packages/web-builder/src/slice-docs.ts";
 import { SqliteTaskRepository } from "../packages/persistence/src/sqlite-task-repository.ts";
@@ -62,6 +62,56 @@ test("approved website state yields scoped, durable context and registries", () 
     assert.equal(readProjectModel(root).components.find((item) => item.id === "product-card")?.status, "verified");
     assert.equal(JSON.parse(readFileSync(join(root, ".localcode", "build", "pages.json"), "utf8")).version, 1);
     assert.throws(() => writeProjectModel(root, { ...model, components: [{ ...model.components[0], files: ["../outside.tsx"] }] }), /relative path|escapes/i);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("focused page and component context includes direct scope without unrelated source", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-focused-context-"));
+  try {
+    mkdirSync(join(root, "src", "components"), { recursive: true });
+    writeFileSync(join(root, "src", "App.tsx"), 'import { Hero } from "./components/Hero"; export default function App() { return <Hero />; }');
+    writeFileSync(join(root, "src", "components", "Hero.tsx"), "export function Hero() { return <section>Hero</section>; }");
+    writeFileSync(join(root, "src", "components", "UnrelatedChart.tsx"), "export function UnrelatedChart() { return <div>Chart</div>; }");
+
+    const plan = fallbackProjectPlan("Build a polished marketing website with a homepage", "saas-landing");
+    plan.sitemap = [{
+      id: "home",
+      name: "Home",
+      route: "/",
+      purpose: "Primary marketing page.",
+      sections: ["Hero"],
+      componentIds: ["hero"],
+      acceptanceCriteria: ["Hero communicates the value proposition."],
+    }];
+    plan.pages = ["Home"];
+    plan.components = [{
+      id: "hero",
+      name: "Hero",
+      kind: "section",
+      purpose: "Primary value proposition.",
+      usedBy: ["home"],
+      variants: [],
+      acceptanceCriteria: ["Hero is responsive."],
+    }];
+    persistProposedProjectPlan(root, "Build a polished marketing website with a homepage", plan, "plan-task");
+    approveProjectPlan(root, "plan-task");
+
+    const model = readProjectModel(root);
+    model.pages[0].files = ["src/App.tsx"];
+    model.components[0].files = ["src/components/Hero.tsx"];
+    writeProjectModel(root, model);
+
+    const pageContext = compileFocusedFrontendContext({ root, scope: { type: "page", id: "home" } });
+    assert.match(pageContext.text, /Primary marketing page/);
+    assert.match(pageContext.text, /Hero\.tsx/);
+    assert.doesNotMatch(pageContext.text, /UnrelatedChart/);
+    assert.equal(pageContext.sliceId, "page:home");
+
+    const componentContext = compileFocusedFrontendContext({ root, scope: { type: "component", id: "hero" } });
+    assert.match(componentContext.text, /Primary value proposition/);
+    assert.match(componentContext.text, /Hero\.tsx/);
+    assert.doesNotMatch(componentContext.text, /UnrelatedChart/);
+    assert.equal(componentContext.sliceId, "component:hero");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
