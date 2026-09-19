@@ -158,6 +158,43 @@ test("verification preserves planned page-component relationships while adding d
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("verification enriches planned component source mapping without erasing planned page usage", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-project-registry-"));
+  try {
+    mkdirSync(join(root, "src", "components"), { recursive: true });
+    writeFileSync(join(root, "src", "components", "SiteHeader.tsx"), "export function SiteHeader() { return <header>Header</header>; }");
+    const plan = fallbackProjectPlan("Build a polished marketing website", "saas-landing");
+    plan.sitemap = [{
+      id: "home",
+      name: "Home",
+      route: "/",
+      purpose: "Primary page",
+      sections: ["Site Header"],
+      componentIds: ["site-header"],
+      acceptanceCriteria: ["Navigation is clear"],
+    }];
+    plan.pages = ["Home"];
+    plan.components = [{
+      id: "site-header",
+      name: "Site Header",
+      kind: "layout",
+      purpose: "Global navigation",
+      usedBy: ["home"],
+      variants: ["desktop", "mobile"],
+      acceptanceCriteria: ["Header is responsive"],
+    }];
+    persistProposedProjectPlan(root, "Build a polished marketing website", plan, "plan-task");
+    approveProjectPlan(root, "plan-task");
+
+    updateVerifiedProjectModel(root, ["src/components/SiteHeader.tsx"], ["Header is responsive"]);
+    const model = readProjectModel(root);
+    const header = model.components.find((item) => item.id === "site-header");
+    assert.deepEqual(header?.files, ["src/components/SiteHeader.tsx"]);
+    assert.deepEqual(header?.usedBy, ["home"]);
+    assert.ok(model.pages.find((page) => page.id === "home")?.components.includes("site-header"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("exact model input and manifest survive reopening the local task database", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-model-context-"));
   const path = join(root, "tasks.sqlite");
