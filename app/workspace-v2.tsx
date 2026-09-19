@@ -74,6 +74,7 @@ type TaskContinuation = { id: string; checkpointId: string; status: "ready" | "r
 type SliceState = { current: number; total: number; currentTitle: string; status: "plan_pending" | "ready" | "working" | "awaiting_feedback" | "frontend_complete"; backendRequired: boolean };
 type ReviewFinding = { id: string; fingerprint: string; state: "open" | "accepted" | "fixed" | "waived" | "false_positive" | "reopened" | "superseded"; firstSeenRunId: string; lastSeenRunId: string; firstSeenAt: string; lastSeenAt: string; finding: { severity: "info" | "low" | "medium" | "high" | "critical"; discipline: string; category: string; title: string; description: string; file?: string; line?: number; evidence?: string; remediation?: string } };
 type ReviewDecision = { id: string; findingId: string; action: string; resultingState: ReviewFinding["state"]; reason: string; evidence: string[]; actorType: string; actorId: string; createdAt: string };
+type BaselineCandidate = { profileId: string; screenshotName: string; candidatePath: string; candidateSha256: string; width: number; height: number };
 type StreamEvent = {
   type: string;
   task?: { id: string; request: string; state: string };
@@ -149,6 +150,9 @@ export function BorgWorkspaceV2() {
   const [liveActivity, setLiveActivity] = useState<string[]>([]);
   const [activities, setActivities] = useState<AgentActivity[]>([]);
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus | null>(null);
+  const [baselineCandidates, setBaselineCandidates] = useState<BaselineCandidate[]>([]);
+  const [baselineBusy, setBaselineBusy] = useState(false);
+  const [baselineError, setBaselineError] = useState("");
   const [contextRecords, setContextRecords] = useState<ContextRecord[]>([]);
   const [selectedContext, setSelectedContext] = useState<(ContextRecord & { inputText: string }) | null>(null);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
@@ -236,7 +240,7 @@ export function BorgWorkspaceV2() {
   }, []);
 
   useEffect(() => {
-    if (!activeTaskId || !isWebsite) { setWorkflowStatus(null); setContextRecords([]); setSelectedContext(null); return; }
+    if (!activeTaskId || !isWebsite) { setWorkflowStatus(null); setBaselineCandidates([]); setContextRecords([]); setSelectedContext(null); return; }
     setSelectedContext(null);
     let active = true;
     const refresh = async () => {
@@ -245,7 +249,11 @@ export function BorgWorkspaceV2() {
         fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/contexts`),
       ]);
       if (!active) return;
-      if (statusResponse.ok) setWorkflowStatus((await statusResponse.json() as { status: WorkflowStatus }).status);
+      if (statusResponse.ok) {
+        const result = await statusResponse.json() as { status: WorkflowStatus; baselineCandidates?: BaselineCandidate[] };
+        setWorkflowStatus(result.status);
+        setBaselineCandidates(result.baselineCandidates ?? []);
+      }
       if (contextsResponse.ok) setContextRecords((await contextsResponse.json() as { contexts: ContextRecord[] }).contexts);
     };
     void refresh().catch(() => {});
@@ -753,6 +761,27 @@ export function BorgWorkspaceV2() {
       liveAssistantId.current = null;
       setStreaming(false);
       abortRef.current = null;
+    }
+  }
+
+  async function acceptVisualBaselines() {
+    if (!activeTaskId || !baselineCandidates.length || baselineBusy) return;
+    setBaselineBusy(true);
+    setBaselineError("");
+    try {
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/visual-baselines`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ candidates: baselineCandidates }),
+      });
+      const result = await response.json() as { accepted?: unknown[]; workflowStarted?: boolean; error?: string };
+      if (!response.ok || !result.accepted) throw new Error(result.error ?? "Unable to accept visual baselines.");
+      setBaselineCandidates([]);
+      if (activeSession) await loadSession(activeSession.id, { restorePreview: false, resetWorkspace: false });
+    } catch (error) {
+      setBaselineError(error instanceof Error ? error.message : "Unable to accept visual baselines.");
+    } finally {
+      setBaselineBusy(false);
     }
   }
 
@@ -1265,7 +1294,7 @@ export function BorgWorkspaceV2() {
               : rightPanel === "changes"
                 ? <ChangesPanel changes={changes} />
                 : rightPanel === "evidence"
-                  ? <EvidencePanel verificationStatus={workflowStatus?.run.verification.status ?? "pending"} designReview={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} blockingFindings={blockingFindingIds.length} onOpenReviewHistory={() => setReviewOpen(true)} onOpenLogs={() => setRightPanel("logs")} />
+                  ? <EvidencePanel verificationStatus={workflowStatus?.run.verification.status ?? "pending"} designReview={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} blockingFindings={blockingFindingIds.length} baselineCandidates={baselineCandidates} baselineBusy={baselineBusy} baselineError={baselineError} onAcceptBaselines={acceptVisualBaselines} onOpenReviewHistory={() => setReviewOpen(true)} onOpenLogs={() => setRightPanel("logs")} />
                   : rightPanel === "logs"
                     ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
                     : rightPanel === "memory"
