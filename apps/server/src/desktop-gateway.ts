@@ -16,7 +16,7 @@ import { AccessController } from "../../../packages/repository/src/access-contro
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
 import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
-import { readProjectPlan, readSliceState, type ProjectPlan } from "../../../packages/web-builder/src/slice-docs.ts";
+import type { ProjectPlan } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const gatewayPort = Number(process.env.BORG_GATEWAY_PORT ?? 4312);
 const coreUrl = process.env.BORG_CORE_URL ?? "http://127.0.0.1:4311";
@@ -31,6 +31,16 @@ const activeStreams = new Map<string, AbortController>();
 const frontendLaunches = new Map<string, { session: ChatSession; run: Promise<void> }>();
 const previews = new WebsitePreviewManager();
 type EventSink = (event: Record<string, unknown>) => void;
+type CoreWorkflowCommand = { id: string; action: string; workflowVersion: number; createdAt: string };
+type CoreWorkflowState = {
+  projectId: string;
+  taskId: string | null;
+  status: string;
+  nextAction: string;
+  pendingCommand?: CoreWorkflowCommand | null;
+  lastConsumedCommandId?: string | null;
+  projectPlan?: ProjectPlan | null;
+};
 
 function headers(contentType = "application/json") {
   return {
@@ -302,9 +312,26 @@ async function approveCoreTask(taskId: string) {
 
 async function coreTaskRuntime(taskId: string) {
   const response = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/approval`, { signal: AbortSignal.timeout(10_000) });
-  const body = await response.json().catch(() => ({})) as { task?: { state?: string }; error?: string };
+  const body = await response.json().catch(() => ({})) as {
+    task?: { id?: string; state?: string };
+    workflow?: CoreWorkflowState | null;
+    approval?: { status?: string } | null;
+    projectPlanApproval?: boolean;
+    error?: string;
+  };
   if (!response.ok) throw new Error(body.error ?? `Unable to read task state (${response.status}).`);
   return body;
+}
+
+async function coreProjectRuntime(projectId: string) {
+  const response = await fetch(`${coreUrl}/api/tasks?projectId=${encodeURIComponent(projectId)}`, { signal: AbortSignal.timeout(10_000) });
+  const body = await response.json().catch(() => ({})) as {
+    tasks?: Array<{ id: string; state: string; updatedAt?: string }>;
+    workflow?: CoreWorkflowState | null;
+    error?: string;
+  };
+  if (!response.ok) throw new Error(body.error ?? `Unable to read project workflow (${response.status}).`);
+  return { tasks: body.tasks ?? [], workflow: body.workflow ?? null };
 }
 
 async function saveVerifiedFrontendSlice(taskId: string, session: ChatSession, emitToClient: EventSink) {
