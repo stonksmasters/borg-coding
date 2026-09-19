@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createApproval,
   createTask,
+  createTaskContinuation,
   type Approval,
   type Task,
   type TaskEvent,
@@ -142,4 +143,55 @@ test("verified delivered slice schedules one durable advance command", () => {
     () => engine.start(createTask({ id: "duplicate", projectId: "project", request: "Duplicate" }), "frontend_slice", "Duplicate", { commandId: delivered.workflow.pendingCommand!.id }),
     /already consumed|no longer pending/,
   );
+});
+
+
+test("blocked task continuation preserves task identity and resets only repair attempts", () => {
+  const store = new MemoryWorkflowStore();
+  const engine = new WorkflowEngine(store);
+  let task = createTask({ id: "slice-retry", projectId: "project-retry", request: "Repair the existing slice" });
+  engine.start(task, "frontend_slice");
+  task = engine.transition(task, "CLASSIFYING").task;
+  task = engine.transition(task, "DISCOVERING").task;
+  task = engine.transition(task, "PLANNING").task;
+
+  const approval = createApproval({ id: "approval-retry", taskId: task.id });
+  task = engine.requestApproval(task, approval, "execution").task;
+  const approved = {
+    ...approval,
+    status: "APPROVED" as const,
+    decidedAt: new Date().toISOString(),
+    worktreePath: "/tmp/existing-worktree",
+    baseCommit: "base",
+  };
+  task = engine.decideApproval(task, approved, "execution").task;
+  task = engine.retry(task, { reason: "first repair", eventType: "REPAIR_SCHEDULED" }).task;
+  task = engine.retry(task, { reason: "second repair", eventType: "REPAIR_SCHEDULED" }).task;
+  assert.equal(task.attempts, 2);
+  task = engine.transition(task, "BLOCKED").task;
+
+  const continuation = createTaskContinuation({
+    id: "continuation-retry",
+    taskId: task.id,
+    checkpointId: "checkpoint-retry",
+    parentContinuationId: null,
+    reason: "Operator requested bounded retry.",
+    status: "ready",
+    restoredMode: "edit",
+    previousState: "BLOCKED",
+    resultingState: "IMPLEMENTING",
+    repositoryState: "dirty",
+    resumeAction: "inspect_worktree",
+    detail: "Reuse the existing approved worktree.",
+    completed: true,
+  });
+  const resumed = engine.continueFromCheckpoint(task, continuation, { resetAttempts: true });
+
+  assert.equal(resumed.task.id, "slice-retry");
+  assert.equal(resumed.task.state, "IMPLEMENTING");
+  assert.equal(resumed.task.attempts, 0);
+  assert.equal(resumed.workflow.taskId, "slice-retry");
+  assert.equal(resumed.workflow.repairAttempt, 0);
+  assert.equal(resumed.workflow.nextAction, "implement");
+  assert.ok(store.events.some((event) => event.type === "TASK_CONTINUED" && event.payload.continuationId === continuation.id));
 });
