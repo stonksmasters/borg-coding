@@ -20,6 +20,7 @@ import {
   type TaskCheckpoint,
   type TaskContinuation,
   type TaskState,
+  type WorkflowState,
 } from "../../../packages/core/src/contracts.ts";
 import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
@@ -59,7 +60,7 @@ import { ensurePreviewDependencies } from "../../../packages/web-builder/src/pre
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -337,13 +338,61 @@ function recoverInterruptedTasks(): void {
   }
 }
 
+function workflowProjectionRoot(task: Task): string | null {
+  const approval = tasks.findApproval(task.id);
+  if (approval?.status === "APPROVED" && approval.worktreePath && task.state !== "COMPLETE") return approval.worktreePath;
+  const recordedRoot = tasks.listEvents(task.id).find((event) => event.type === "WEBSITE_REPOSITORY_SELECTED")?.payload.repositoryPath;
+  return typeof recordedRoot === "string" ? recordedRoot : access.load().repositoryPath;
+}
+
+function syncWorkflowProjection(task: Task, state: WorkflowState): WorkflowState {
+  const root = workflowProjectionRoot(task);
+  if (!root) return state;
+  try {
+    projectWorkflowState(root, state);
+  } catch (error) {
+    appendTaskEvent(task.id, "WORKFLOW_PROJECTION_FAILED", {
+      workflowVersion: state.version,
+      root,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return state;
+}
+
+function projectPlanFromWorkflow(state: WorkflowState | null, fallbackRoot: string | null): ProjectPlan | null {
+  if (state?.projectPlan) return state.projectPlan as ProjectPlan;
+  return fallbackRoot ? readProjectPlan(fallbackRoot) : null;
+}
+
+function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan | null, fallbackRoot: string | null): SliceState | null {
+  if (state?.projectPlan && plan && state.sliceIndex !== null) {
+    const status: SliceState["status"] = plan.status === "frontend_complete"
+      ? "frontend_complete"
+      : state.nextAction === "start_slice"
+        ? "ready"
+        : state.status === "awaiting_feedback" || state.nextAction === "advance_slice" || state.nextAction === "request_feedback"
+          ? "awaiting_feedback"
+          : "working";
+    return {
+      version: 2,
+      current: state.sliceIndex,
+      total: plan.slices.length,
+      currentTitle: state.sliceTitle ?? plan.slices[state.sliceIndex]?.title ?? "Frontend",
+      status,
+      brief: plan.siteGoal,
+      lastTaskId: state.taskId,
+      feedback: state.feedback,
+      planRevision: plan.revision,
+      backendRequired: plan.backendRequired,
+    };
+  }
+  return fallbackRoot ? readSliceState(fallbackRoot) : null;
+}
+
 function transitionTask(task: Task, state: TaskState, emit?: (event: Record<string, unknown>) => void): Task {
   const { task: updated, workflow: workflowState } = workflow.transition(task, state);
-  const root = access.load().repositoryPath;
-  if (root && tasks.findApproval(task.id)?.status === "APPROVED") {
-    try { projectWorkflowState(root, workflowState); }
-    catch (error) { appendTaskEvent(task.id, "WORKFLOW_PROJECTION_FAILED", { message: error instanceof Error ? error.message : String(error) }); }
-  }
+  syncWorkflowProjection(updated, workflowState);
   const automaticKind: Partial<Record<TaskState, TaskCheckpoint["kind"]>> = {
     AWAITING_APPROVAL: "plan_complete",
     VERIFYING: "implementation_complete",
@@ -440,27 +489,31 @@ function recoveryPayload(updated: Task, reason: string, recovery?: RecoveryDecis
 
 function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
   createCheckpointSnapshot(task, "pre_repair");
-  let updated = transitionTask(task, "IMPLEMENTING", emit);
-  updated = { ...updated, attempts: updated.attempts + 1, updatedAt: new Date().toISOString() };
-  tasks.saveTask(updated);
-  const payload = recoveryPayload(updated, reason, recovery);
-  appendTaskEvent(task.id, "REPAIR_SCHEDULED", payload);
-  if (recovery) appendTaskEvent(task.id, "IMPLEMENTATION_RECOVERY_SCHEDULED", payload);
+  const result = workflow.retry(task, {
+    reason,
+    eventType: "REPAIR_SCHEDULED",
+    category: recovery?.category ?? null,
+    action: recovery?.action ?? null,
+  });
+  syncWorkflowProjection(result.task, result.workflow);
+  const payload = recoveryPayload(result.task, reason, recovery);
   emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
-  if (recovery) workflow.recovery(updated, recovery.category, recovery.action, false);
-  return updated;
+  emit({ type: "task.state", taskId: task.id, state: result.task.state, workflow: result.workflow });
+  return result.task;
 }
 
 function scheduleImplementationRetry(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
   createCheckpointSnapshot(task, "pre_repair");
-  const updated = { ...task, attempts: task.attempts + 1, updatedAt: new Date().toISOString() };
-  tasks.saveTask(updated);
-  const payload = recoveryPayload(updated, reason, recovery);
-  appendTaskEvent(task.id, "IMPLEMENTATION_RETRY_SCHEDULED", payload);
-  if (recovery) appendTaskEvent(task.id, "IMPLEMENTATION_RECOVERY_SCHEDULED", payload);
+  const result = workflow.retry(task, {
+    reason,
+    eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
+    category: recovery?.category ?? null,
+    action: recovery?.action ?? null,
+  });
+  syncWorkflowProjection(result.task, result.workflow);
+  const payload = recoveryPayload(result.task, reason, recovery);
   emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
-  if (recovery) workflow.recovery(updated, recovery.category, recovery.action, false);
-  return updated;
+  return result.task;
 }
 
 recoverInterruptedTasks();
