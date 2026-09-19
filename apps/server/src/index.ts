@@ -342,24 +342,33 @@ function recoverInterruptedTasks(): void {
 
 function workflowProjectionRoot(task: Task): string | null {
   const approval = tasks.findApproval(task.id);
-  if (approval?.status === "APPROVED" && approval.worktreePath && task.state !== "COMPLETE") return approval.worktreePath;
-  const recordedRoot = tasks.listEvents(task.id).find((event) => event.type === "WEBSITE_REPOSITORY_SELECTED")?.payload.repositoryPath;
-  return typeof recordedRoot === "string" ? recordedRoot : access.load().repositoryPath;
+  return approval?.status === "APPROVED" && approval.worktreePath ? approval.worktreePath : null;
+}
+
+function recordWorkflowProjectionFailure(taskId: string, state: WorkflowState, root: string, error: unknown) {
+  appendTaskEvent(taskId, "WORKFLOW_PROJECTION_FAILED", {
+    workflowVersion: state.version,
+    root,
+    message: error instanceof Error ? error.message : String(error),
+  });
 }
 
 function syncWorkflowProjection(task: Task, state: WorkflowState): WorkflowState {
-  const approval = tasks.findApproval(task.id);
-  if (state.planApproved && task.state !== "COMPLETE" && (!approval?.worktreePath || approval.status !== "APPROVED")) return state;
   const root = workflowProjectionRoot(task);
   if (!root) return state;
   try {
-    projectWorkflowState(root, state);
+    projectWorkflowState(root, state, { untrackGeneratedFile: true });
   } catch (error) {
-    appendTaskEvent(task.id, "WORKFLOW_PROJECTION_FAILED", {
-      workflowVersion: state.version,
-      root,
-      message: error instanceof Error ? error.message : String(error),
-    });
+    recordWorkflowProjectionFailure(task.id, state, root, error);
+  }
+  return state;
+}
+
+function syncDeliveredWorkflowProjection(task: Task, state: WorkflowState, repositoryPath: string): WorkflowState {
+  try {
+    projectWorkflowState(repositoryPath, state);
+  } catch (error) {
+    recordWorkflowProjectionFailure(task.id, state, repositoryPath, error);
   }
   return state;
 }
@@ -704,6 +713,9 @@ const server = createServer((request, response) => {
         const completed = workflow.completeDelivery(task, result);
         task = completed.task;
         syncWorkflowProjection(task, completed.workflow);
+        if (isFrontendSlice && repositoryPath && method === "commit") {
+          syncDeliveredWorkflowProjection(task, completed.workflow, repositoryPath);
+        }
         return send(response, 200, { task, workflow: completed.workflow, delivery: result });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Delivery failed";
