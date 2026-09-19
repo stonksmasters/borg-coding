@@ -52,6 +52,8 @@ export const WorkflowCommandSchema = z.object({
   action: z.enum(workflowActions),
   workflowVersion: z.number().int().positive(),
   createdAt: z.string().datetime(),
+  claimedByTaskId: z.string().min(1).nullable().default(null),
+  claimedAt: z.string().datetime().nullable().default(null),
 });
 export type WorkflowCommand = z.infer<typeof WorkflowCommandSchema>;
 
