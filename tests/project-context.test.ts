@@ -115,6 +115,49 @@ test("focused page and component context includes direct scope without unrelated
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("verification preserves planned page-component relationships while adding discovered evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-planned-relations-"));
+  try {
+    mkdirSync(join(root, "src", "components"), { recursive: true });
+    writeFileSync(join(root, "src", "App.tsx"), "export default function App() { return <main>Home</main>; }");
+    writeFileSync(join(root, "src", "components", "Hero.tsx"), "export function Hero() { return <section>Hero</section>; }");
+
+    const plan = fallbackProjectPlan("Build a polished homepage", "saas-landing");
+    plan.sitemap = [{
+      id: "home",
+      name: "Home",
+      route: "/",
+      purpose: "Primary page.",
+      sections: ["Hero"],
+      componentIds: ["hero"],
+      acceptanceCriteria: ["Home remains coherent."],
+    }];
+    plan.pages = ["Home"];
+    plan.components = [{
+      id: "hero",
+      name: "Hero",
+      kind: "section",
+      purpose: "Primary value proposition.",
+      usedBy: ["home"],
+      variants: [],
+      acceptanceCriteria: ["Hero remains responsive."],
+    }];
+    persistProposedProjectPlan(root, "Build a polished homepage", plan, "plan-task");
+    approveProjectPlan(root, "plan-task");
+
+    const model = readProjectModel(root);
+    model.pages[0].files = ["src/App.tsx"];
+    model.components[0].files = ["src/components/Hero.tsx"];
+    writeProjectModel(root, model);
+
+    updateVerifiedProjectModel(root, ["src/components/Hero.tsx"], ["Hero remains responsive."]);
+    const verified = readProjectModel(root);
+    assert.deepEqual(verified.components.find((item) => item.id === "hero")?.usedBy, ["home"]);
+    assert.deepEqual(verified.pages.find((item) => item.id === "home")?.components, ["hero"]);
+    assert.equal(verified.components.find((item) => item.id === "hero")?.status, "verified");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("exact model input and manifest survive reopening the local task database", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-model-context-"));
   const path = join(root, "tasks.sqlite");
