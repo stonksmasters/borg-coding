@@ -1,8 +1,8 @@
 import { createServer, type ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
   createApproval,
   createHandoff,
@@ -23,6 +23,7 @@ import {
   type WorkflowState,
 } from "../../../packages/core/src/contracts.ts";
 import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
+import { taskRepositoryPath } from "../../../packages/core/src/task-repository-binding.ts";
 import { assertExecutionTransition, buildRepairContext, formatRepairContext, type ExecutionState } from "../../../packages/core/src/execution-state.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
 import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
@@ -31,7 +32,10 @@ import { AccessController } from "../../../packages/repository/src/access-contro
 import { RepositoryMemory, type MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
 import { GitWorktreeManager } from "../../../packages/repository/src/git-worktree-manager.ts";
 import { WorktreeDelivery } from "../../../packages/repository/src/worktree-delivery.ts";
+import { inspectProjectTree, resolveProjectPath } from "../../../packages/repository/src/project-inspection.ts";
 import { ToolBroker, type PermissionMode } from "../../../packages/tools/src/tool-broker.ts";
+import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
+import { ProjectEnvironmentStore } from "../../../packages/tools/src/project-environment.ts";
 import type { BrowserEvidenceReport } from "../../../packages/browser-verification/src/index.ts";
 import { OllamaVisionProvider, VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
 import { VisualRegressionService, type BaselineCandidate, type VisualRegressionReport } from "../../../packages/visual-regression/src/index.ts";
@@ -78,6 +82,7 @@ const tasks = new SqliteTaskRepository(databasePath);
 const workflow = new WorkflowEngine(tasks);
 const access = new AccessController(resolve(".borg/access.json"));
 const memory = new RepositoryMemory(resolve(".borg/repository-memory.db"));
+const projectEnvironment = new ProjectEnvironmentStore(resolve(".borg/project-environment.json"), new DesktopCredentialStore());
 const worktreeRoot = resolve(".borg/worktrees");
 const processRuntime = new ProcessRuntime({
   onEvent: (event: ProcessRuntimeEvent) => {
@@ -100,6 +105,10 @@ const tools = new ToolBroker(resolve(".borg/tools.json"), access, {
   worktreeRoot,
   findApproval: (taskId) => tasks.findApproval(taskId),
   processRuntime,
+  environmentForTask: (taskId) => {
+    const repositoryPath = taskProjectRepository(taskId);
+    return repositoryPath ? projectEnvironment.values(repositoryPath) : {};
+  },
 }, memory);
 const worktrees = new GitWorktreeManager(worktreeRoot);
 const delivery = new WorktreeDelivery(worktreeRoot, resolve(".borg/deliveries"));
@@ -307,7 +316,7 @@ function createCheckpointSnapshot(
     kind,
     taskState: task.state,
     mode: input.mode ?? recordedMode(task.id),
-    repositoryPath: access.load().repositoryPath,
+    repositoryPath: taskProjectRepository(task.id),
     worktreePath: approval?.worktreePath ?? null,
     baseCommit: approval?.baseCommit ?? null,
     headCommit: approval?.baseCommit ?? null,
@@ -431,57 +440,18 @@ function workflowProjectionRoot(task: Task): string | null {
   return approval?.status === "APPROVED" && approval.worktreePath ? approval.worktreePath : null;
 }
 
+function taskProjectRepository(taskId: string): string | null {
+  const task = tasks.findTask(taskId);
+  if (!task) return null;
+  return taskRepositoryPath(tasks.listEvents(taskId));
+}
+
 function taskProjectRoot(taskId: string): string | null {
   const task = tasks.findTask(taskId);
   if (!task) return null;
   const approval = tasks.findApproval(taskId);
-  const recorded = tasks.listEvents(taskId).find((event) => event.type === "WEBSITE_REPOSITORY_SELECTED")?.payload.repositoryPath;
   if (approval?.worktreePath && existsSync(approval.worktreePath)) return approval.worktreePath;
-  return typeof recorded === "string" ? recorded : access.load().repositoryPath;
-}
-
-function isSensitiveProjectPath(requested: string): boolean {
-  const name = requested.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
-  return name === ".env" || name.startsWith(".env.") || name === ".npmrc" || name === ".pypirc"
-    || /(^|[._-])(secret|credential|token|private[-_]?key)([._-]|$)/i.test(name)
-    || /\.(pem|key|p12|pfx)$/i.test(name);
-}
-
-function projectPath(root: string, requested: string): string {
-  if (isSensitiveProjectPath(requested)) throw new Error("Sensitive project files are managed through their dedicated settings.");
-  const target = resolve(root, requested.replaceAll("/", sep));
-  const rel = relative(resolve(root), target);
-  if (rel.startsWith("..") || resolve(root) === target) throw new Error("Project path must stay inside the selected workspace.");
-  return target;
-}
-
-const PROJECT_TREE_IGNORES = new Set([".git", "node_modules", ".next", "dist", "build", ".wrangler"]);
-
-function projectTree(root: string) {
-  const entries: Array<{ path: string; type: "file" | "directory" }> = [];
-  const visit = (directory: string, depth: number) => {
-    if (depth > 8 || entries.length >= 2500) return;
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const candidatePath = relative(root, resolve(directory, entry.name)).split(sep).join("/");
-      if (PROJECT_TREE_IGNORES.has(entry.name) || isSensitiveProjectPath(candidatePath) || entry.isSymbolicLink()) continue;
-      const absolute = resolve(directory, entry.name);
-      const path = relative(root, absolute).split(sep).join("/");
-      const type = entry.isDirectory() ? "directory" as const : "file" as const;
-      entries.push({ path, type });
-      if (type === "directory") visit(absolute, depth + 1);
-    }
-  };
-  visit(root, 0);
-  return entries;
-}
-
-function environmentVariables(root: string) {
-  const path = resolve(root, ".env");
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8").split(/\r?\n/).flatMap((line) => {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
-    return match ? [{ name: match[1], hasValue: match[2].trim().length > 0 }] : [];
-  });
+  return taskProjectRepository(taskId);
 }
 
 function recordWorkflowProjectionFailure(taskId: string, state: WorkflowState, root: string, error: unknown) {
@@ -687,9 +657,16 @@ const server = createServer((request, response) => {
     if (!root || !existsSync(root)) return send(response, 404, { error: "Project workspace not found." });
     const query = new URL(request.url!, `http://localhost:${port}`).searchParams;
     const requested = query.get("path");
-    if (!requested) return send(response, 200, { entries: projectTree(root) });
+    if (!requested) {
+      try {
+        const tree = inspectProjectTree(root);
+        return send(response, 200, tree);
+      } catch (error) {
+        return send(response, 400, { error: error instanceof Error ? error.message : "Unable to inspect project files." });
+      }
+    }
     try {
-      const target = projectPath(root, requested);
+      const target = resolveProjectPath(root, requested);
       if (!existsSync(target) || !statSync(target).isFile()) return send(response, 404, { error: "Project file not found." });
       if (statSync(target).size > 512_000) return send(response, 413, { error: "This file is too large to display." });
       return send(response, 200, { path: requested, content: readFileSync(target, "utf8") });
@@ -700,30 +677,21 @@ const server = createServer((request, response) => {
   const environmentRoute = request.url?.match(/^\/api\/tasks\/([^/?]+)\/environment$/);
   if (environmentRoute) {
     const taskId = decodeURIComponent(environmentRoute[1]);
-    const root = taskProjectRoot(taskId);
-    if (!root || !existsSync(root)) return send(response, 404, { error: "Project workspace not found." });
-    if (request.method === "GET") return send(response, 200, { variables: environmentVariables(root) });
+    const repositoryPath = taskProjectRepository(taskId);
+    if (!repositoryPath || !existsSync(repositoryPath)) return send(response, 404, { error: "Project repository binding not found." });
+    if (request.method === "GET") return send(response, 200, { variables: projectEnvironment.list(repositoryPath) });
     if (request.method === "POST") {
       void readJson(request).then((input) => {
-        const name = typeof input.name === "string" ? input.name.trim() : "";
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error("Use a valid environment variable name.");
-        const path = resolve(root, ".env");
-        const previous = existsSync(path) ? readFileSync(path, "utf8") : "";
-        const lines = previous.split(/\r?\n/).filter((line) => line.length > 0);
-        const index = lines.findIndex((line) => new RegExp(`^\\s*${name}\\s*=`).test(line));
-        if (input.remove === true) {
-          if (index >= 0) lines.splice(index, 1);
-        } else {
-          if (typeof input.value !== "string" || !input.value.length) throw new Error("Enter a value to save.");
-          const next = `${name}=${input.value.replaceAll("\r", "").replaceAll("\n", "\\n")}`;
-          if (index >= 0) lines[index] = next; else lines.push(next);
-        }
-        writeFileSync(path, lines.length ? `${lines.join("\n")}\n` : "", "utf8");
-        return send(response, 200, { variables: environmentVariables(root) });
+        const name = typeof input.name === "string" ? input.name : "";
+        const variables = input.remove === true
+          ? projectEnvironment.delete(repositoryPath, name)
+          : projectEnvironment.set(repositoryPath, name, typeof input.value === "string" ? input.value : "");
+        return send(response, 200, { variables });
       }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to update environment variables." }));
       return;
     }
   }
+
   const processStopRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/processes\/([^/]+)\/stop$/);
   if (request.method === "POST" && processStopRoute) {
     const taskId = decodeURIComponent(processStopRoute[1]);
@@ -753,7 +721,7 @@ const server = createServer((request, response) => {
     const task = tasks.findTask(taskId);
     if (!task) return send(response, 404, { error: "Task not found" });
     const approvedPath = tasks.findApproval(taskId)?.worktreePath;
-    const repositoryPath = access.load().repositoryPath;
+    const repositoryPath = taskProjectRepository(taskId);
     const root = approvedPath && websiteInfo(approvedPath) ? approvedPath : repositoryPath && websiteInfo(repositoryPath) ? repositoryPath : null;
     if (!root) return send(response, 200, { docs: [], slice: null });
     return send(response, 200, { docs: readProjectDocs(root), slice: readSliceState(root) });
@@ -794,7 +762,7 @@ const server = createServer((request, response) => {
     if (!tasks.findTask(taskId)) return send(response, 404, { error: "Task not found." });
     const events = tasks.listEvents(taskId);
     const approval = tasks.findApproval(taskId);
-    const repositoryPath = access.load().repositoryPath;
+    const repositoryPath = taskProjectRepository(taskId);
     const designRoot = approval?.worktreePath && websiteInfo(approval.worktreePath)
       ? approval.worktreePath
       : repositoryPath && websiteInfo(repositoryPath)
@@ -844,8 +812,7 @@ const server = createServer((request, response) => {
     if (!task) return send(response, 404, { error: "Task not found." });
     const events = tasks.listEvents(taskId);
     const approval = tasks.findApproval(taskId);
-    const recordedRoot = events.find((event) => event.type === "WEBSITE_REPOSITORY_SELECTED")?.payload.repositoryPath;
-    const root = approval?.worktreePath ?? (typeof recordedRoot === "string" ? recordedRoot : access.load().repositoryPath);
+    const root = approval?.worktreePath ?? taskProjectRepository(taskId);
     const projectWorkflow = workflow.get(task.projectId);
     const ownedWorkflow = projectWorkflow?.taskId === task.id ? projectWorkflow : null;
     const plan = projectPlanFromWorkflow(ownedWorkflow, root);
@@ -895,7 +862,7 @@ const server = createServer((request, response) => {
       const method = String(input.method ?? "").toLowerCase();
       if (method !== "export" && method !== "commit") return send(response, 400, { error: "Delivery method must be export or commit." });
       const isFrontendSlice = tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED");
-      const repositoryPath = access.load().repositoryPath;
+      const repositoryPath = taskProjectRepository(taskId);
       if (isFrontendSlice && !repositoryPath) return send(response, 409, { error: "Project repository is unavailable for saving this slice." });
 
       const begun = workflow.beginDelivery(task, { method, expectedBaseCommit: approval.baseCommit });
@@ -921,6 +888,51 @@ const server = createServer((request, response) => {
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid delivery request" }));
     return;
   }
+  const retryRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/retry$/);
+  if (request.method === "POST" && retryRoute) {
+    const taskId = decodeURIComponent(retryRoute[1]);
+    const task = tasks.findTask(taskId);
+    const approval = tasks.findApproval(taskId);
+    if (!task || !approval) return send(response, 404, { error: "Task not found." });
+    if (task.state !== "BLOCKED") return send(response, 409, { error: "Only a blocked task can use bounded retry." });
+    if (approval.status !== "APPROVED" || !approval.worktreePath || !approval.baseCommit) return send(response, 409, { error: "The blocked task has no approved worktree to recover." });
+    void worktrees.inspect(approval.worktreePath, approval.baseCommit).then((inspection) => {
+      if (inspection.state === "missing" || inspection.state === "diverged") {
+        return send(response, 409, { error: inspection.detail, repositoryState: inspection.state });
+      }
+      const checkpoint = createCheckpointSnapshot(task, "manual", {
+        name: "Operator retry from blocked state",
+        mode: recordedMode(task.id),
+        contextSummary: "Resume the blocked task in the existing worktree. Repair only the latest evidenced failure.",
+      });
+      const continuation = createTaskContinuation({
+        id: randomUUID(),
+        taskId: task.id,
+        checkpointId: checkpoint.id,
+        parentContinuationId: tasks.listContinuations(task.id).at(-1)?.id ?? null,
+        reason: "Operator requested bounded retry of the blocked task.",
+        status: "ready",
+        restoredMode: recordedMode(task.id) === "agent" ? "agent" : "edit",
+        previousState: "BLOCKED",
+        resultingState: "IMPLEMENTING",
+        repositoryState: inspection.state,
+        resumeAction: "inspect_worktree",
+        detail: "Reusing the existing approved worktree and resetting only the bounded repair-attempt budget.",
+        completed: true,
+      });
+      const resumed = workflow.continueFromCheckpoint(task, continuation, { resetAttempts: true });
+      syncWorkflowProjection(resumed.task, resumed.workflow);
+      const sourceFailure = tasks.listEvents(task.id).findLast((event) => event.type === "REPAIR_LIMIT_REACHED" || event.type === "DESIGN_REVIEW_BLOCKED");
+      appendTaskEvent(task.id, "BLOCKED_RETRY_REQUESTED", {
+        continuationId: continuation.id,
+        sourceFailureEventId: sourceFailure?.id ?? null,
+        repositoryState: inspection.state,
+      });
+      return send(response, 200, { task: resumed.task, workflow: resumed.workflow, continuation, checkpoint });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to retry blocked task." }));
+    return;
+  }
+
   const executionRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/execute$/);
   if (request.method === "POST" && executionRoute) {
     const taskId = decodeURIComponent(executionRoute[1]);
@@ -974,7 +986,7 @@ const server = createServer((request, response) => {
     }, websiteWorkflow) : "";
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
-    const teamPolicy = teamPolicies.load(access.load().repositoryPath);
+    const teamPolicy = teamPolicies.load(taskProjectRepository(taskId));
     const activeDisciplines = (task.disciplines.length ? task.disciplines : [teamPolicy.defaultDiscipline]) as EngineeringDiscipline[];
     const primaryDiscipline = activeDisciplines[0];
     const packs = selectSpecialistPacks(activeDisciplines);
@@ -987,8 +999,15 @@ const server = createServer((request, response) => {
     const verificationProfile = verificationProfileFor(packs);
     let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
-      let repairEvidence = "";
-      let executionState: ExecutionState = "IMPLEMENT";
+      const taskEvents = tasks.listEvents(taskId);
+      const blockedRetry = taskEvents.findLast((event) => event.type === "BLOCKED_RETRY_REQUESTED");
+      const blockedFailure = blockedRetry
+        ? taskEvents.findLast((event) => event.type === "REPAIR_LIMIT_REACHED" || event.type === "DESIGN_REVIEW_BLOCKED")
+        : null;
+      let repairEvidence = blockedRetry
+        ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
+        : "";
+      let executionState: ExecutionState = blockedRetry ? "REPAIR" : "IMPLEMENT";
       const setExecutionState = (next: ExecutionState) => {
         if (next !== executionState) assertExecutionTransition(executionState, next);
         executionState = next;
@@ -1351,7 +1370,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
             : [],
         );
         emit({ type: "review.history.updated" });
-        const reviewedRepository = access.load().repositoryPath;
+        const reviewedRepository = taskProjectRepository(taskId);
         if (reviewedRepository) for (const finding of review.findings) recordMemoryNote(reviewedRepository, {
           id: `finding:${finding.id}`, kind: "finding", text: `${finding.severity}: ${finding.title} — ${finding.description}`,
           taskId, path: finding.file && access.allowsRepositoryFile(finding.file) ? finding.file : null,
@@ -1581,13 +1600,13 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         const decided = workflow.decideApproval(task, rejected, isProjectPlanApproval ? "project_plan" : "execution");
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
-        const repositoryPath = access.load().repositoryPath;
+        const repositoryPath = taskProjectRepository(task.id);
         if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: isProjectPlanApproval ? "Frontend phase plan requires revision." : "Implementation mini-plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
         return send(response, 200, { task, approval: rejected, workflow: decided.workflow, projectPlanApproval: isProjectPlanApproval });
       }
       if (decision !== "approve") return send(response, 400, { error: "Decision must be approve or reject." });
-      const repositoryPath = access.load().repositoryPath;
-      if (!repositoryPath) return send(response, 400, { error: "Approve a Git repository before continuing." });
+      const repositoryPath = taskProjectRepository(task.id);
+      if (!repositoryPath) return send(response, 409, { error: "This task has no durable repository binding." });
       if (isProjectPlanApproval) {
         const authoritativePlan = projectPlanFromWorkflow(workflow.get(task.projectId), repositoryPath);
         if (!authoritativePlan) return send(response, 409, { error: "The durable project plan is missing from SQLite." });
@@ -1680,6 +1699,9 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
     return;
   }
   if (request.method === "POST" && request.url === "/api/chat") {
+    const planningAbort = new AbortController();
+    request.once("aborted", () => planningAbort.abort());
+    response.once("close", () => { if (!response.writableEnded) planningAbort.abort(); });
     response.writeHead(200, {
       "content-type": "application/x-ndjson; charset=utf-8",
       "cache-control": "no-cache, no-transform",
@@ -1699,17 +1721,17 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const previousSlice = selectedWebsite ? sliceStateFromWorkflow(durableWorkflow, projectPlan, selectedWebsite.path) : null;
       if (mode !== "ask" && selectedWebsite && projectPlan?.status === "approved" && ensureProjectModel(selectedWebsite.path, projectPlan)) commitProjectRegistries(selectedWebsite.path);
       const rawSliceAction = String(input.sliceAction ?? "initial");
+      if (rawSliceAction === "retry") throw new Error("Blocked tasks must be retried through their existing task continuation endpoint.");
       const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
       const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
-      const retryingBlockedSlice = rawSliceAction === "retry" && durableWorkflow?.status === "blocked";
       const miniLoop = slicedApplication;
       if (rawSliceAction === "backend" && (previousSlice?.status !== "frontend_complete" || projectPlan?.backendRequired !== true)) throw new Error("Backend planning is available only after an approved frontend completion gate for a site that requires backend work.");
       const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
-      if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready" && !retryingBlockedSlice) throw new Error("Review the finished slice before starting another.");
+      if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready") throw new Error("Review the finished slice before starting another.");
       if (slicedApplication && previousSlice?.status === "frontend_complete") throw new Error("Frontend is complete. Start backend planning only if the approved project plan requires it.");
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "advance") throw new Error("The current slice is not ready to advance.");
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "revise") throw new Error("There is no completed slice waiting for revision.");
-      const teamPolicy = teamPolicies.load(access.load().repositoryPath);
+      const teamPolicy = teamPolicies.load(selectedPath);
       const routed = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
       const websiteFrontend = mode !== "ask" && Boolean(selectedWebsite) && rawSliceAction !== "backend";
       const route = websiteFrontend && !routed.disciplines.includes("frontend")
@@ -1743,6 +1765,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         { commandId: workflowCommandId, feedback: sliceAction === "revise" ? requestText : undefined },
       );
       syncWorkflowProjection(task, startedWorkflow);
+      if (selectedPath) appendTaskEvent(task.id, "TASK_REPOSITORY_BOUND", { repositoryPath: selectedPath });
       if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
       if (slicedApplication) appendTaskEvent(task.id, "FRONTEND_SLICE_SELECTED", { action: sliceAction, feedback: previousSlice ? requestText : "", previous: previousSlice?.current ?? null });
       if (rawSliceAction === "backend") appendTaskEvent(task.id, "BACKEND_PHASE_SELECTED", { feedback: requestText });
@@ -1770,7 +1793,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         : miniLoop
           ? "MINI LOOP: use the approved phase plan, current slice, decisions, handoff, and targeted source reads. Do not rebuild the global repository map."
           : access.buildContext(projectPlanning || rawSliceAction === "backend" ? 20_000 : 80_000);
-      const approvedRepository = access.load().repositoryPath;
+      const approvedRepository = selectedPath;
       if (mode !== "ask" && approvedRepository && !miniLoop) {
         try {
           const refresh = await tools.refreshMemory();
@@ -1845,10 +1868,18 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
             model: architectModel,
             repositoryContext,
             isGreenfield: isGreenfieldDesign,
+            signal: planningAbort.signal,
             onRequestBody: websiteProject ? (body) => recordModelInput(task.id, "design_director", architectModel, null, [], body) : undefined,
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : "Design Director failed";
+          if (planningAbort.signal.aborted) {
+            appendTaskEvent(task.id, "DESIGN_BRIEF_CANCELLED", { model: architectModel });
+            if (!["CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "CANCELLED", emit);
+            emit({ type: "runtime.cancelled", stage: "Design Direction", message: "Design direction cancelled." });
+            response.end();
+            return;
+          }
           appendTaskEvent(task.id, "DESIGN_BRIEF_FAILED", { model: architectModel, message });
           if (!["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "FAILED", emit);
           emit({ type: "runtime.failed", stage: "Design Direction", message });
