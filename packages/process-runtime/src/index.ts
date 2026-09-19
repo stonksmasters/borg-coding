@@ -41,6 +41,7 @@ export interface ProcessStartInput {
   cwd: string;
   url?: string | null;
   env?: Record<string, string | undefined>;
+  redact?: string[];
   timeoutMs?: number;
 }
 
@@ -51,6 +52,7 @@ interface ManagedProcess {
   resolveCompletion(value: ProcessSnapshot): void;
   stopRequested: boolean;
   timeout: NodeJS.Timeout | null;
+  redact: string[];
 }
 
 const MAX_LOG_BYTES = 160_000;
@@ -59,6 +61,14 @@ const MAX_EVENT_CHUNK = 16_000;
 function boundedAppend(current: string, value: string): string {
   const next = current + value;
   return next.length > MAX_LOG_BYTES ? next.slice(next.length - MAX_LOG_BYTES) : next;
+}
+
+function redactSecrets(value: string, secrets: readonly string[]): string {
+  let next = value;
+  for (const secret of secrets) {
+    if (secret) next = next.split(secret).join("***");
+  }
+  return next;
 }
 
 function commandInvocation(command: string, args: string[]) {
@@ -250,12 +260,13 @@ export class ProcessRuntime {
       resolveCompletion,
       stopRequested: false,
       timeout: null,
+      redact: [...new Set((input.redact ?? []).filter(Boolean))],
     };
     this.processes.set(id, record);
     this.emit({ type: "process.started", taskId: input.taskId, process: this.copy(record.snapshot), occurredAt: startedAt });
 
     const push = (stream: "stdout" | "stderr", chunk: Buffer | string) => {
-      const text = String(chunk);
+      const text = redactSecrets(String(chunk), record.redact);
       if (!text) return;
       if (stream === "stdout") record.snapshot.stdout = boundedAppend(record.snapshot.stdout, text);
       else record.snapshot.stderr = boundedAppend(record.snapshot.stderr, text);
