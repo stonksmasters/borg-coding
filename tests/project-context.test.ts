@@ -24,8 +24,21 @@ test("approved website state yields scoped, durable context and registries", () 
     assert.ok(model.pages.length > 0);
     model.components.push({ id: "product-card", name: "Product Card", files: ["src/components/ProductCard.tsx"], usedBy: [], dependencies: [], variants: [], status: "planned", acceptanceCriteria: ["Card is responsive"] });
     writeProjectModel(root, model);
-    const compiled = compileFrontendContext({ root, phase: "frontend", sliceIndex: 1, scope: { type: "component", id: "product-card" }, budgetCharacters: 12_000 });
-    assert.match(compiled.text, /Build a product store/);
+    const approvedPlan = fallbackProjectPlan("Authoritative product store", "ecommerce");
+    const compiled = compileFrontendContext({
+      root,
+      phase: "frontend",
+      sliceIndex: 1,
+      scope: { type: "component", id: "product-card" },
+      budgetCharacters: 16_000,
+      authority: {
+        plan: approvedPlan,
+        state: { current: 1, total: approvedPlan.slices.length, currentTitle: approvedPlan.slices[1].title, status: "working", backendRequired: approvedPlan.backendRequired },
+      },
+      productContract: "PINNED PRODUCT CONTRACT: preserve global ecommerce hierarchy.",
+    });
+    assert.match(compiled.text, /PINNED PRODUCT CONTRACT/);
+    assert.match(compiled.text, /Authoritative product store/);
     assert.match(compiled.text, /ProductCard/);
     assert.doesNotMatch(compiled.text, /UnrelatedChart/);
     assert.ok(compiled.characters <= compiled.budgetCharacters);
