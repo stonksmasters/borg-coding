@@ -60,3 +60,44 @@ test("saving a reviewed slice advances the project for the next session", async 
     assert.equal(readFileSync(join(second.path, "README.md"), "utf8").replaceAll("\r\n", "\n"), "slice one\n");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("interrupted slice promotion is idempotently reconciled from the approved base", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-delivery-reconcile-"));
+  try {
+    const repository = join(root, "repository");
+    const worktrees = join(root, "worktrees");
+    mkdirSync(repository);
+    execFileSync("git", ["init", repository]);
+    execFileSync("git", ["-C", repository, "config", "user.email", "test@example.com"]);
+    execFileSync("git", ["-C", repository, "config", "user.name", "Test"]);
+    writeFileSync(join(repository, "README.md"), "base\n");
+    execFileSync("git", ["-C", repository, "add", "."]);
+    execFileSync("git", ["-C", repository, "commit", "-m", "base"]);
+
+    const worktree = await new GitWorktreeManager(worktrees).create(repository, "slice-reconcile");
+    writeFileSync(join(worktree.path, "README.md"), "recovered slice\n");
+    execFileSync("git", ["-C", worktree.path, "add", "-A"]);
+    execFileSync("git", ["-C", worktree.path, "-c", "user.name=BORG", "-c", "user.email=borg@local", "commit", "-m", "slice commit"]);
+    const worktreeCommit = execFileSync("git", ["-C", worktree.path, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+
+    const delivery = new WorktreeDelivery(worktrees, join(root, "deliveries"));
+    const first = await delivery.reconcilePromotion("slice-reconcile", worktree.path, {
+      repositoryPath: repository,
+      expectedBaseCommit: worktree.baseCommit,
+    });
+    assert.equal(first.state, "promoted");
+    assert.equal(first.commit, worktreeCommit);
+    assert.equal(execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), worktreeCommit);
+    assert.equal(readFileSync(join(repository, "README.md"), "utf8").replaceAll("\r\n", "\n"), "recovered slice\n");
+
+    const replay = await delivery.reconcilePromotion("slice-reconcile", worktree.path, {
+      repositoryPath: repository,
+      expectedBaseCommit: worktree.baseCommit,
+    });
+    assert.equal(replay.state, "promoted");
+    assert.equal(replay.commit, worktreeCommit);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
