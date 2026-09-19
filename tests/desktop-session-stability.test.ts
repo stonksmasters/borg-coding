@@ -42,6 +42,26 @@ test("chat sessions, messages, selected mode, and pending escalation survive rep
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("focused styles sessions persist independently from the primary website workflow", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-style-session-"));
+  const database = join(root, "borg.db");
+  try {
+    const repository = new SqliteChatRepository(database);
+    const primary = createChatSession({ id: "site-root", title: "Site", activeMode: "edit", repositoryPath: "C:\\Code\\site", workspaceId: "site", workflowRole: "primary" });
+    const styles = createChatSession({ id: "site-styles", title: "Site · Styles", activeMode: "edit", repositoryPath: primary.repositoryPath, workspaceId: "site::styles", parentSessionId: primary.id, workflowRole: "styles" });
+    repository.saveSession(primary);
+    repository.saveSession(styles);
+    repository.close();
+
+    const reopened = new SqliteChatRepository(database);
+    const restored = reopened.findSession(styles.id);
+    assert.equal(restored?.parentSessionId, primary.id);
+    assert.equal(restored?.workflowRole, "styles");
+    assert.equal(restored?.workspaceId, "site::styles");
+    reopened.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("internet settings persist metadata while credentials remain outside config files", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-internet-config-"));
   try {
