@@ -6,8 +6,29 @@ import type { ProjectPlan } from "./slice-docs.ts";
 
 const status = z.enum(["planned", "in_progress", "verified"]);
 const relativeSource = z.string().min(1).refine((value) => !isAbsolute(value) && !value.split(/[\\/]/).some((part) => part === ".." || part === "." || !part) && !/^[a-z]:/i.test(value), "Expected a repository-relative path.");
-const page = z.object({ id: z.string().min(1), name: z.string().min(1), route: z.string().startsWith("/").nullable(), files: z.array(relativeSource), components: z.array(z.string()), status, acceptanceCriteria: z.array(z.string()) });
-const component = z.object({ id: z.string().min(1), name: z.string().min(1), files: z.array(relativeSource), usedBy: z.array(z.string()), dependencies: z.array(z.string()), variants: z.array(z.string()), status, acceptanceCriteria: z.array(z.string()) });
+const page = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  route: z.string().startsWith("/").nullable(),
+  purpose: z.string().default(""),
+  sections: z.array(z.string()).default([]),
+  files: z.array(relativeSource),
+  components: z.array(z.string()),
+  status,
+  acceptanceCriteria: z.array(z.string()),
+});
+const component = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  kind: z.enum(["layout", "section", "ui", "feature"]).default("section"),
+  purpose: z.string().default(""),
+  files: z.array(relativeSource),
+  usedBy: z.array(z.string()),
+  dependencies: z.array(z.string()),
+  variants: z.array(z.string()),
+  status,
+  acceptanceCriteria: z.array(z.string()),
+});
 const pagesSchema = z.object({ version: z.literal(1), pages: z.array(page) });
 const componentsSchema = z.object({ version: z.literal(1), components: z.array(component) });
 export type ProjectModel = { pages: z.infer<typeof page>[]; components: z.infer<typeof component>[] };
@@ -83,17 +104,61 @@ export function writeProjectModel(root: string, model: ProjectModel) {
 
 export function initializeProjectModel(root: string, plan: ProjectPlan) {
   const existing = existsSync(registryPath(root, "pages")) && existsSync(registryPath(root, "components")) ? readProjectModel(root) : { pages: [], components: [] };
-  const seen = new Set<string>();
-  const pages = plan.pages.map((name, index) => {
-    const base = slug(name);
-    const id = seen.has(base) ? `${base}-${index + 1}` : base;
-    seen.add(id);
-    const prior = existing.pages.find((item) => item.id === id);
-    const criteria = plan.slices.filter((slice) => `${slice.title} ${slice.outcome} ${slice.scope.join(" ")}`.toLowerCase().includes(name.toLowerCase())).flatMap((slice) => slice.acceptanceCriteria);
-    return prior ?? { id, name, route: null, files: [], components: [], status: "planned" as const, acceptanceCriteria: [...new Set(criteria.length ? criteria : plan.acceptanceCriteria)] };
+  const plannedPages = Array.isArray(plan.sitemap) && plan.sitemap.length
+    ? plan.sitemap
+    : plan.pages.map((name, index) => ({
+        id: slug(name),
+        name,
+        route: index === 0 ? "/" : `/${slug(name)}`,
+        purpose: `${name} page.`,
+        sections: [],
+        componentIds: [],
+        acceptanceCriteria: plan.acceptanceCriteria,
+      }));
+  const pageIds = new Set(plannedPages.map((item) => item.id));
+  const pages = plannedPages.map((planned) => {
+    const prior = existing.pages.find((item) => item.id === planned.id);
+    return {
+      id: planned.id,
+      name: planned.name,
+      route: planned.route,
+      purpose: planned.purpose,
+      sections: [...planned.sections],
+      files: prior?.files ?? [],
+      components: [...planned.componentIds],
+      status: prior?.status ?? "planned" as const,
+      acceptanceCriteria: [...new Set(planned.acceptanceCriteria.length ? planned.acceptanceCriteria : plan.acceptanceCriteria)],
+    };
   });
-  const pageIds = new Set(pages.map((item) => item.id));
-  const components = existing.components.map((item) => ({ ...item, usedBy: item.usedBy.filter((id) => pageIds.has(id)) }));
+
+  const plannedComponents = Array.isArray(plan.components) ? plan.components : [];
+  const components = plannedComponents.map((planned) => {
+    const prior = existing.components.find((item) => item.id === planned.id);
+    return {
+      id: planned.id,
+      name: planned.name,
+      kind: planned.kind,
+      purpose: planned.purpose,
+      files: prior?.files ?? [],
+      usedBy: planned.usedBy.filter((id) => pageIds.has(id)),
+      dependencies: prior?.dependencies ?? [],
+      variants: [...planned.variants],
+      status: prior?.status ?? "planned" as const,
+      acceptanceCriteria: [...planned.acceptanceCriteria],
+    };
+  });
+  for (const prior of existing.components) {
+    if (components.some((item) => item.id === prior.id)) continue;
+    const usedBy = prior.usedBy.filter((id) => pageIds.has(id));
+    if (usedBy.length || prior.status !== "planned") components.push({ ...prior, usedBy });
+  }
+
+  const componentIds = new Set(components.map((item) => item.id));
+  for (const page of pages) page.components = page.components.filter((id) => componentIds.has(id));
+  for (const component of components) for (const pageId of component.usedBy) {
+    const page = pages.find((item) => item.id === pageId);
+    if (page && !page.components.includes(component.id)) page.components.push(component.id);
+  }
   writeProjectModel(root, { pages, components });
 }
 
@@ -114,7 +179,7 @@ export function updateVerifiedProjectModel(root: string, changedPaths: string[],
     const name = basename(path).replace(/\.[^.]+$/, "");
     if (/\.(tsx|jsx)$/.test(path) && name !== "App" && name !== "main" && /component|section|ui/i.test(path) && !model.components.some((item) => item.files.includes(path))) {
       const id = slug(name);
-      if (!model.components.some((item) => item.id === id)) model.components.push({ id, name, files: [path], usedBy: [], dependencies: [], variants: [], status: "verified", acceptanceCriteria });
+      if (!model.components.some((item) => item.id === id)) model.components.push({ id, name, kind: "ui", purpose: `${name} discovered from verified source.`, files: [path], usedBy: [], dependencies: [], variants: [], status: "verified", acceptanceCriteria });
     }
     const page = model.pages.find((item) => path.toLowerCase().includes(`/${item.id}/`) || slug(name) === item.id || (item.id === "home" && path === "src/App.tsx"));
     if (page && !page.files.includes(path)) {
