@@ -1748,7 +1748,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         riskLevel: minimumRiskFor(packs),
       };
       const explicitWorkflowCommandId = typeof input.workflowCommandId === "string" && input.workflowCommandId.trim() ? input.workflowCommandId.trim() : null;
-      const expectedCommandAction = slicedApplication && sliceAction === "initial" && !retryingBlockedSlice
+      const expectedCommandAction = slicedApplication && sliceAction === "initial"
         ? "start_slice"
         : slicedApplication && sliceAction === "advance"
           ? "advance_slice"
