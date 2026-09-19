@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, CircleAlert, ImageCheck, ShieldCheck } from "lucide-react";
+import { Check, CircleAlert, BadgeCheck, ShieldCheck } from "lucide-react";
 import type { DesignReviewView } from "./design-panel";
 import { Button } from "@/components/ui/button";
 
