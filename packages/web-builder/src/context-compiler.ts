@@ -17,6 +17,13 @@ export type ContextInput = {
 export type ContextItem = { kind: "document" | "registry" | "source"; path: string; reason: string; characters: number; sha256: string };
 export type CompiledContext = { text: string; manifest: ContextItem[]; characters: number; budgetCharacters: number; sliceId: string };
 
+export type FocusedContextInput = {
+  root: string;
+  scope: Exclude<ContextScope, null>;
+  budgetCharacters?: number;
+  productContract?: string;
+};
+
 const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".html"]);
 const ignored = new Set([".git", ".borg", ".localcode", "node_modules", "dist", "build", ".next", ".vinext", ".wrangler", "coverage"]);
 function hash(text: string) { return createHash("sha256").update(text).digest("hex"); }
@@ -99,4 +106,86 @@ export function compileFrontendContext(input: ContextInput): CompiledContext {
     add("source", safe, explicit.includes(path) ? "Registered source for selected object" : entrypoints.includes(path) ? "Existing frontend entrypoint" : "Source path matches current slice", readFileSync(absolute, "utf8").slice(0, 12_000));
   }
   return { text: sections.join("\n"), manifest, characters, budgetCharacters, sliceId: slice.id };
+}
+
+
+export function compileFocusedFrontendContext(input: FocusedContextInput): CompiledContext {
+  const { root, scope } = input;
+  const plan = readProjectPlan(root);
+  const model = readProjectModel(root);
+  if (!plan || plan.status === "proposed") throw new Error("Approved frontend project state is missing. Repair the project plan before continuing.");
+  const page = scope.type === "page" ? model.pages.find((item) => item.id === scope.id) : null;
+  const component = scope.type === "component" ? model.components.find((item) => item.id === scope.id) : null;
+  if (!page && !component) throw new Error(`Unknown ${scope.type} scope: ${scope.id}`);
+
+  const directlyRelatedComponents = page
+    ? model.components.filter((item) => page.components.includes(item.id) || item.usedBy.includes(page.id))
+    : component
+      ? [component, ...model.components.filter((item) => component.dependencies.includes(item.id))]
+      : [];
+  const dependencyIds = new Set(directlyRelatedComponents.flatMap((item) => item.dependencies));
+  const relatedComponents = [...directlyRelatedComponents];
+  for (const candidate of model.components) if (dependencyIds.has(candidate.id) && !relatedComponents.some((item) => item.id === candidate.id)) relatedComponents.push(candidate);
+  const relatedPages = page
+    ? [page]
+    : component
+      ? model.pages.filter((item) => component.usedBy.includes(item.id) || item.components.includes(component.id))
+      : [];
+
+  const budgetCharacters = Math.max(6_000, Math.min(80_000, input.budgetCharacters ?? 36_000));
+  const manifest: ContextItem[] = [];
+  const sections: string[] = [];
+  let characters = 0;
+  const add = (kind: ContextItem["kind"], path: string, reason: string, content: string, required = false) => {
+    const section = `--- ${path} (${reason}) ---\n${content.trim()}\n`;
+    if (characters + section.length > budgetCharacters) {
+      if (required) throw new Error(`Context budget is too small for required focused state: ${path}.`);
+      return false;
+    }
+    sections.push(section);
+    characters += section.length;
+    manifest.push({ kind, path, reason, characters: section.length, sha256: hash(section) });
+    return true;
+  };
+
+  if (input.productContract?.trim()) add("document", "@borg/website-product-contract", "Pinned global website product contract", input.productContract.trim(), true);
+  const briefPath = join(root, ".localcode", "build", "brief.md");
+  if (existsSync(briefPath) && lstatSync(briefPath).isFile()) add("document", ".localcode/build/brief.md", "Approved project brief", readFileSync(briefPath, "utf8").slice(0, 8_000), true);
+  add("document", ".localcode/build/plan.md", "Approved website-level constraints", JSON.stringify({
+    siteGoal: plan.siteGoal,
+    audience: plan.audience,
+    visualDirection: plan.visualDirection,
+    acceptanceCriteria: plan.acceptanceCriteria,
+  }, null, 2), true);
+  const design = readPersistedDesignBrief(root);
+  if (design) add("document", ".localcode/build/design-brief.md", "Approved design direction", JSON.stringify(design, null, 2), true);
+  const stylesPath = join(root, ".localcode", "build", "styles.md");
+  if (existsSync(stylesPath) && lstatSync(stylesPath).isFile()) add("document", ".localcode/build/styles.md", "Approved global style system", readFileSync(stylesPath, "utf8").slice(0, 12_000), true);
+  add("registry", ".localcode/build/pages.json", page ? "Selected page definition" : "Pages using selected component", JSON.stringify(relatedPages, null, 2), true);
+  add("registry", ".localcode/build/components.json", component ? "Selected component and direct dependencies" : "Components used by selected page", JSON.stringify(relatedComponents, null, 2), true);
+
+  for (const [name, reason] of [["decisions.md", "Recent project decisions"], ["handoff.md", "Latest project handoff"]] as const) {
+    const path = join(root, ".localcode", "build", name);
+    if (existsSync(path) && lstatSync(path).isFile()) add("document", `.localcode/build/${name}`, reason, readFileSync(path, "utf8").slice(-4_000));
+  }
+
+  const explicit = [...new Set([...relatedPages.flatMap((item) => item.files), ...relatedComponents.flatMap((item) => item.files)])];
+  const relevantWords = tokens([
+    page?.name ?? "",
+    page?.purpose ?? "",
+    ...(page?.sections ?? []),
+    component?.name ?? "",
+    component?.purpose ?? "",
+    ...(component?.variants ?? []),
+  ].join(" "));
+  const discovered = explicit.length ? [] : sourceCandidates(root, relevantWords);
+  const entrypoints = explicit.length || discovered.length ? [] : ["src/App.tsx", "src/style.css", "src/main.tsx", "app/page.tsx"].filter((path) => existsSync(join(root, path)));
+  for (const path of [...new Set([...explicit, ...discovered, ...entrypoints])]) {
+    const safe = validateProjectSource(root, path);
+    const absolute = join(root, safe);
+    if (!existsSync(absolute) || !lstatSync(absolute).isFile()) continue;
+    add("source", safe, explicit.includes(path) ? "Registered source for focused object" : entrypoints.includes(path) ? "Frontend entrypoint needed to locate focused object" : "Source matched focused object", readFileSync(absolute, "utf8").slice(0, 12_000));
+  }
+
+  return { text: sections.join("\n"), manifest, characters, budgetCharacters, sliceId: `${scope.type}:${scope.id}` };
 }
