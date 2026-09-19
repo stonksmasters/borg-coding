@@ -1252,7 +1252,7 @@ const server = createServer((request, response) => {
     const currentApproval = tasks.findApproval(taskId);
     return send(response, 200, {
       task,
-      workflow: workflow.get(task.projectId),
+      workflow: workflow.get(task.projectId)?.taskId === task.id ? workflow.get(task.projectId) : null,
       approval: currentApproval,
       projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_PROPOSED"),
       findings: tasks.listFindings(taskId),
@@ -1276,13 +1276,12 @@ const server = createServer((request, response) => {
       const isProjectPlanApproval = tasks.listEvents(task.id).some((event) => event.type === "PROJECT_PLAN_PROPOSED");
       if (decision === "reject") {
         const rejected = { ...approval, status: "REJECTED" as const, decidedAt: new Date().toISOString() };
-        tasks.saveApproval(rejected);
-        workflow.approvalDecided(task, rejected, isProjectPlanApproval ? "project_plan" : "execution");
-        appendTaskEvent(task.id, isProjectPlanApproval ? "PROJECT_PLAN_REVISION_REQUESTED" : "APPROVAL_REJECTED", { approvalId: approval.id });
+        const decided = workflow.decideApproval(task, rejected, isProjectPlanApproval ? "project_plan" : "execution");
+        task = decided.task;
+        syncWorkflowProjection(task, decided.workflow);
         const repositoryPath = access.load().repositoryPath;
         if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: isProjectPlanApproval ? "Frontend phase plan requires revision." : "Implementation mini-plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
-        task = transitionTask(task, "CANCELLED");
-        return send(response, 200, { task, approval: rejected, projectPlanApproval: isProjectPlanApproval });
+        return send(response, 200, { task, approval: rejected, workflow: decided.workflow, projectPlanApproval: isProjectPlanApproval });
       }
       if (decision !== "approve") return send(response, 400, { error: "Decision must be approve or reject." });
       const repositoryPath = access.load().repositoryPath;
@@ -1291,30 +1290,39 @@ const server = createServer((request, response) => {
         const approvedProject = approveProjectPlan(repositoryPath, task.id);
         commitBuildDocs(repositoryPath, "Approve BORG frontend phase plan");
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
-        tasks.saveApproval(approved);
-        appendTaskEvent(task.id, "PROJECT_PLAN_APPROVED", { approvalId: approval.id, revision: approvedProject.plan.revision });
-        task = transitionTask(task, "COMPLETE");
-        const workflowState = workflow.approvalDecided(task, approved, "project_plan");
-        return send(response, 200, { task, approval: approved, workflow: workflowState, projectPlanApproved: true, projectPlan: approvedProject.plan, slice: approvedProject.state });
+        const decided = workflow.decideApproval(task, approved, "project_plan");
+        task = decided.task;
+        syncWorkflowProjection(task, decided.workflow);
+        return send(response, 200, { task, approval: approved, workflow: decided.workflow, projectPlanApproved: true, projectPlan: approvedProject.plan, slice: approvedProject.state });
       }
       const worktree = await worktrees.create(repositoryPath, task.id);
       const sliceIntent = tasks.listEvents(task.id).findLast((event) => event.type === "FRONTEND_SLICE_SELECTED")?.payload as { action?: SliceAction; feedback?: string } | undefined;
+      let preparedSlice: SliceState | null = null;
       if (sliceIntent) {
         const website = websiteInfo(worktree.path);
         const approvedPlan = tasks.listEvents(task.id).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
         if (website) {
-          const prepared = prepareSlice(worktree.path, website.originalBrief || task.request, sliceIntent.action ?? "initial", sliceIntent.feedback ?? "", task.id, typeof approvedPlan === "string" ? approvedPlan : "");
-          setFrontendWorkflowStage(worktree.path, "slice_implementing", { currentSlice: prepared.current, totalSlices: prepared.total, taskId: task.id, detail: "Slice mini-plan approved automatically from the outer frontend approval. Implementation is starting." });
+          preparedSlice = prepareSlice(worktree.path, website.originalBrief || task.request, sliceIntent.action ?? "initial", sliceIntent.feedback ?? "", task.id, typeof approvedPlan === "string" ? approvedPlan : "");
+          setFrontendWorkflowStage(worktree.path, "slice_implementing", { currentSlice: preparedSlice.current, totalSlices: preparedSlice.total, taskId: task.id, detail: "Slice mini-plan approved automatically from the outer frontend approval. Implementation is starting." });
         }
       }
       const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: worktree.path, baseCommit: worktree.baseCommit };
-      tasks.saveApproval(approved);
-      workflow.approvalDecided(task, approved, "execution");
-      appendTaskEvent(task.id, "APPROVAL_APPROVED", { approvalId: approval.id, worktreePath: worktree.path, baseCommit: worktree.baseCommit });
+      const decided = workflow.decideApproval(task, approved, "execution");
+      task = decided.task;
+      syncWorkflowProjection(task, decided.workflow);
+      let workflowState = decided.workflow;
+      if (preparedSlice) {
+        workflowState = workflow.slice(task, {
+          index: preparedSlice.current,
+          total: preparedSlice.total,
+          title: preparedSlice.currentTitle,
+          status: "running",
+        });
+        syncWorkflowProjection(task, workflowState);
+      }
       recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: `Implementation plan approved at base commit ${worktree.baseCommit}.`, taskId: task.id, path: null, line: null, createdAt: approved.decidedAt! });
       createCheckpointSnapshot(task, "pre_edit", { mode: recordedMode(task.id) });
-      task = transitionTask(task, "IMPLEMENTING");
-      return send(response, 200, { task, approval: approved, workflow: workflow.get(task.projectId), worktree: worktrees.describe(worktree) });
+      return send(response, 200, { task, approval: approved, workflow: workflowState, worktree: worktrees.describe(worktree) });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
     return;
   }
