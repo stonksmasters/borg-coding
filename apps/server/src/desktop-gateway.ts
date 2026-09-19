@@ -343,7 +343,7 @@ async function saveVerifiedFrontendSlice(taskId: string, session: ChatSession, e
     body: JSON.stringify({ method: "commit", message: "BORG verified frontend slice checkpoint" }),
     signal: AbortSignal.timeout(120_000),
   });
-  const body = await response.json().catch(() => ({})) as { delivery?: { commit?: string }; workflow?: { nextAction?: string }; error?: string };
+  const body = await response.json().catch(() => ({})) as { delivery?: { commit?: string }; workflow?: CoreWorkflowState; error?: string };
   if (!response.ok) throw new Error(body.error ?? "Unable to checkpoint the verified frontend slice.");
   appendMessage({
     sessionId: session.id,
@@ -353,7 +353,7 @@ async function saveVerifiedFrontendSlice(taskId: string, session: ChatSession, e
     text: `Verified frontend slice checkpointed${body.delivery?.commit ? ` as ${body.delivery.commit}` : ""}. The primary project now contains this slice.`,
   });
   emitToClient({ type: "slice.checkpointed", taskId, commit: body.delivery?.commit ?? null });
-  return body.workflow ?? { nextAction: "none" };
+  return body.workflow ?? null;
 }
 
 function sliceLaunchPrompt(action: "initial" | "advance" | "revise" | "backend", feedback: string) {
@@ -362,13 +362,19 @@ function sliceLaunchPrompt(action: "initial" | "advance" | "revise" | "backend",
   return feedback.trim();
 }
 
-async function launchFrontendWorkflowSession(parent: ChatSession, action: "initial" | "advance" | "revise" | "backend", feedback = "") {
+async function launchFrontendWorkflowSession(
+  parent: ChatSession,
+  action: "initial" | "advance" | "revise" | "backend",
+  feedback = "",
+  workflowCommandId: string | null = null,
+) {
   const root = rootWorkflowSession(parent);
   if (!root.repositoryPath) throw new Error("The website session is not attached to a repository.");
   const currentAccess = access.load();
   if (currentAccess.repositoryPath !== root.repositoryPath) access.save({ repositoryPath: root.repositoryPath, documents: currentAccess.documents });
-  const selectedSlice = readSliceState(root.repositoryPath);
-  const key = `${root.repositoryPath.toLowerCase()}::${action}::${selectedSlice?.current ?? -1}::${selectedSlice?.lastTaskId ?? "none"}`;
+  const key = workflowCommandId
+    ? `workflow-command::${workflowCommandId}`
+    : `${root.repositoryPath.toLowerCase()}::manual::${action}::${chats.latestTaskId(root.id) ?? "none"}::${feedback.trim().slice(0, 80)}`;
   const active = frontendLaunches.get(key);
   if (active) return active.session;
 
@@ -385,12 +391,12 @@ async function launchFrontendWorkflowSession(parent: ChatSession, action: "initi
   const started = new Promise<void>((resolveStarted) => { markStarted = resolveStarted; });
   const run = streamChat(session, prompt, (event) => {
     if (event.type === "task.created") markStarted?.();
-  }, action).catch((error) => {
+  }, action, workflowCommandId).catch((error) => {
     appendMessage({
       sessionId: session.id,
       role: "system",
       kind: "warning",
-      text: error instanceof Error ? error.message : "The server-owned frontend workflow failed.",
+      text: error instanceof Error ? error.message : "The Core-scheduled frontend workflow failed.",
     });
   }).finally(() => {
     if (frontendLaunches.get(key)?.session.id === session.id) frontendLaunches.delete(key);
@@ -400,7 +406,15 @@ async function launchFrontendWorkflowSession(parent: ChatSession, action: "initi
   return session;
 }
 
-async function streamChat(session: ChatSession, prompt: string, emitToClient: EventSink, sliceAction?: string) {
+async function driveWorkflow(session: ChatSession, state: CoreWorkflowState | null | undefined) {
+  const pending = state?.pendingCommand;
+  if (!pending) return null;
+  if (pending.action === "start_slice") return launchFrontendWorkflowSession(session, "initial", "", pending.id);
+  if (pending.action === "advance_slice") return launchFrontendWorkflowSession(session, "advance", "", pending.id);
+  return null;
+}
+
+async function streamChat(session: ChatSession, prompt: string, emitToClient: EventSink, sliceAction?: string, workflowCommandId: string | null = null) {
   const controller = new AbortController();
   activeStreams.set(session.id, controller);
   try {
@@ -410,7 +424,7 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
     const upstream = await fetch(`${coreUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode, sliceAction }),
+      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode, sliceAction, workflowCommandId }),
       signal: controller.signal,
     });
     if (!upstream.ok || !upstream.body) throw new Error(`Planning stream failed (${upstream.status}).`);
@@ -490,8 +504,8 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
       emitToClient({ type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
       await pipeExecution(taskId, session, emitToClient, controller);
       if (sliceAction && sliceAction !== "backend") {
-        const workflow = await saveVerifiedFrontendSlice(taskId, session, emitToClient);
-        if (workflow?.nextAction === "advance_slice") await launchFrontendWorkflowSession(session, "advance");
+        const workflowState = await saveVerifiedFrontendSlice(taskId, session, emitToClient);
+        await driveWorkflow(session, workflowState);
       }
       emitToClient({ type: "stream.completed", taskId });
     }
