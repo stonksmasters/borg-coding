@@ -76,8 +76,8 @@ internal static class Program
                 }
                 else if (command == "--credential-set")
                 {
-                    var secret = Console.In.ReadToEnd().Trim();
-                    if (string.IsNullOrWhiteSpace(secret)) throw new InvalidOperationException("Credential cannot be empty.");
+                    var secret = Console.In.ReadToEnd();
+                    if (secret.Length == 0) throw new InvalidOperationException("Credential cannot be empty.");
                     WindowsCredentialStore.Write(target, secret);
                 }
                 else
