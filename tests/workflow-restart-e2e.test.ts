@@ -61,7 +61,7 @@ function deliver(engine: WorkflowEngine, task: ReturnType<typeof createTask>, co
   task = engine.transition(task, "VERIFYING").task;
   task = engine.transition(task, "REVIEWING").task;
   task = engine.transition(task, "DELIVERY_READY").task;
-  task = engine.transition(task, "DELIVERING").task;
+  task = engine.beginDelivery(task, { method: "commit", expectedBaseCommit: `base-${task.id}` }).task;
   return engine.completeDelivery(task, { commit });
 }
 
