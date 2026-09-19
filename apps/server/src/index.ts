@@ -483,8 +483,19 @@ function syncDeliveredWorkflowProjection(task: Task, state: WorkflowState, repos
 }
 
 function projectPlanFromWorkflow(state: WorkflowState | null, fallbackRoot: string | null): ProjectPlan | null {
-  if (state?.projectPlan) return state.projectPlan as ProjectPlan;
-  return fallbackRoot ? readProjectPlan(fallbackRoot) : null;
+  const persisted = fallbackRoot ? readProjectPlan(fallbackRoot) : null;
+  if (!state?.projectPlan) return persisted;
+  const durable = state.projectPlan as ProjectPlan;
+  if (Array.isArray(durable.sitemap) && Array.isArray(durable.components) && durable.styles) return durable;
+  if (!persisted) return durable;
+  return {
+    ...durable,
+    sitemap: persisted.sitemap,
+    components: persisted.components,
+    styles: persisted.styles,
+    pages: durable.pages?.length ? durable.pages : persisted.pages,
+    features: durable.features?.length ? durable.features : persisted.features,
+  };
 }
 
 function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan | null, fallbackRoot: string | null): SliceState | null {
@@ -972,13 +983,14 @@ const server = createServer((request, response) => {
     const taskWorkflow = workflow.get(task.projectId);
     const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
     const projectPlan = websiteProject ? projectPlanFromWorkflow(ownedTaskWorkflow, approvedWorktreePath) : null;
+    const styleWorkspace = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "STYLE_WORKSPACE_SELECTED");
     const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED")
       ? sliceStateFromWorkflow(ownedTaskWorkflow, projectPlan, approvedWorktreePath)
       : null;
     const priorDeliveredWebsiteTask = websiteProject
       ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
       : false;
-    const websiteWorkflow: WebsiteWorkflowKind = sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+    const websiteWorkflow: WebsiteWorkflowKind = styleWorkspace ? "iterative_edit" : sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
     const websiteContext = websiteProject ? websiteGenerationContext({
       name: websiteProject.name,
       template: websiteProject.template,
@@ -986,6 +998,9 @@ const server = createServer((request, response) => {
     }, websiteWorkflow) : "";
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
+    const styleExecutionContext = styleWorkspace && websiteProject
+      ? `GLOBAL STYLE WORKSPACE. Preserve sitemap, routes, page purposes, component responsibilities, content hierarchy, interactions, and data behavior. Change shared visual primitives first: theme/tokens, typography, spacing, radii, shadows, layout rhythm, responsive styling, motion, and accessibility presentation. Avoid one-off component patches when a shared rule can solve the request. Verify representative pages at mobile and desktop widths.\n\n${readProjectDocs(approvedWorktreePath).filter((doc) => /\/(styles|design-brief|site-map|components)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 5000)}`).join("\n\n").slice(0, 24_000)}`
+      : "";
     const teamPolicy = teamPolicies.load(taskProjectRepository(taskId));
     const activeDisciplines = (task.disciplines.length ? task.disciplines : [teamPolicy.defaultDiscipline]) as EngineeringDiscipline[];
     const primaryDiscipline = activeDisciplines[0];
@@ -1043,7 +1058,7 @@ const server = createServer((request, response) => {
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledSlice?.sliceId ?? null, compiledSlice?.manifest ?? [], body) : undefined,
           messages: [
             ...(taskContext.executionState === "REPAIR" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
-            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${styleExecutionContext ? styleExecutionContext + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
           });
@@ -1344,6 +1359,15 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, packs, emit);
         const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
+        const styleAcceptance = styleWorkspace && projectPlan?.styles
+          ? [
+              projectPlan.styles.direction,
+              ...projectPlan.styles.layoutPrinciples,
+              ...projectPlan.styles.responsive,
+              ...projectPlan.styles.accessibility,
+              ...projectPlan.styles.avoid.map((item) => `Avoid: ${item}`),
+            ]
+          : [];
         const review = await runFreshReview({
           ollamaUrl,
           model: reviewerModel,
@@ -1352,7 +1376,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           projectGoal: projectPlan?.siteGoal,
           sliceTitle: activeSlice?.title,
           sliceOutcome: activeSlice?.outcome,
-          acceptanceCriteria: activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
+          acceptanceCriteria: styleAcceptance.length ? styleAcceptance : activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
           implementationBudgetExhausted,
           diff: diff.stdout ?? "",
           verification,
