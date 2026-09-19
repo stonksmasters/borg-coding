@@ -17,7 +17,7 @@ import { DesktopCredentialStore } from "../../../packages/tools/src/credential-s
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
 import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { readProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import type { ProjectPlan } from "../../../packages/web-builder/src/slice-docs.ts";
+import { readProjectPlan, type ProjectPlan } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const gatewayPort = Number(process.env.BORG_GATEWAY_PORT ?? 4312);
 const coreUrl = process.env.BORG_CORE_URL ?? "http://127.0.0.1:4311";
@@ -665,6 +665,8 @@ const server = createServer((request, response) => {
     if (!source) return send(response, 404, { error: "Session not found." });
     const root = rootWorkflowSession(source);
     if (!root.repositoryPath) return send(response, 409, { error: "Styles workspace requires a website repository." });
+    const plan = readProjectPlan(root.repositoryPath);
+    if (!plan || plan.status === "proposed") return send(response, 409, { error: "Approve the website structure plan before opening focused workspaces." });
     const existing = chats.listSessions().find((candidate) => candidate.parentSessionId === root.id && candidate.workflowRole === "styles");
     const session = existing ?? createChatSession({
       id: randomUUID(),
@@ -688,6 +690,8 @@ const server = createServer((request, response) => {
     if (!source) return send(response, 404, { error: "Session not found." });
     const root = rootWorkflowSession(source);
     if (!root.repositoryPath) return send(response, 409, { error: "Focused workspace requires a website repository." });
+    const plan = readProjectPlan(root.repositoryPath);
+    if (!plan || plan.status === "proposed") return send(response, 409, { error: "Approve the website structure plan before opening focused workspaces." });
     const role = objectFocusRoute[2] as "page" | "component";
     const focusId = decodeURIComponent(objectFocusRoute[3]);
     const model = readProjectModel(root.repositoryPath);
