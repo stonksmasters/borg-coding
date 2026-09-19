@@ -7,6 +7,7 @@ import { ActivityFeed, type AgentActivity } from "@/components/agent/activity-fe
 import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel";
 import { PlanPanel } from "@/components/workspace/plan-panel";
 import { DocsPanel, type BuildDoc } from "@/components/workspace/docs-panel";
+import { StructurePanel } from "@/components/workspace/structure-panel";
 import { TerminalPanel, type TaskProcess, type TaskProcessEvent } from "@/components/workspace/terminal-panel";
 import type { DesignBriefView, DesignReviewView } from "@/components/workspace/design-panel";
 import { EvidencePanel } from "@/components/workspace/evidence-panel";
@@ -40,7 +41,7 @@ const WEBSITE_EXAMPLES = [
   "Build a booking website for a premium local service business with services, trust signals, availability CTA, FAQ, and lead form.",
 ] as const;
 type PermissionMode = "ask" | "plan" | "edit" | "agent";
-type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string; parentSessionId: string | null; workflowRole: "primary" | "frontend_slice" | "backend" };
+type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string; parentSessionId: string | null; workflowRole: "primary" | "frontend_slice" | "backend" | "styles" | "page" | "component" };
 type WorkflowStatus = { source: "sqlite" | "legacy_projection"; workflowVersion: number | null; taskState: string; phase: string; status: string; detail: string | null; sliceIndex: number | null; sliceTotal: number | null; sliceTitle: string | null; objective: string; currentAction: string; completed: string[]; pending: string[]; verificationPassed: boolean | null; repairAttempt: number; nextAction: string; run: RunView; activity: Array<{ type: string; occurredAt: string; detail: string }> };
 type ContextRecord = { id: string; role: string; model: string; sliceId: string | null; createdAt: string; inputSha256: string; manifest: Array<{ path: string; reason: string; characters: number; sha256: string }> };
 type ChatMessage = RenderableMessage & { sessionId: string; taskId: string | null; createdAt: string; metadata?: Record<string, unknown> };
@@ -159,7 +160,7 @@ export function BorgWorkspaceV2() {
   const [contextRecords, setContextRecords] = useState<ContextRecord[]>([]);
   const [selectedContext, setSelectedContext] = useState<(ContextRecord & { inputText: string }) | null>(null);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
-  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "sitemap" | "components" | "files" | "environment" | "changes" | "evidence" | "logs" | "memory">("preview");
+  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "sitemap" | "components" | "styles" | "files" | "environment" | "changes" | "evidence" | "logs" | "memory">("preview");
   const [buildDocs, setBuildDocs] = useState<BuildDoc[]>([]);
   const [sliceState, setSliceState] = useState<SliceState | null>(null);
   const [sliceFeedback, setSliceFeedback] = useState("");
@@ -199,6 +200,7 @@ export function BorgWorkspaceV2() {
   const [environmentVariables, setEnvironmentVariables] = useState<EnvironmentVariable[]>([]);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [environmentError, setEnvironmentError] = useState("");
+  const [styleBusy, setStyleBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const activeTaskRef = useRef<string | null>(null);
@@ -226,9 +228,7 @@ export function BorgWorkspaceV2() {
     const message = [...messages].reverse().find((item) => item.role === "assistant" && item.kind === "plan");
     return message?.text?.trim() || escalation?.planText?.trim() || null;
   }, [escalation, messages]);
-  const sitemapDocs = useMemo(() => buildDocs.filter((doc) => /site.?map|page/i.test(`${doc.path} ${doc.title}`)), [buildDocs]);
-  const componentDocs = useMemo(() => buildDocs.filter((doc) => /component/i.test(`${doc.path} ${doc.title}`)), [buildDocs]);
-  const panelGroup = rightPanel === "sitemap" || rightPanel === "components" ? "structure"
+  const panelGroup = rightPanel === "sitemap" || rightPanel === "components" || rightPanel === "styles" ? "structure"
     : rightPanel === "files" || rightPanel === "environment" || rightPanel === "memory" ? "project"
       : rightPanel === "changes" || rightPanel === "evidence" || rightPanel === "logs" ? "review"
         : rightPanel;
@@ -807,7 +807,7 @@ export function BorgWorkspaceV2() {
     if (buffer.trim()) applyEvent(JSON.parse(buffer) as StreamEvent);
   }
 
-  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend", targetSession = activeSession, force = false) {
+  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend" | "style", targetSession = activeSession, force = false) {
     const clean = prompt.trim();
     if (!targetSession || !clean || (taskBusy && !force)) return;
     const controller = new AbortController();
@@ -843,6 +843,32 @@ export function BorgWorkspaceV2() {
       setStreaming(false);
       setRuntimeActive(false);
       abortRef.current = null;
+    }
+  }
+
+  async function startStyleWorkspace(feedback: string) {
+    if (!activeSession || taskBusy || styleBusy) return;
+    const root = activeWebsiteRoot ?? activeSession;
+    setStyleBusy(true);
+    setSessionError("");
+    try {
+      const response = await fetch(`${API}/api/sessions/${encodeURIComponent(root.id)}/focus/styles`, { method: "POST" });
+      const result = await response.json().catch(() => ({})) as { session?: ChatSession; error?: string };
+      if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to open the Styles workspace.");
+      setSessions((current) => current.some((session) => session.id === result.session!.id)
+        ? current.map((session) => session.id === result.session!.id ? result.session! : session)
+        : [result.session!, ...current]);
+      setRightPanel("styles");
+      await runTask(
+        `GLOBAL STYLE FEEDBACK: ${feedback}\n\nApply this only to the shared website-wide style system. Preserve the approved sitemap, page purposes, component responsibilities, content hierarchy, interactions, and data behavior unless the feedback explicitly requires a structural change.`,
+        "style",
+        result.session,
+        true,
+      );
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Unable to start the Styles workspace.");
+    } finally {
+      setStyleBusy(false);
     }
   }
 
@@ -1389,6 +1415,7 @@ export function BorgWorkspaceV2() {
           {panelGroup === "structure" && <nav aria-label="Structure views" className="flex h-10 shrink-0 items-center gap-1 border-b border-white/8 bg-[#0c1016] px-3">
             <button type="button" onClick={() => setRightPanel("sitemap")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "sitemap" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Sitemap &amp; pages</button>
             <button type="button" onClick={() => setRightPanel("components")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "components" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Components</button>
+            <button type="button" onClick={() => setRightPanel("styles")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "styles" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Styles</button>
           </nav>}
           {panelGroup === "project" && <nav aria-label="Project views" className="flex h-10 shrink-0 items-center gap-1 border-b border-white/8 bg-[#0c1016] px-3">
             <button type="button" onClick={() => { setRightPanel("files"); if (activeTaskId && !projectEntries.length) void refreshProject(activeTaskId); }} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "files" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Files</button>
@@ -1415,9 +1442,11 @@ export function BorgWorkspaceV2() {
             {rightPanel === "plan"
               ? <PlanPanel plan={latestPlan} designBrief={designBrief} />
               : rightPanel === "sitemap"
-                ? <DocsPanel docs={sitemapDocs} />
+                ? <StructurePanel view="sitemap" docs={buildDocs} />
               : rightPanel === "components"
-                ? <DocsPanel docs={componentDocs} />
+                ? <StructurePanel view="components" docs={buildDocs} />
+              : rightPanel === "styles"
+                ? <StructurePanel view="styles" docs={buildDocs} styleBusy={styleBusy || taskBusy} onStyleFeedback={startStyleWorkspace} />
               : rightPanel === "files"
                 ? <ProjectBrowser entries={projectEntries} content={projectFile?.content ?? ""} selectedPath={projectFile?.path ?? null} loading={projectLoading} error={projectError} onOpen={openProjectFile} />
               : rightPanel === "environment"
