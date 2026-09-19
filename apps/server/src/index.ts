@@ -1369,10 +1369,12 @@ const server = createServer((request, response) => {
       const requestedMode = String(input.mode ?? "ask").toLowerCase();
       const mode: PermissionMode = (["ask", "plan", "edit", "agent"] as const).includes(requestedMode as PermissionMode) ? requestedMode as PermissionMode : "ask";
       const requestText = String(input.request ?? "");
+      const projectId = String(input.projectId ?? "local");
       const selectedPath = access.load().repositoryPath;
       const selectedWebsite = selectedPath ? websiteInfo(selectedPath) : null;
-      const previousSlice = selectedWebsite ? readSliceState(selectedWebsite.path) : null;
-      const projectPlan = selectedWebsite ? readProjectPlan(selectedWebsite.path) : null;
+      const durableWorkflow = workflow.get(projectId);
+      const projectPlan = selectedWebsite ? projectPlanFromWorkflow(durableWorkflow, selectedWebsite.path) : null;
+      const previousSlice = selectedWebsite ? sliceStateFromWorkflow(durableWorkflow, projectPlan, selectedWebsite.path) : null;
       if (mode !== "ask" && selectedWebsite && projectPlan?.status === "approved" && ensureProjectModel(selectedWebsite.path, projectPlan)) commitProjectRegistries(selectedWebsite.path);
       const rawSliceAction = String(input.sliceAction ?? "initial");
       const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
@@ -1388,15 +1390,18 @@ const server = createServer((request, response) => {
       const route = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
       const packs = selectSpecialistPacks(route.disciplines);
       let task: Task = {
-        ...createTask({ id: randomUUID(), projectId: String(input.projectId ?? "local"), request: requestText }),
+        ...createTask({ id: randomUUID(), projectId, request: requestText }),
         disciplines: route.disciplines,
         riskLevel: minimumRiskFor(packs),
       };
-      tasks.saveTask(task);
-      workflow.start(task, rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : slicedApplication ? "frontend_slice" : "general",
-        slicedApplication ? "Continuing the approved project workflow without repository rediscovery." : "Planning the requested project work.");
-      const created = { id: randomUUID(), taskId: task.id, type: "TASK_CREATED", payload: { state: task.state }, occurredAt: task.createdAt };
-      tasks.appendEvent(created);
+      const workflowCommandId = typeof input.workflowCommandId === "string" && input.workflowCommandId.trim() ? input.workflowCommandId.trim() : null;
+      const startedWorkflow = workflow.start(
+        task,
+        rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : slicedApplication ? "frontend_slice" : "general",
+        slicedApplication ? "Continuing the approved project workflow without repository rediscovery." : "Planning the requested project work.",
+        { commandId: workflowCommandId, feedback: sliceAction === "revise" ? requestText : undefined },
+      );
+      syncWorkflowProjection(task, startedWorkflow);
       if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
       if (slicedApplication) appendTaskEvent(task.id, "FRONTEND_SLICE_SELECTED", { action: sliceAction, feedback: previousSlice ? requestText : "", previous: previousSlice?.current ?? null });
       if (rawSliceAction === "backend") appendTaskEvent(task.id, "BACKEND_PHASE_SELECTED", { feedback: requestText });
@@ -1539,7 +1544,9 @@ const server = createServer((request, response) => {
           ? persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template), task.id)
           : null;
         if (proposedProjectPlan) {
-          appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan });
+          const planWorkflow = workflow.setProjectPlan(task, proposedProjectPlan);
+          syncWorkflowProjection(task, planWorkflow);
+          appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan, workflowVersion: planWorkflow.version });
           emit({ type: "project.plan.proposed", plan: proposedProjectPlan });
         }
         if (mode === "plan" || mode === "edit" || mode === "agent") {
@@ -1560,10 +1567,11 @@ const server = createServer((request, response) => {
               : "Wait for operator approval, then implement the approved plan in the isolated worktree.",
           }, emit);
           const approval = createApproval({ id: randomUUID(), taskId: task.id });
-          tasks.saveApproval(approval);
-          workflow.approvalRequested(task, approval, proposedProjectPlan ? "project_plan" : "execution");
-          appendTaskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, mode, kind: proposedProjectPlan ? "project_plan" : "execution" });
-          task = transitionTask(task, "AWAITING_APPROVAL", emit);
+          const requested = workflow.requestApproval(task, approval, proposedProjectPlan ? "project_plan" : "execution");
+          task = requested.task;
+          syncWorkflowProjection(task, requested.workflow);
+          createCheckpointSnapshot(task, "plan_complete");
+          emit({ type: "task.state", taskId: task.id, state: task.state, workflow: requested.workflow });
           if (proposedProjectPlan) {
             writeEvent(response, {
               type: "project.plan.approval.requested",
