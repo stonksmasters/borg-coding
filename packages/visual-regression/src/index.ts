@@ -357,7 +357,7 @@ export class VisualRegressionService {
       : statuses.has("regression") ? "regression"
       : statuses.has("missing-baseline") ? "missing-baseline"
       : "pass";
-    const passed = !["failed", "dimension-mismatch", "regression"].includes(status);
+    const passed = status === "pass" || status === "disabled";
     const changed = comparisons.reduce((sum, item) => sum + item.changedPixels, 0);
     const missing = comparisons.filter((item) => item.status === "missing-baseline").length;
     return {
