@@ -1029,14 +1029,28 @@ export function BorgWorkspaceV2() {
     </Dialog>
 
     <Dialog open={toolsOpen} onOpenChange={setToolsOpen}>
-      <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-xl">
-        <DialogHeader><DialogTitle>Internet & API configuration</DialogTitle><DialogDescription>The API credential is stored in Windows Credential Manager. SQLite and JSON contain metadata only.</DialogDescription></DialogHeader>
-        <div className="space-y-5 py-2">
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.025] p-4"><div><p className="text-sm font-medium text-slate-200">Public internet</p><p className="mt-1 text-xs leading-5 text-slate-500">Enable safe page fetch and Ollama web search.</p></div><Switch checked={internetDraft} onCheckedChange={setInternetDraft} /></div>
-          <label className="block"><span className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-300"><KeyRound className="size-4" />Ollama web API key</span><Input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder={toolConfig?.credentialConfigured ? "Credential stored in Windows" : "Paste API key"} disabled={!internetDraft} className="border-white/10 bg-white/4 text-slate-100" /></label>
-          {toolConfig?.credentialConfigured && <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={clearApiKeyDraft} onChange={(event) => setClearApiKeyDraft(event.target.checked)} />Remove the stored credential</label>}
-          <div className="grid grid-cols-3 gap-3 text-sm"><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Configuration</p><p className={`mt-1 ${toolConfig?.configurationState === "connection_failed" ? "text-red-300" : toolConfig?.configurationState === "available" ? "text-[#a7ff4f]" : "text-slate-300"}`}>{statusLabel(toolConfig)}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Page fetch</p><p className={toolConfig?.webFetchAvailable ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{toolConfig?.webFetchAvailable ? "Available" : "Off"}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Web search</p><p className={toolConfig?.webSearchAvailable ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{toolConfig?.webSearchAvailable ? "Available" : "Unavailable"}</p></div></div>
-          {toolConfig?.lastConnectionError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{toolConfig.lastConnectionError}</p>}
+      <DialogContent className="max-h-[88vh] overflow-y-auto border-white/10 bg-[#11161e] text-slate-100 sm:max-w-xl">
+        <DialogHeader><DialogTitle>Runtime & quality</DialogTitle><DialogDescription>Configure public internet access and the local vision model used by BORG&apos;s independent visual-quality gates.</DialogDescription></DialogHeader>
+        <div className="space-y-6 py-2">
+          <section className="space-y-4">
+            <div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Internet</p><p className="mt-1 text-xs leading-5 text-slate-500">The web API credential is stored in Windows Credential Manager. SQLite and JSON keep metadata only.</p></div>
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.025] p-4"><div><p className="text-sm font-medium text-slate-200">Public internet</p><p className="mt-1 text-xs leading-5 text-slate-500">Enable safe page fetch and Ollama web search.</p></div><Switch checked={internetDraft} onCheckedChange={setInternetDraft} /></div>
+            <label className="block"><span className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-300"><KeyRound className="size-4" />Ollama web API key</span><Input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder={toolConfig?.credentialConfigured ? "Credential stored in Windows" : "Paste API key"} disabled={!internetDraft} className="border-white/10 bg-white/4 text-slate-100" /></label>
+            {toolConfig?.credentialConfigured && <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={clearApiKeyDraft} onChange={(event) => setClearApiKeyDraft(event.target.checked)} />Remove the stored credential</label>}
+            <div className="grid grid-cols-3 gap-3 text-sm"><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Configuration</p><p className={`mt-1 ${toolConfig?.configurationState === "connection_failed" ? "text-red-300" : toolConfig?.configurationState === "available" ? "text-[#a7ff4f]" : "text-slate-300"}`}>{statusLabel(toolConfig)}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Page fetch</p><p className={toolConfig?.webFetchAvailable ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{toolConfig?.webFetchAvailable ? "Available" : "Off"}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Web search</p><p className={toolConfig?.webSearchAvailable ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{toolConfig?.webSearchAvailable ? "Available" : "Unavailable"}</p></div></div>
+            {toolConfig?.lastConnectionError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{toolConfig.lastConnectionError}</p>}
+          </section>
+
+          <section className="space-y-4 border-t border-white/8 pt-5">
+            <div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Visual quality</p><p className="mt-1 text-xs leading-5 text-slate-500">Design-directed website work always uses the configured vision model for Visual Director review. The toggle below enables an additional screenshot QA pass for non-design interface tasks.</p></div>
+            <label className="block"><span className="mb-2 block text-sm font-medium text-slate-300">Vision model</span><Input value={visionModelDraft} onChange={(event) => setVisionModelDraft(event.target.value)} placeholder="qwen3-vl:8b" className="border-white/10 bg-white/4 text-slate-100" /></label>
+            <div className={`rounded-lg border p-3 text-xs ${visionConfig?.modelAvailable ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/5 text-[#d9ffb5]" : "border-amber-300/20 bg-amber-300/5 text-amber-100"}`}>
+              <p className="font-medium">{visionConfig?.modelAvailable ? "Visual quality model available" : visionConfig?.availabilityState === "connection_failed" ? "Unable to check Ollama" : "Visual quality model missing"}</p>
+              <p className="mt-1 leading-5 text-slate-400">{visionConfig?.modelAvailable ? `${visionConfig.model} is ready for independent design review.` : visionConfig?.availabilityError ?? "Save this configuration to check whether the model is installed."}</p>
+            </div>
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.025] p-4"><div><p className="text-sm font-medium text-slate-200">Additional screenshot QA</p><p className="mt-1 text-xs leading-5 text-slate-500">Use the generic vision reviewer on interface work that does not already receive a Visual Director pass.</p></div><Switch checked={visionEnabledDraft} onCheckedChange={setVisionEnabledDraft} /></div>
+            <label className="block"><span className="mb-2 block text-sm font-medium text-slate-300">Blocking severity</span><Select value={visionBlockingDraft} onValueChange={(value) => setVisionBlockingDraft(value as "medium" | "high" | "critical")} disabled={!visionEnabledDraft}><SelectTrigger className="w-full border-white/10 bg-white/4 text-slate-200"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem><SelectItem value="critical">Critical</SelectItem></SelectContent></Select></label>
+          </section>
           {toolsError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{toolsError}</p>}
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setToolsOpen(false)} className="border-white/10 bg-transparent text-slate-300">Cancel</Button><Button onClick={() => void saveTools()} disabled={savingTools} className="bg-[#a7ff4f] text-[#071007]">{savingTools ? "Saving…" : "Save configuration"}</Button></DialogFooter>
@@ -1116,24 +1130,13 @@ export function BorgWorkspaceV2() {
           <SidebarGroupContent>
             <SidebarMenu>
               {websiteSessions.map((session) => {
-                const children = sessions
-                  .filter((candidate) => candidate.parentSessionId === session.id)
-                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-                const latest = children[0] ?? session;
                 const activeRootId = activeSession?.parentSessionId ?? activeSession?.id;
                 return <SidebarMenuItem key={session.id}>
-                  <div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeRootId === session.id} onClick={() => void loadSession(latest.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div>
-                  {activeRootId === session.id && children.length > 0 && <details className="ml-7 mt-1">
-                    <summary className="cursor-pointer select-none py-1 text-[10px] uppercase tracking-wide text-slate-600">Build sessions ({children.length})</summary>
-                    <div className="mt-1 space-y-0.5 border-l border-white/8 pl-2">
-                      {children.map((child) => <button key={child.id} type="button" onClick={() => void loadSession(child.id)} className={`block w-full truncate rounded px-2 py-1.5 text-left text-[11px] ${activeSession?.id === child.id ? "bg-white/7 text-slate-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-300"}`}>{child.title.includes(" · ") ? child.title.split(" · ").at(-1) : child.title}</button>)}
-                    </div>
-                  </details>}
+                  <div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeRootId === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div>
                 </SidebarMenuItem>;
               })}
             </SidebarMenu>
             {!websiteSessions.length && <button type="button" onClick={() => setWebsiteOpen(true)} className="w-full rounded-lg border border-dashed border-white/10 px-3 py-4 text-left text-xs leading-5 text-slate-500 hover:border-white/20 hover:text-slate-300">Create your first website to start building with BORG.</button>}
-            {activeTaskId && <Button variant="ghost" size="sm" onClick={() => setRightPanel("changes")} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><History className="size-3.5" />Recent changes{changes.files.length ? ` (${changes.files.length})` : ""}</Button>}
           </SidebarGroupContent>
         </SidebarGroup>
         {legacySessions.length > 0 && <SidebarGroup>
@@ -1147,7 +1150,7 @@ export function BorgWorkspaceV2() {
           <SidebarGroupLabel className="text-slate-500">Settings</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem><SidebarMenuButton onClick={() => setToolsOpen(true)} isActive={toolConfig?.configurationState === "available"} className="text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span>Internet & model tools</span><span className="ml-auto text-[10px] text-slate-600">{statusLabel(toolConfig)}</span></SidebarMenuButton></SidebarMenuItem>
+              <SidebarMenuItem><SidebarMenuButton onClick={() => setToolsOpen(true)} isActive={toolConfig?.configurationState === "available"} className="text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span>Runtime & quality</span><span className="ml-auto text-[10px] text-slate-600">{statusLabel(toolConfig)}</span></SidebarMenuButton></SidebarMenuItem>
               <SidebarMenuItem><SidebarMenuButton onClick={() => setAccessOpen(true)} className="text-slate-400 hover:bg-white/7 hover:text-white"><FolderGit2 /><span>Advanced repository access</span></SidebarMenuButton></SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
@@ -1174,13 +1177,7 @@ export function BorgWorkspaceV2() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div title={runtimeStatus ? `${runtimeStatus.runtime}: ${runtimeStatus.model}` : "Local model status unavailable"} className="hidden items-center gap-2 rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-[10px] text-slate-400 lg:flex">
-            <span className={`size-1.5 rounded-full ${runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable ? "bg-[#a7ff4f]" : "bg-amber-300"}`} />
-            <span className="max-w-44 truncate font-mono">{runtimeStatus?.model ?? activeSession?.model ?? "model unavailable"}</span>
-          </div>
-          {isWebsite && <Button size="sm" variant="outline" onClick={() => setRightPanel("preview")} className="hidden border-white/10 bg-white/4 text-slate-300 sm:inline-flex"><Monitor className="size-3.5" />Preview</Button>}
-          <Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setRightPanel("changes")} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Changes</span></Button>
-          <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || taskBusy}>
+          {!isWebsite && <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || taskBusy}>
             <SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger>
             <SelectContent className="border-white/10 bg-[#151a22] text-slate-100">
               <SelectItem value="plan">Safe mode</SelectItem>
@@ -1188,7 +1185,7 @@ export function BorgWorkspaceV2() {
               <SelectItem value="agent">Autopilot</SelectItem>
               <SelectItem value="ask">Ask only</SelectItem>
             </SelectContent>
-          </Select>
+          </Select>}
           <details className="relative">
             <summary className="list-none cursor-pointer rounded-md border border-white/10 bg-white/4 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Advanced</summary>
             <div className="absolute right-0 z-50 mt-2 w-48 rounded-lg border border-white/10 bg-[#11161e] p-2 shadow-2xl">
