@@ -68,10 +68,39 @@ Write-Host "Checking Windows Credential Manager bridge..."
 $credentialTarget = "BORG Code/LifecycleTest/$([Guid]::NewGuid().ToString('N'))"
 $credentialSecret = "  borg-test-$([Guid]::NewGuid().ToString('N')) with spaces  "
 try {
-    $credentialSecret | & $executable --credential-set $credentialTarget
-    if ($LASTEXITCODE -ne 0) { throw "Credential set command failed." }
-    $roundTrip = (& $executable --credential-get $credentialTarget | Out-String).TrimEnd("`r", "`n")
-    if ($LASTEXITCODE -ne 0 -or $roundTrip -ne $credentialSecret) { throw "Credential did not round-trip exactly through Windows Credential Manager." }
+    $setInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $setInfo.FileName = $executable
+    $setInfo.UseShellExecute = $false
+    $setInfo.CreateNoWindow = $true
+    $setInfo.RedirectStandardInput = $true
+    $setInfo.RedirectStandardError = $true
+    [void]$setInfo.ArgumentList.Add("--credential-set")
+    [void]$setInfo.ArgumentList.Add($credentialTarget)
+    $setProcess = [System.Diagnostics.Process]::new()
+    $setProcess.StartInfo = $setInfo
+    [void]$setProcess.Start()
+    $setProcess.StandardInput.Write($credentialSecret)
+    $setProcess.StandardInput.Close()
+    $setError = $setProcess.StandardError.ReadToEnd()
+    $setProcess.WaitForExit()
+    if ($setProcess.ExitCode -ne 0) { throw "Credential set command failed: $setError" }
+
+    $getInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $getInfo.FileName = $executable
+    $getInfo.UseShellExecute = $false
+    $getInfo.CreateNoWindow = $true
+    $getInfo.RedirectStandardOutput = $true
+    $getInfo.RedirectStandardError = $true
+    [void]$getInfo.ArgumentList.Add("--credential-get")
+    [void]$getInfo.ArgumentList.Add($credentialTarget)
+    $getProcess = [System.Diagnostics.Process]::new()
+    $getProcess.StartInfo = $getInfo
+    [void]$getProcess.Start()
+    $roundTrip = $getProcess.StandardOutput.ReadToEnd()
+    $getError = $getProcess.StandardError.ReadToEnd()
+    $getProcess.WaitForExit()
+    if ($getProcess.ExitCode -ne 0) { throw "Credential get command failed: $getError" }
+    if ($roundTrip -cne $credentialSecret) { throw "Credential did not round-trip exactly through Windows Credential Manager." }
 } finally {
     & $executable --credential-delete $credentialTarget | Out-Null
 }
