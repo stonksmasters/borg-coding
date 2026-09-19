@@ -924,7 +924,7 @@ const server = createServer((request, response) => {
       });
       writeEvent(response, { type: "task.state", taskId, state: body.task?.state ?? "IMPLEMENTING", workflow: body.workflow ?? null });
       await pipeExecution(taskId, session, (event) => writeEvent(response, event), controller);
-      if (session.repositoryPath) {
+      if (session.repositoryPath && !["styles", "page", "component"].includes(session.workflowRole)) {
         const root = rootWorkflowSession(session);
         const deliveredWorkflow = await saveVerifiedFrontendSlice(taskId, root, (event) => writeEvent(response, event));
         if (deliveredWorkflow) await driveWorkflow(root, deliveredWorkflow);
