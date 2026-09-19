@@ -311,18 +311,10 @@ async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, re
     detail: unresolvedReviewFindings.length ? `${detail} ${unresolvedReviewFindings.length} unresolved high/critical review finding(s) remain attached to this continuation.` : detail,
     completed: true,
   });
-  tasks.saveContinuation(continuation);
-  tasks.saveTask({ ...task, state: resultingState, updatedAt: new Date().toISOString() });
-  appendTaskEvent(task.id, status === "recovery_required" ? "TASK_RECOVERY_REQUIRED" : "TASK_CONTINUED", {
-    continuationId: continuation.id,
-    checkpointId: checkpoint.id,
-    previousState,
-    resultingState,
-    restoredMode,
-    repositoryState,
-    resumeAction,
+  const restored = workflow.continueFromCheckpoint(task, continuation, {
     unresolvedReviewFindingIds: unresolvedReviewFindings.map((value) => value.id),
   });
+  syncWorkflowProjection(restored.task, restored.workflow);
   return continuation;
 }
 
