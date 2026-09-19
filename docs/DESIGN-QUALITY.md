@@ -1,6 +1,6 @@
 # Design Quality System
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 
 ## Principle
 
@@ -86,7 +86,11 @@ Screenshots are evidence inputs, not automatically proof of quality.
 
 ## Independent review
 
-A Visual Director or equivalent independent quality gate should review the result after implementation.
+Design-directed website work receives the dedicated Visual Director gate after browser verification. This gate is independent of the implementer and is not duplicated by the generic screenshot QA reviewer.
+
+The runtime also supports an optional generic local vision review for interface tasks that do not already receive the Visual Director pass. Settings report whether the configured Ollama vision model is actually installed before work depends on it.
+
+The Visual Director should review the result after implementation.
 
 The review should focus on observable problems such as:
 
@@ -102,7 +106,7 @@ The review should focus on observable problems such as:
 - interaction ambiguity;
 - obvious unfinished areas.
 
-The reviewer should produce concrete findings tied to evidence.
+The reviewer should produce concrete findings tied to evidence. Separately, the fresh-context code reviewer receives the current slice outcome and acceptance criteria and must mark each criterion pass/fail/not-proven; an unproven required criterion forces repair instead of allowing a generic "looks good" verdict.
 
 ## Repair loop
 

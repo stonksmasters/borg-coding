@@ -44,7 +44,9 @@ function trimContent(message: OllamaMessage, maximum: number): OllamaMessage {
 
 export function modelMessages(messages: OllamaMessage[], maximumCharacters: number): OllamaMessage[] {
   if (JSON.stringify(messages).length <= maximumCharacters) return messages;
-  const pinned = messages.slice(0, 2).map((message, index) => trimContent(message, Math.min(index === 0 ? 14_000 : 8_000, Math.floor(maximumCharacters * 0.3))));
+  const systemBudget = Math.min(30_000, Math.max(4_000, Math.floor(maximumCharacters * 0.55)));
+  const requestBudget = Math.min(10_000, Math.max(2_000, Math.floor(maximumCharacters * 0.18)));
+  const pinned = messages.slice(0, 2).map((message, index) => trimContent(message, index === 0 ? systemBudget : requestBudget));
   const suffix: OllamaMessage[] = [];
   let remaining = maximumCharacters - JSON.stringify(pinned).length - 500;
   for (let index = messages.length - 1; index >= pinned.length; index -= 1) {

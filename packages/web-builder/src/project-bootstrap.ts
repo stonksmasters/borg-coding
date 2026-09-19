@@ -28,14 +28,6 @@ export function prepareWebsiteWorkspace(projectPath: string, forcedKind?: Worksp
   return prepareWorkspaceContract(root, contract);
 }
 
-const templateCopy: Record<WebsiteTemplate, { kicker: string; description: string }> = {
-  "saas-landing": { kicker: "SAAS / PRODUCT", description: "A polished product canvas with room for a decisive hero, product proof, pricing, and conversion-focused calls to action." },
-  portfolio: { kicker: "PORTFOLIO / STORY", description: "A portfolio canvas built to foreground personality, selected work, credibility, and a clear path to contact." },
-  ecommerce: { kicker: "COMMERCE / CATALOG", description: "A commerce canvas prepared for product storytelling, collection discovery, merchandising, and confident purchase paths." },
-  dashboard: { kicker: "PRODUCT / WORKSPACE", description: "An application canvas prepared for navigation, dense information, useful empty states, and responsive operational workflows." },
-  waitlist: { kicker: "LAUNCH / WAITLIST", description: "A focused launch canvas designed around a crisp value proposition, trust signals, and one excellent signup journey." },
-};
-
 export function websiteRoot() {
   return resolve(process.env.BORG_WEBSITES_DIR ?? join(homedir(), "Documents", "BORG Websites"));
 }
@@ -63,7 +55,6 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
   prepareWebsiteWorkspace(projectPath, "vite-react");
   const title = name.trim();
   const template = websiteTemplates.includes(options.template as WebsiteTemplate) ? options.template as WebsiteTemplate : "saas-landing";
-  const starter = templateCopy[template];
   const createdAt = new Date().toISOString();
   const files: Record<string, string> = {
     "package.json": JSON.stringify({
@@ -171,68 +162,34 @@ export function borgLocalApi(): Plugin {
   };
 }
 `,
-    "src/App.tsx": `import { ArrowUpRight } from "lucide-react";
-import { motion } from "motion/react";
-
-export default function App() {
-  const starter = ${JSON.stringify(starter)};
+    "src/App.tsx": `export default function App() {
   return (
-    <main className="site-shell">
-      <section className="starter-hero">
-        <div className="starter-kicker">{starter.kicker}</div>
-        <div className="starter-grid">
-          <div>
-            <motion.h1 initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.55 }}>
-              ${title.replaceAll("{", "").replaceAll("}", "")}
-            </motion.h1>
-            <p className="starter-copy">{starter.description}</p>
-          </div>
-          <div className="starter-meta">
-            <span>React 19</span><span>Tailwind 4</span><span>Motion</span><span>Design tokens</span>
-          </div>
-        </div>
-        <div className="starter-rule" />
-        <div className="starter-foot"><span>Awaiting art direction</span><ArrowUpRight size={16} /></div>
+    <main className="site-shell" id="app-root">
+      <section className="starter-placeholder" aria-label="BORG website canvas">
+        <p>BORG is preparing the approved design.</p>
       </section>
     </main>
   );
 }
 `,
     "src/design/tokens.css": `:root {
-  --color-ink: #0b0d0f;
-  --color-paper: #f3f0e9;
-  --color-muted: #8f949b;
-  --color-line: rgba(243, 240, 233, 0.14);
-  --color-accent: #b8ff5a;
-  --font-display: "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
-  --font-body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --container: 1240px;
-  --section-space: clamp(5rem, 10vw, 9rem);
+  --color-background: #ffffff;
+  --color-foreground: #111111;
+  --font-body: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --container: 1200px;
 }
 `,
     "src/style.css": `@import "tailwindcss";
 @import "./design/tokens.css";
 
 * { box-sizing: border-box; }
-html { background: var(--color-ink); color-scheme: dark; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--color-ink); color: var(--color-paper); font-family: var(--font-body); text-rendering: optimizeLegibility; }
-button, a { font: inherit; }
-img { display: block; max-width: 100%; }
+html { background: var(--color-background); }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--color-background); color: var(--color-foreground); font-family: var(--font-body); text-rendering: optimizeLegibility; }
+button, input, textarea, select { font: inherit; }
+img, svg { display: block; max-width: 100%; }
 .site-shell { min-height: 100vh; }
-.starter-hero { min-height: 100vh; display: flex; flex-direction: column; justify-content: space-between; width: min(calc(100% - 3rem), var(--container)); margin: 0 auto; padding: clamp(2rem, 5vw, 4rem) 0 2rem; }
-.starter-kicker { color: var(--color-accent); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.18em; }
-.starter-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 0.28fr); align-items: end; gap: clamp(3rem, 8vw, 9rem); }
-.starter-grid h1 { max-width: 10ch; margin: 0; font-family: var(--font-display); font-size: clamp(4rem, 11vw, 9.5rem); font-weight: 600; letter-spacing: -0.065em; line-height: 0.82; text-transform: uppercase; }
-.starter-copy { max-width: 45rem; margin: 2rem 0 0; color: #b6bac0; font-size: clamp(1rem, 1.5vw, 1.25rem); line-height: 1.65; }
-.starter-meta { display: grid; gap: 0.6rem; color: var(--color-muted); font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; }
-.starter-rule { height: 1px; margin-top: clamp(3rem, 7vw, 7rem); background: var(--color-line); }
-.starter-foot { display: flex; align-items: center; justify-content: space-between; padding-top: 1rem; color: var(--color-muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; }
-@media (max-width: 720px) {
-  .starter-hero { width: min(calc(100% - 2rem), var(--container)); }
-  .starter-grid { grid-template-columns: 1fr; align-items: start; gap: 2rem; }
-  .starter-grid h1 { font-size: clamp(3.6rem, 18vw, 6.2rem); line-height: 0.86; }
-  .starter-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
+.starter-placeholder { min-height: 100vh; display: grid; place-items: center; padding: 2rem; }
+.starter-placeholder p { margin: 0; color: #737373; font-size: 0.875rem; }
 `,
     [marker]: JSON.stringify({ id: randomUUID(), name: title, slug, framework: "vite-react", template, starterVersion: 3, designPipeline: "premium-v1", status: "new", originalBrief: options.originalBrief?.trim() || null, createdAt, lastOpenedAt: createdAt }, null, 2) + "\n",
   };

@@ -24,8 +24,36 @@ test("approved website state yields scoped, durable context and registries", () 
     assert.ok(model.pages.length > 0);
     model.components.push({ id: "product-card", name: "Product Card", files: ["src/components/ProductCard.tsx"], usedBy: [], dependencies: [], variants: [], status: "planned", acceptanceCriteria: ["Card is responsive"] });
     writeProjectModel(root, model);
-    const compiled = compileFrontendContext({ root, phase: "frontend", sliceIndex: 1, scope: { type: "component", id: "product-card" }, budgetCharacters: 12_000 });
-    assert.match(compiled.text, /Build a product store/);
+    const approvedPlan = {
+      ...fallbackProjectPlan("Authoritative product store", "ecommerce"),
+      status: "approved" as const,
+      approvedAt: new Date().toISOString(),
+    };
+    const compiled = compileFrontendContext({
+      root,
+      phase: "frontend",
+      sliceIndex: 1,
+      scope: { type: "component", id: "product-card" },
+      budgetCharacters: 16_000,
+      authority: {
+        plan: approvedPlan,
+        state: {
+          version: 2,
+          current: 1,
+          total: approvedPlan.slices.length,
+          currentTitle: approvedPlan.slices[1].title,
+          status: "working",
+          brief: approvedPlan.slices[1].outcome,
+          lastTaskId: "slice-task",
+          feedback: [],
+          planRevision: approvedPlan.revision,
+          backendRequired: approvedPlan.backendRequired,
+        },
+      },
+      productContract: "PINNED PRODUCT CONTRACT: preserve global ecommerce hierarchy.",
+    });
+    assert.match(compiled.text, /PINNED PRODUCT CONTRACT/);
+    assert.match(compiled.text, /Authoritative product store/);
     assert.match(compiled.text, /ProductCard/);
     assert.doesNotMatch(compiled.text, /UnrelatedChart/);
     assert.ok(compiled.characters <= compiled.budgetCharacters);
@@ -52,6 +80,15 @@ test("exact model input and manifest survive reopening the local task database",
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("workflow run view surfaces pending visual baseline approval as the next operator gate", () => {
+  const task = { ...createTask({ id: "baseline-status", projectId: "local", request: "Build storefront" }), state: "DELIVERY_READY" as const };
+  const restored = deriveWorkflowStatus(task, [], null, null, null, { baselineApprovalCount: 2 });
+  assert.equal(restored.run.stage, "awaiting_approval");
+  assert.match(restored.run.headline, /Visual baseline approval/);
+  assert.match(restored.nextAction, /Evidence/);
+  assert.equal(restored.currentAction, "waiting for visual baseline approval");
+});
+
 test("workflow status after restart follows durable failure and verification evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-workflow-status-"));
   const path = join(root, "tasks.sqlite");
@@ -66,7 +103,7 @@ test("workflow status after restart follows durable failure and verification evi
     const restored = deriveWorkflowStatus(reopened.findTask(task.id)!, reopened.listEvents(task.id), null, null);
     assert.equal(restored.currentAction, "failed");
     assert.equal(restored.verificationPassed, false);
-    assert.match(restored.nextAction, /Inspect the failure/);
+    assert.match(restored.nextAction, /Inspect the blocking evidence/);
     assert.equal(restored.activity.length, 2);
     reopened.close();
   } finally { rmSync(root, { recursive: true, force: true }); }

@@ -8,9 +8,11 @@ import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel
 import { PlanPanel } from "@/components/workspace/plan-panel";
 import { DocsPanel, type BuildDoc } from "@/components/workspace/docs-panel";
 import { TerminalPanel, type TaskProcess, type TaskProcessEvent } from "@/components/workspace/terminal-panel";
-import { DesignPanel, type DesignBriefView, type DesignReviewView } from "@/components/workspace/design-panel";
-import { isUnsupportedLanguageTool, stageProgress, toolProgress } from "./agent-progress";
-import { executionIsRunning, taskIsRunning, taskNeedsAttention, taskProgress } from "./task-activity";
+import type { DesignBriefView, DesignReviewView } from "@/components/workspace/design-panel";
+import { EvidencePanel } from "@/components/workspace/evidence-panel";
+import { RunStatusCard, type RunView } from "@/components/workspace/run-status-card";
+import { isUnsupportedLanguageTool, toolProgress } from "./agent-progress";
+import { executionIsRunning, taskIsRunning, taskNeedsAttention } from "./task-activity";
 import { previewChangeFingerprint, shouldRefreshPreview } from "./preview-refresh";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -35,10 +37,9 @@ const WEBSITE_EXAMPLES = [
   "Build an internal operations dashboard with a sidebar, KPI cards, activity table, useful empty states, and responsive navigation.",
   "Build a booking website for a premium local service business with services, trust signals, availability CTA, FAQ, and lead form.",
 ] as const;
-const BUILDER_STEPS = ["Understand", "Design", "Build", "Test", "Ready"] as const;
 type PermissionMode = "ask" | "plan" | "edit" | "agent";
 type ChatSession = { id: string; title: string; createdAt: string; updatedAt: string; activeMode: PermissionMode; repositoryPath: string | null; workspaceId: string; provider: string; model: string; parentSessionId: string | null; workflowRole: "primary" | "frontend_slice" | "backend" };
-type WorkflowStatus = { source: "sqlite" | "legacy_projection"; workflowVersion: number | null; taskState: string; phase: string; status: string; detail: string | null; sliceIndex: number | null; sliceTotal: number | null; sliceTitle: string | null; objective: string; currentAction: string; completed: string[]; pending: string[]; verificationPassed: boolean | null; repairAttempt: number; nextAction: string; activity: Array<{ type: string; occurredAt: string; detail: string }> };
+type WorkflowStatus = { source: "sqlite" | "legacy_projection"; workflowVersion: number | null; taskState: string; phase: string; status: string; detail: string | null; sliceIndex: number | null; sliceTotal: number | null; sliceTitle: string | null; objective: string; currentAction: string; completed: string[]; pending: string[]; verificationPassed: boolean | null; repairAttempt: number; nextAction: string; run: RunView; activity: Array<{ type: string; occurredAt: string; detail: string }> };
 type ContextRecord = { id: string; role: string; model: string; sliceId: string | null; createdAt: string; inputSha256: string; manifest: Array<{ path: string; reason: string; characters: number; sha256: string }> };
 type ChatMessage = RenderableMessage & { sessionId: string; taskId: string | null; createdAt: string; metadata?: Record<string, unknown> };
 type AccessConfig = { repositoryPath: string | null; documents: string[]; repositoryName: string | null; documentNames: string[]; updatedAt: string };
@@ -53,6 +54,19 @@ type ToolConfig = {
   updatedAt: string;
 };
 type RuntimeStatus = { runtime: string; runtimeConnected: boolean; model: string; modelAvailable: boolean };
+type VisionConfig = {
+  enabled: boolean;
+  provider: "ollama";
+  model: string;
+  maxScreenshots: number;
+  timeoutMs: number;
+  blockingSeverity: "medium" | "high" | "critical";
+  configured: boolean;
+  modelAvailable: boolean;
+  availabilityState: "available" | "missing" | "connection_failed";
+  availabilityError: string | null;
+  updatedAt: string;
+};
 type Approval = { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null };
 type Escalation = { id: string; sessionId: string; taskId: string; fromMode: "plan"; requestedMode: "edit"; reason: string; planText: string; createdAt: string };
 type TaskCheckpoint = { id: string; taskId: string; sessionId: string | null; name: string; kind: string; taskState: string; mode: PermissionMode; repositoryPath: string | null; worktreePath: string | null; baseCommit: string | null; contextSummary: string; completedSteps: string[]; remainingSteps: string[]; createdAt: string };
@@ -60,6 +74,7 @@ type TaskContinuation = { id: string; checkpointId: string; status: "ready" | "r
 type SliceState = { current: number; total: number; currentTitle: string; status: "plan_pending" | "ready" | "working" | "awaiting_feedback" | "frontend_complete"; backendRequired: boolean };
 type ReviewFinding = { id: string; fingerprint: string; state: "open" | "accepted" | "fixed" | "waived" | "false_positive" | "reopened" | "superseded"; firstSeenRunId: string; lastSeenRunId: string; firstSeenAt: string; lastSeenAt: string; finding: { severity: "info" | "low" | "medium" | "high" | "critical"; discipline: string; category: string; title: string; description: string; file?: string; line?: number; evidence?: string; remediation?: string } };
 type ReviewDecision = { id: string; findingId: string; action: string; resultingState: ReviewFinding["state"]; reason: string; evidence: string[]; actorType: string; actorId: string; createdAt: string };
+type BaselineCandidate = { profileId: string; screenshotName: string; candidatePath: string; candidateSha256: string; width: number; height: number };
 type StreamEvent = {
   type: string;
   task?: { id: string; request: string; state: string };
@@ -127,15 +142,21 @@ export function BorgWorkspaceV2() {
   const [clearApiKeyDraft, setClearApiKeyDraft] = useState(false);
   const [toolsError, setToolsError] = useState("");
   const [savingTools, setSavingTools] = useState(false);
+  const [visionConfig, setVisionConfig] = useState<VisionConfig | null>(null);
+  const [visionEnabledDraft, setVisionEnabledDraft] = useState(false);
+  const [visionModelDraft, setVisionModelDraft] = useState("qwen3-vl:8b");
+  const [visionBlockingDraft, setVisionBlockingDraft] = useState<"medium" | "high" | "critical">("high");
   const [sessionError, setSessionError] = useState("");
-  const [progress, setProgress] = useState<{ title: string; detail: string } | null>(null);
   const [liveActivity, setLiveActivity] = useState<string[]>([]);
   const [activities, setActivities] = useState<AgentActivity[]>([]);
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus | null>(null);
+  const [baselineCandidates, setBaselineCandidates] = useState<BaselineCandidate[]>([]);
+  const [baselineBusy, setBaselineBusy] = useState(false);
+  const [baselineError, setBaselineError] = useState("");
   const [contextRecords, setContextRecords] = useState<ContextRecord[]>([]);
   const [selectedContext, setSelectedContext] = useState<(ContextRecord & { inputText: string }) | null>(null);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
-  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "docs" | "terminal" | "design">("preview");
+  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "changes" | "evidence" | "logs" | "memory">("preview");
   const [buildDocs, setBuildDocs] = useState<BuildDoc[]>([]);
   const [sliceState, setSliceState] = useState<SliceState | null>(null);
   const [sliceFeedback, setSliceFeedback] = useState("");
@@ -185,12 +206,6 @@ export function BorgWorkspaceV2() {
   const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
   const canStop = streaming && !executionIsRunning(taskState);
   const actionLabel = executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
-  const currentProgress = progress
-    ?? (taskState === "COMPLETE" && sliceState?.status === "awaiting_feedback"
-      ? { title: `Slice ${sliceState.current + 1} is verified`, detail: "The slice is checkpointed and the next approved slice starts automatically. Review Preview, Changes, Docs, and verification evidence at any time." }
-      : taskState === "COMPLETE" && sliceState?.status === "frontend_complete"
-        ? { title: "Frontend complete", detail: "All approved frontend slices passed their completion gates." }
-        : taskProgress(taskState));
   const activityMessages = useMemo(() => messages.filter((message) => message.role === "tool" || (message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.role !== "tool" && !(message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const activityItems = useMemo(() => [...activityMessages.map((message) => message.text), ...liveActivity].slice(-60), [activityMessages, liveActivity]);
@@ -200,14 +215,6 @@ export function BorgWorkspaceV2() {
   }, [escalation, messages]);
   const runningProcesses = useMemo(() => processes.filter((process) => process.status === "starting" || process.status === "running"), [processes]);
   const previewProcess = useMemo(() => processes.find((process) => process.kind === "dev_server" && (process.status === "starting" || process.status === "running")) ?? processes.findLast((process) => process.kind === "dev_server") ?? null, [processes]);
-  const builderStep = useMemo(() => {
-    if (taskState === "COMPLETE" && sliceState?.status === "frontend_complete") return 4;
-    if (["DELIVERY_READY", "VERIFYING", "REVIEWING", "REPAIRING"].includes(taskState) || (taskState === "COMPLETE" && sliceState?.status === "awaiting_feedback")) return 3;
-    if (["IMPLEMENTING"].includes(taskState)) return 2;
-    if (designBrief || ["AWAITING_APPROVAL"].includes(taskState) || (taskState === "COMPLETE" && sliceState?.status === "ready")) return 1;
-    return 0;
-  }, [designBrief, sliceState?.status, taskState]);
-
   const activatePreview = useCallback(async (sessionId: string) => {
     const response = await fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST" });
     if (response.ok) {
@@ -233,7 +240,7 @@ export function BorgWorkspaceV2() {
   }, []);
 
   useEffect(() => {
-    if (!activeTaskId || !isWebsite) { setWorkflowStatus(null); setContextRecords([]); setSelectedContext(null); return; }
+    if (!activeTaskId || !isWebsite) { setWorkflowStatus(null); setBaselineCandidates([]); setContextRecords([]); setSelectedContext(null); return; }
     setSelectedContext(null);
     let active = true;
     const refresh = async () => {
@@ -242,7 +249,11 @@ export function BorgWorkspaceV2() {
         fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/contexts`),
       ]);
       if (!active) return;
-      if (statusResponse.ok) setWorkflowStatus((await statusResponse.json() as { status: WorkflowStatus }).status);
+      if (statusResponse.ok) {
+        const result = await statusResponse.json() as { status: WorkflowStatus; baselineCandidates?: BaselineCandidate[] };
+        setWorkflowStatus(result.status);
+        setBaselineCandidates(result.baselineCandidates ?? []);
+      }
       if (contextsResponse.ok) setContextRecords((await contextsResponse.json() as { contexts: ContextRecord[] }).contexts);
     };
     void refresh().catch(() => {});
@@ -333,7 +344,6 @@ export function BorgWorkspaceV2() {
       if (restoredPlan && ["PLANNING", "AWAITING_APPROVAL", "CANCELLED"].includes(result.task?.state ?? "")) setRightPanel("plan");
       else if (result.session.repositoryPath) setRightPanel("preview");
     }
-    setProgress(null);
     setLiveActivity([]);
     if (resetWorkspace) {
       setActivities([]);
@@ -407,6 +417,14 @@ export function BorgWorkspaceV2() {
         setToolConfig(result.tools);
         setInternetDraft(result.tools.internetEnabled);
       }),
+      fetch(`${API}/api/vision`).then(async (response) => {
+        if (!response.ok) return;
+        const result = await response.json() as { vision: VisionConfig };
+        setVisionConfig(result.vision);
+        setVisionEnabledDraft(result.vision.enabled);
+        setVisionModelDraft(result.vision.model);
+        setVisionBlockingDraft(result.vision.blockingSeverity);
+      }),
       refreshSessions(),
     ]).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to initialize workspace."));
   }, [refreshSessions]);
@@ -450,17 +468,6 @@ export function BorgWorkspaceV2() {
   }, [activeSession?.repositoryPath]);
 
   useEffect(() => {
-    if (!activeSession?.repositoryPath || streaming || taskIsRunning(taskState)) return;
-    const rootId = activeSession.parentSessionId ?? activeSession.id;
-    const children = sessions.filter((session) => session.parentSessionId === rootId && session.workflowRole === "frontend_slice")
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    const latest = children[0];
-    if (latest && latest.id !== activeSession.id && (sliceState?.status === "ready" || sliceState?.status === "awaiting_feedback")) {
-      void loadSession(latest.id).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to follow the active frontend build."));
-    }
-  }, [activeSession, loadSession, sessions, sliceState?.status, streaming, taskState]);
-
-  useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming]);
 
@@ -488,7 +495,7 @@ export function BorgWorkspaceV2() {
         .finally(() => { polling = false; });
     };
     poll();
-    const interval = taskIsRunning(taskState) || rightPanel === "terminal" ? 750 : 2500;
+    const interval = taskIsRunning(taskState) || rightPanel === "logs" ? 750 : 2500;
     const timer = window.setInterval(poll, interval);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [activeTaskId, refreshProcesses, rightPanel, taskState]);
@@ -636,30 +643,26 @@ export function BorgWorkspaceV2() {
       setDesignBrief(event.brief);
       setDesignReview(null);
       setDesignRefinementCount(0);
-      setRightPanel("design");
+      setRightPanel("evidence");
     } else if (event.type === "design.review.completed" && event.designReview) {
       setDesignReview(event.designReview);
-      setRightPanel("design");
+      setRightPanel("evidence");
     } else if (event.type === "design.refinement.scheduled") {
       setDesignRefinementCount(event.refinement ?? 0);
       if (event.maximum) setMaxDesignRefinements(event.maximum);
-      setRightPanel("design");
+      setRightPanel("evidence");
     } else if (event.type === "design.review.blocked") {
       if (event.designReview) setDesignReview(event.designReview);
-      setRightPanel("design");
+      setRightPanel("evidence");
     } else if (event.type === "activity.updated" && event.activity) {
       const activity = { ...event.activity, taskId: event.taskId ?? event.activity.taskId };
       setActivities((current) => [...current.filter((item) => item.id !== activity.id), activity].slice(-100));
-      setProgress({ title: activity.title, detail: activity.detail ?? `BORG is ${activity.phase} the current task.` });
     } else if (event.type === "stage.updated" && event.status === "active" && event.stage) {
-      const next = stageProgress(event.stage);
-      if (next) setProgress(next);
+      // Durable RunView is the visible source of truth; stage events remain diagnostic history.
     } else if (event.type === "tool.started") {
       const tool = event.tool ?? "tool";
       if (event.taskId && ["worktree_command", "verification_run", "browser_server_start", "browser_server_stop"].includes(tool)) void refreshProcesses(event.taskId);
       const title = toolProgress(tool, event.input);
-      const path = typeof event.input?.path === "string" ? event.input.path : "";
-      setProgress({ title, detail: path ? `Working in ${path}.` : "BORG is continuing this part of the task." });
       setLiveActivity((current) => [...current.slice(-39), `${title} · ${tool}`]);
     } else if (event.type === "tool.completed") {
       if (event.taskId && ["worktree_write", "worktree_patch", "worktree_command", "git_diff", "git_status"].includes(event.tool ?? "")) {
@@ -731,7 +734,6 @@ export function BorgWorkspaceV2() {
     abortRef.current = controller;
     liveAssistantId.current = null;
     setStreaming(true);
-    setProgress({ title: "Reading your request", detail: "BORG will review the project, then show its proposed design choices in the plan." });
     setLiveActivity([]);
     setActivities([]);
     setChanges(EMPTY_CHANGE_SET);
@@ -762,22 +764,43 @@ export function BorgWorkspaceV2() {
     }
   }
 
-  async function startSliceSession(action: "initial" | "advance" | "revise" | "backend") {
+  async function acceptVisualBaselines() {
+    if (!activeTaskId || !baselineCandidates.length || baselineBusy) return;
+    setBaselineBusy(true);
+    setBaselineError("");
+    try {
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/visual-baselines`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ candidates: baselineCandidates }),
+      });
+      const result = await response.json() as { accepted?: unknown[]; workflowStarted?: boolean; error?: string };
+      if (!response.ok || !result.accepted) throw new Error(result.error ?? "Unable to accept visual baselines.");
+      setBaselineCandidates([]);
+      if (activeSession) await loadSession(activeSession.id, { restorePreview: false, resetWorkspace: false });
+    } catch (error) {
+      setBaselineError(error instanceof Error ? error.message : "Unable to accept visual baselines.");
+    } finally {
+      setBaselineBusy(false);
+    }
+  }
+
+  async function startBackendPhase() {
     const feedback = sliceFeedback.trim();
-    if (!activeSession || sliceBusy || ((action === "revise" || action === "backend") && !feedback)) return;
+    if (!activeSession || sliceBusy) return;
     setSliceBusy(true);
     try {
       const response = await fetch(`${API}/api/frontend-workflow/continue`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: activeSession.id, action, feedback }),
+        body: JSON.stringify({ sessionId: activeSession.id, action: "backend", feedback: feedback || "Plan the approved backend phase from the finished frontend contract." }),
       });
       const result = await response.json() as { session?: ChatSession; error?: string };
-      if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to start the next build session.");
+      if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to start the backend phase.");
       setSliceFeedback("");
       await refreshSessions(result.session.id);
     } catch (error) {
-      setSessionError(error instanceof Error ? error.message : "Unable to start the next slice.");
+      setSessionError(error instanceof Error ? error.message : "Unable to start the backend phase.");
     } finally { setSliceBusy(false); }
   }
 
@@ -797,7 +820,6 @@ export function BorgWorkspaceV2() {
         setEscalation(null);
         setPlanApproval(false);
         setTaskState("COMPLETE");
-        setProgress({ title: "Frontend plan approved", detail: "The roadmap is frozen. Starting slice 1 now." });
         setRightPanel("preview");
         await refreshDocs(activeTaskId);
         if (result.startedSession) {
@@ -812,7 +834,6 @@ export function BorgWorkspaceV2() {
         setPlanApproval(false);
         setTaskState(result.task?.state ?? "IMPLEMENTING");
         setStreaming(true);
-        setProgress(stageProgress("Implementation"));
         changeFingerprintRef.current = "clean";
         setRightPanel("preview");
         await activatePreview(activeSession.id);
@@ -968,14 +989,20 @@ export function BorgWorkspaceV2() {
     setSavingTools(true);
     setToolsError("");
     try {
-      const response = await fetch(`${API}/api/tools`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ internetEnabled: internetDraft, apiKey: apiKeyDraft, clearApiKey: clearApiKeyDraft }) });
-      const result = await response.json() as { tools?: ToolConfig; error?: string };
-      if (!response.ok || !result.tools) throw new Error(result.error ?? "Unable to save internet configuration.");
-      setToolConfig(result.tools);
+      const [toolResponse, visionResponse] = await Promise.all([
+        fetch(`${API}/api/tools`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ internetEnabled: internetDraft, apiKey: apiKeyDraft, clearApiKey: clearApiKeyDraft }) }),
+        fetch(`${API}/api/vision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: visionEnabledDraft, model: visionModelDraft, blockingSeverity: visionBlockingDraft }) }),
+      ]);
+      const toolResult = await toolResponse.json() as { tools?: ToolConfig; error?: string };
+      const visionResult = await visionResponse.json() as { vision?: VisionConfig; error?: string };
+      if (!toolResponse.ok || !toolResult.tools) throw new Error(toolResult.error ?? "Unable to save internet configuration.");
+      if (!visionResponse.ok || !visionResult.vision) throw new Error(visionResult.error ?? "Unable to save visual quality configuration.");
+      setToolConfig(toolResult.tools);
+      setVisionConfig(visionResult.vision);
       setApiKeyDraft("");
       setClearApiKeyDraft(false);
       setToolsOpen(false);
-    } catch (error) { setToolsError(error instanceof Error ? error.message : "Unable to save internet configuration."); }
+    } catch (error) { setToolsError(error instanceof Error ? error.message : "Unable to save runtime configuration."); }
     finally { setSavingTools(false); }
   }
 
@@ -1031,14 +1058,28 @@ export function BorgWorkspaceV2() {
     </Dialog>
 
     <Dialog open={toolsOpen} onOpenChange={setToolsOpen}>
-      <DialogContent className="border-white/10 bg-[#11161e] text-slate-100 sm:max-w-xl">
-        <DialogHeader><DialogTitle>Internet & API configuration</DialogTitle><DialogDescription>The API credential is stored in Windows Credential Manager. SQLite and JSON contain metadata only.</DialogDescription></DialogHeader>
-        <div className="space-y-5 py-2">
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.025] p-4"><div><p className="text-sm font-medium text-slate-200">Public internet</p><p className="mt-1 text-xs leading-5 text-slate-500">Enable safe page fetch and Ollama web search.</p></div><Switch checked={internetDraft} onCheckedChange={setInternetDraft} /></div>
-          <label className="block"><span className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-300"><KeyRound className="size-4" />Ollama web API key</span><Input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder={toolConfig?.credentialConfigured ? "Credential stored in Windows" : "Paste API key"} disabled={!internetDraft} className="border-white/10 bg-white/4 text-slate-100" /></label>
-          {toolConfig?.credentialConfigured && <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={clearApiKeyDraft} onChange={(event) => setClearApiKeyDraft(event.target.checked)} />Remove the stored credential</label>}
-          <div className="grid grid-cols-3 gap-3 text-sm"><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Configuration</p><p className={`mt-1 ${toolConfig?.configurationState === "connection_failed" ? "text-red-300" : toolConfig?.configurationState === "available" ? "text-[#a7ff4f]" : "text-slate-300"}`}>{statusLabel(toolConfig)}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Page fetch</p><p className={toolConfig?.webFetchAvailable ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{toolConfig?.webFetchAvailable ? "Available" : "Off"}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Web search</p><p className={toolConfig?.webSearchAvailable ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{toolConfig?.webSearchAvailable ? "Available" : "Unavailable"}</p></div></div>
-          {toolConfig?.lastConnectionError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{toolConfig.lastConnectionError}</p>}
+      <DialogContent className="max-h-[88vh] overflow-y-auto border-white/10 bg-[#11161e] text-slate-100 sm:max-w-xl">
+        <DialogHeader><DialogTitle>Runtime & quality</DialogTitle><DialogDescription>Configure public internet access and the local vision model used by BORG&apos;s independent visual-quality gates.</DialogDescription></DialogHeader>
+        <div className="space-y-6 py-2">
+          <section className="space-y-4">
+            <div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Internet</p><p className="mt-1 text-xs leading-5 text-slate-500">The web API credential is stored in Windows Credential Manager. SQLite and JSON keep metadata only.</p></div>
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.025] p-4"><div><p className="text-sm font-medium text-slate-200">Public internet</p><p className="mt-1 text-xs leading-5 text-slate-500">Enable safe page fetch and Ollama web search.</p></div><Switch checked={internetDraft} onCheckedChange={setInternetDraft} /></div>
+            <label className="block"><span className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-300"><KeyRound className="size-4" />Ollama web API key</span><Input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder={toolConfig?.credentialConfigured ? "Credential stored in Windows" : "Paste API key"} disabled={!internetDraft} className="border-white/10 bg-white/4 text-slate-100" /></label>
+            {toolConfig?.credentialConfigured && <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={clearApiKeyDraft} onChange={(event) => setClearApiKeyDraft(event.target.checked)} />Remove the stored credential</label>}
+            <div className="grid grid-cols-3 gap-3 text-sm"><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Configuration</p><p className={`mt-1 ${toolConfig?.configurationState === "connection_failed" ? "text-red-300" : toolConfig?.configurationState === "available" ? "text-[#a7ff4f]" : "text-slate-300"}`}>{statusLabel(toolConfig)}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Page fetch</p><p className={toolConfig?.webFetchAvailable ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{toolConfig?.webFetchAvailable ? "Available" : "Off"}</p></div><div className="rounded-md border border-white/8 p-3"><p className="text-slate-500">Web search</p><p className={toolConfig?.webSearchAvailable ? "mt-1 text-[#a7ff4f]" : "mt-1 text-slate-500"}>{toolConfig?.webSearchAvailable ? "Available" : "Unavailable"}</p></div></div>
+            {toolConfig?.lastConnectionError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{toolConfig.lastConnectionError}</p>}
+          </section>
+
+          <section className="space-y-4 border-t border-white/8 pt-5">
+            <div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Visual quality</p><p className="mt-1 text-xs leading-5 text-slate-500">Design-directed website work always uses the configured vision model for Visual Director review. The toggle below enables an additional screenshot QA pass for non-design interface tasks.</p></div>
+            <label className="block"><span className="mb-2 block text-sm font-medium text-slate-300">Vision model</span><Input value={visionModelDraft} onChange={(event) => setVisionModelDraft(event.target.value)} placeholder="qwen3-vl:8b" className="border-white/10 bg-white/4 text-slate-100" /></label>
+            <div className={`rounded-lg border p-3 text-xs ${visionConfig?.modelAvailable ? "border-[#a7ff4f]/20 bg-[#a7ff4f]/5 text-[#d9ffb5]" : "border-amber-300/20 bg-amber-300/5 text-amber-100"}`}>
+              <p className="font-medium">{visionConfig?.modelAvailable ? "Visual quality model available" : visionConfig?.availabilityState === "connection_failed" ? "Unable to check Ollama" : "Visual quality model missing"}</p>
+              <p className="mt-1 leading-5 text-slate-400">{visionConfig?.modelAvailable ? `${visionConfig.model} is ready for independent design review.` : visionConfig?.availabilityError ?? "Save this configuration to check whether the model is installed."}</p>
+            </div>
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.025] p-4"><div><p className="text-sm font-medium text-slate-200">Additional screenshot QA</p><p className="mt-1 text-xs leading-5 text-slate-500">Use the generic vision reviewer on interface work that does not already receive a Visual Director pass.</p></div><Switch checked={visionEnabledDraft} onCheckedChange={setVisionEnabledDraft} /></div>
+            <label className="block"><span className="mb-2 block text-sm font-medium text-slate-300">Blocking severity</span><Select value={visionBlockingDraft} onValueChange={(value) => setVisionBlockingDraft(value as "medium" | "high" | "critical")} disabled={!visionEnabledDraft}><SelectTrigger className="w-full border-white/10 bg-white/4 text-slate-200"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-[#151a22] text-slate-100"><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem><SelectItem value="critical">Critical</SelectItem></SelectContent></Select></label>
+          </section>
           {toolsError && <p className="rounded-md border border-red-400/20 bg-red-400/8 px-3 py-2 text-sm text-red-200">{toolsError}</p>}
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setToolsOpen(false)} className="border-white/10 bg-transparent text-slate-300">Cancel</Button><Button onClick={() => void saveTools()} disabled={savingTools} className="bg-[#a7ff4f] text-[#071007]">{savingTools ? "Saving…" : "Save configuration"}</Button></DialogFooter>
@@ -1118,24 +1159,13 @@ export function BorgWorkspaceV2() {
           <SidebarGroupContent>
             <SidebarMenu>
               {websiteSessions.map((session) => {
-                const children = sessions
-                  .filter((candidate) => candidate.parentSessionId === session.id)
-                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-                const latest = children[0] ?? session;
                 const activeRootId = activeSession?.parentSessionId ?? activeSession?.id;
                 return <SidebarMenuItem key={session.id}>
-                  <div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeRootId === session.id} onClick={() => void loadSession(latest.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div>
-                  {activeRootId === session.id && children.length > 0 && <details className="ml-7 mt-1">
-                    <summary className="cursor-pointer select-none py-1 text-[10px] uppercase tracking-wide text-slate-600">Build sessions ({children.length})</summary>
-                    <div className="mt-1 space-y-0.5 border-l border-white/8 pl-2">
-                      {children.map((child) => <button key={child.id} type="button" onClick={() => void loadSession(child.id)} className={`block w-full truncate rounded px-2 py-1.5 text-left text-[11px] ${activeSession?.id === child.id ? "bg-white/7 text-slate-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-300"}`}>{child.title.includes(" · ") ? child.title.split(" · ").at(-1) : child.title}</button>)}
-                    </div>
-                  </details>}
+                  <div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeRootId === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div>
                 </SidebarMenuItem>;
               })}
             </SidebarMenu>
             {!websiteSessions.length && <button type="button" onClick={() => setWebsiteOpen(true)} className="w-full rounded-lg border border-dashed border-white/10 px-3 py-4 text-left text-xs leading-5 text-slate-500 hover:border-white/20 hover:text-slate-300">Create your first website to start building with BORG.</button>}
-            {activeTaskId && <Button variant="ghost" size="sm" onClick={() => setRightPanel("changes")} className="mt-2 w-full justify-start gap-2 text-xs text-slate-500"><History className="size-3.5" />Recent changes{changes.files.length ? ` (${changes.files.length})` : ""}</Button>}
           </SidebarGroupContent>
         </SidebarGroup>
         {legacySessions.length > 0 && <SidebarGroup>
@@ -1149,7 +1179,7 @@ export function BorgWorkspaceV2() {
           <SidebarGroupLabel className="text-slate-500">Settings</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem><SidebarMenuButton onClick={() => setToolsOpen(true)} isActive={toolConfig?.configurationState === "available"} className="text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span>Internet & model tools</span><span className="ml-auto text-[10px] text-slate-600">{statusLabel(toolConfig)}</span></SidebarMenuButton></SidebarMenuItem>
+              <SidebarMenuItem><SidebarMenuButton onClick={() => setToolsOpen(true)} isActive={toolConfig?.configurationState === "available"} className="text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span>Runtime & quality</span><span className="ml-auto text-[10px] text-slate-600">{statusLabel(toolConfig)}</span></SidebarMenuButton></SidebarMenuItem>
               <SidebarMenuItem><SidebarMenuButton onClick={() => setAccessOpen(true)} className="text-slate-400 hover:bg-white/7 hover:text-white"><FolderGit2 /><span>Advanced repository access</span></SidebarMenuButton></SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
@@ -1176,13 +1206,7 @@ export function BorgWorkspaceV2() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div title={runtimeStatus ? `${runtimeStatus.runtime}: ${runtimeStatus.model}` : "Local model status unavailable"} className="hidden items-center gap-2 rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-[10px] text-slate-400 lg:flex">
-            <span className={`size-1.5 rounded-full ${runtimeStatus?.runtimeConnected && runtimeStatus.modelAvailable ? "bg-[#a7ff4f]" : "bg-amber-300"}`} />
-            <span className="max-w-44 truncate font-mono">{runtimeStatus?.model ?? activeSession?.model ?? "model unavailable"}</span>
-          </div>
-          {isWebsite && <Button size="sm" variant="outline" onClick={() => setRightPanel("preview")} className="hidden border-white/10 bg-white/4 text-slate-300 sm:inline-flex"><Monitor className="size-3.5" />Preview</Button>}
-          <Button size="sm" variant="outline" disabled={!activeTaskId} onClick={() => setRightPanel("changes")} className="border-white/10 bg-white/4 text-slate-300"><History className="size-3.5" /><span className="hidden sm:inline">Changes</span></Button>
-          <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || taskBusy}>
+          {!isWebsite && <Select value={activeMode} onValueChange={(value) => void changeMode(value as PermissionMode)} disabled={!activeSession || taskBusy}>
             <SelectTrigger size="sm" className="border-white/10 bg-white/4 text-slate-200"><ShieldCheck className="size-3.5 text-[#a7ff4f]" /><SelectValue /></SelectTrigger>
             <SelectContent className="border-white/10 bg-[#151a22] text-slate-100">
               <SelectItem value="plan">Safe mode</SelectItem>
@@ -1190,7 +1214,7 @@ export function BorgWorkspaceV2() {
               <SelectItem value="agent">Autopilot</SelectItem>
               <SelectItem value="ask">Ask only</SelectItem>
             </SelectContent>
-          </Select>
+          </Select>}
           <details className="relative">
             <summary className="list-none cursor-pointer rounded-md border border-white/10 bg-white/4 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Advanced</summary>
             <div className="absolute right-0 z-50 mt-2 w-48 rounded-lg border border-white/10 bg-[#11161e] p-2 shadow-2xl">
@@ -1215,39 +1239,36 @@ export function BorgWorkspaceV2() {
                 {WEBSITE_EXAMPLES.map((example) => <button key={example} type="button" onClick={() => setRequest(example)} className="rounded-lg border border-white/8 bg-black/10 px-3 py-2.5 text-left text-xs leading-5 text-slate-400 transition hover:border-white/15 hover:bg-white/[0.03] hover:text-slate-200">{example}</button>)}
               </div>
             </div> : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">Developer session</p><p className="mt-1 text-sm text-slate-500">Use this advanced workspace for repository tasks that are not tied to a BORG website.</p></div></div>}
-            {activeTaskId && isWebsite && <div role="status" aria-live="polite" className="rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
-              <div className="flex items-start gap-3"><span className={`mt-1.5 size-2 shrink-0 rounded-full bg-[#a7ff4f] ${streaming || taskIsRunning(taskState) ? "animate-pulse" : ""}`} /><div><p className="text-sm font-medium text-[#d9ffb5]">{currentProgress?.title ?? (builderStep === 4 ? "Frontend ready for review" : "BORG is working")}</p><p className="mt-1 text-xs leading-5 text-slate-400">{currentProgress?.detail ?? "BORG is continuing the current website build."}</p></div></div>
-              <div className="mt-4 grid grid-cols-5 gap-1">{BUILDER_STEPS.map((step, index) => <div key={step} className="min-w-0"><div className={`h-1 rounded-full ${index <= builderStep ? "bg-[#a7ff4f]" : "bg-white/8"}`} /><p className={`mt-1 truncate text-[9px] uppercase tracking-wide ${index <= builderStep ? "text-[#cfff9e]" : "text-slate-700"}`}>{step}</p></div>)}</div>
-            </div>}
-            {workflowStatus && <section aria-label="Frontend execution status" className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-xs text-slate-400">
-              <p className="font-semibold uppercase tracking-wide text-[#a7ff4f]">Frontend{workflowStatus.sliceIndex !== null ? ` · Slice ${workflowStatus.sliceIndex + 1}/${workflowStatus.sliceTotal ?? "?"}` : ""}</p>
-              <p className="mt-2 text-sm font-medium text-slate-200">{workflowStatus.sliceTitle ?? "Project planning"}</p>
-              <p className="mt-2">Objective: {workflowStatus.objective}</p>
-              <p className="mt-1">Current action: {workflowStatus.currentAction}</p>
-              <p className="mt-1">Verification: {workflowStatus.verificationPassed === null ? "Pending" : workflowStatus.verificationPassed ? "Passed" : "Failed"} · Repair attempts: {workflowStatus.repairAttempt}</p>
-              <p className="mt-1">Next: {workflowStatus.nextAction}</p>
-              <p className="mt-1">State: {workflowStatus.phase} · {workflowStatus.status}{workflowStatus.workflowVersion ? ` · v${workflowStatus.workflowVersion}` : ""}</p>
-              {workflowStatus.detail && <p className="mt-1 text-slate-500">{workflowStatus.detail}</p>}
-              <div className="mt-3 grid grid-cols-2 gap-3"><div><p className="text-slate-300">Completed</p><p className="mt-1">{workflowStatus.completed.map((item) => item.replaceAll("_", " ").toLowerCase()).join(" · ") || "None yet"}</p></div><div><p className="text-slate-300">Pending</p><p className="mt-1">{workflowStatus.pending.map((item) => item.replaceAll("_", " ").toLowerCase()).join(" · ") || "None"}</p></div></div>
-              <details className="mt-3"><summary className="cursor-pointer text-slate-300">Timestamped activity ({workflowStatus.activity.length})</summary><div className="mt-2 max-h-44 overflow-y-auto space-y-1">{workflowStatus.activity.map((item, index) => <p key={`${item.occurredAt}:${index}`}>{new Date(item.occurredAt).toLocaleTimeString()} · {item.detail.replaceAll("_", " ")}</p>)}</div></details>
-              <details className="mt-3"><summary className="cursor-pointer text-slate-300">Model context ({contextRecords.length} requests)</summary><div className="mt-2 max-h-44 overflow-y-auto space-y-2">{contextRecords.map((record) => <button type="button" key={record.id} onClick={() => void openModelContext(record.id)} className="block w-full rounded border border-white/10 p-2 text-left hover:bg-white/5"><span className="text-slate-200">{record.role} · {record.model}</span><span className="block text-slate-500">{new Date(record.createdAt).toLocaleTimeString()} · {record.manifest.length} included items</span></button>)}</div></details>
-              {selectedContext && <details open className="mt-3 rounded border border-white/10 p-2"><summary className="cursor-pointer text-slate-200">Saved input · {selectedContext.role}</summary><div className="mt-2 space-y-1">{selectedContext.manifest.map((item, index) => <p key={`${item.path}:${index}`}>{item.path} — {item.reason} ({item.characters} characters)</p>)}</div><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[10px]">{selectedContext.inputText}</pre></details>}
-            </section>}
-            <ActivityFeed activities={activities} />
-            {activityItems.length > 0 && <details className="rounded-lg border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer select-none font-medium text-slate-400">Technical activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
+            {workflowStatus?.run && isWebsite && <RunStatusCard run={workflowStatus.run} active={streaming || taskIsRunning(taskState)} />}
+            {activeTaskId && <details className="rounded-xl border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500">
+              <summary className="cursor-pointer select-none font-medium text-slate-400">Execution inspector</summary>
+              <div className="mt-4 space-y-4">
+                <ActivityFeed activities={activities} />
+                {workflowStatus && <section className="rounded-lg border border-white/8 p-3">
+                  <div className="grid gap-2 sm:grid-cols-2"><p><span className="text-slate-300">Durable state:</span> {workflowStatus.phase} · {workflowStatus.status}</p><p><span className="text-slate-300">Workflow:</span> {workflowStatus.source}{workflowStatus.workflowVersion ? ` · v${workflowStatus.workflowVersion}` : ""}</p></div>
+                  <details className="mt-3"><summary className="cursor-pointer text-slate-300">Timestamped activity ({workflowStatus.activity.length})</summary><div className="mt-2 max-h-44 space-y-1 overflow-y-auto">{workflowStatus.activity.map((item, index) => <p key={`${item.occurredAt}:${index}`}>{new Date(item.occurredAt).toLocaleTimeString()} · {item.detail.replaceAll("_", " ")}</p>)}</div></details>
+                </section>}
+                <details className="rounded-lg border border-white/8 p-3">
+                  <summary className="cursor-pointer text-slate-300">Model context ({contextRecords.length} requests)</summary>
+                  <div className="mt-2 max-h-44 space-y-2 overflow-y-auto">{contextRecords.map((record) => <button type="button" key={record.id} onClick={() => void openModelContext(record.id)} className="block w-full rounded border border-white/10 p-2 text-left hover:bg-white/5"><span className="text-slate-200">{record.role} · {record.model}</span><span className="block text-slate-500">{new Date(record.createdAt).toLocaleTimeString()} · {record.manifest.length} included items</span></button>)}</div>
+                  {selectedContext && <div className="mt-3 rounded border border-white/10 p-2"><p className="text-slate-200">Saved input · {selectedContext.role}</p><div className="mt-2 space-y-1">{selectedContext.manifest.map((item, index) => <p key={`${item.path}:${index}`}>{item.path} — {item.reason} ({item.characters} characters)</p>)}</div><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[10px]">{selectedContext.inputText}</pre></div>}
+                </details>
+                {activityItems.length > 0 && <details className="rounded-lg border border-white/8 p-3"><summary className="cursor-pointer text-slate-300">Low-level tool activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
+              </div>
+            </details>}
           </div>
         </div></div>{(activeTaskId || previewUrl || previewError || latestPlan || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden overscroll-contain border-t border-white/8 lg:min-h-0 lg:basis-[65%] lg:flex-none lg:border-l lg:border-t-0">
           <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-1.5">
             <div className="flex items-center gap-1">
               <button type="button" disabled={!isWebsite} onClick={() => { setRightPanel("preview"); if (activeSession && !previewUrl) void activatePreview(activeSession.id); }} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "preview" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
+              <button type="button" disabled={!latestPlan && !designBrief} onClick={() => setRightPanel("plan")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "plan" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
               <button type="button" onClick={() => setRightPanel("changes")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "changes" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Changes{changes.files.length ? ` (${changes.files.length})` : ""}</button>
-              <button type="button" onClick={() => { setRightPanel("docs"); if (activeTaskId) void refreshDocs(activeTaskId); }} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "docs" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Docs</button>
+              <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("evidence")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "evidence" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Evidence{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</button>
               <details className="relative">
                 <summary className="list-none cursor-pointer rounded px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-white/5 hover:text-slate-300">Advanced</summary>
-                <div className="absolute left-0 z-40 mt-2 w-40 rounded-lg border border-white/10 bg-[#11161e] p-1.5 shadow-2xl">
-                  <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Plan</button>
-                  <button type="button" disabled={!designBrief} onClick={() => setRightPanel("design")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Design review{designReview?.status === "repair" ? " •" : ""}</button>
-                  <button type="button" onClick={() => setRightPanel("terminal")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
+                <div className="absolute left-0 z-40 mt-2 w-44 rounded-lg border border-white/10 bg-[#11161e] p-1.5 shadow-2xl">
+                  <button type="button" onClick={() => setRightPanel("logs")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Logs{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
+                  <button type="button" onClick={() => { setRightPanel("memory"); if (activeTaskId) void refreshDocs(activeTaskId); }} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Project memory</button>
                 </div>
               </details>
             </div>
@@ -1269,29 +1290,31 @@ export function BorgWorkspaceV2() {
           </div>}
           <div className="flex min-h-0 flex-1 overflow-hidden">
             {rightPanel === "plan"
-              ? <PlanPanel plan={latestPlan} />
-              : rightPanel === "docs"
-                ? <DocsPanel docs={buildDocs} />
+              ? <PlanPanel plan={latestPlan} designBrief={designBrief} />
               : rightPanel === "changes"
                 ? <ChangesPanel changes={changes} />
-                : rightPanel === "design"
-                  ? <DesignPanel brief={designBrief} review={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} />
-                  : rightPanel === "terminal"
+                : rightPanel === "evidence"
+                  ? <EvidencePanel verificationStatus={workflowStatus?.run.verification.status ?? "pending"} designReview={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} blockingFindings={blockingFindingIds.length} baselineCandidates={baselineCandidates} baselineBusy={baselineBusy} baselineError={baselineError} onAcceptBaselines={acceptVisualBaselines} onOpenReviewHistory={() => setReviewOpen(true)} onOpenLogs={() => setRightPanel("logs")} />
+                  : rightPanel === "logs"
                     ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
-                    : previewUrl
-                    ? <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#151a22] p-2 sm:p-3"><div className={`h-full min-h-[520px] overflow-hidden rounded-md border border-white/10 bg-white shadow-2xl transition-[width] duration-200 ${previewViewport === "mobile" ? "w-[390px] max-w-full" : previewViewport === "tablet" ? "w-[820px] max-w-full" : "w-full"}`}><iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full w-full border-0 bg-white" /></div></div>
-                    : <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto overscroll-contain p-6 text-center"><div><Monitor className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">{previewError || "The live preview will appear here as soon as the website is ready."}</p>{isWebsite && activeSession && <Button size="sm" variant="outline" onClick={() => void activatePreview(activeSession.id)} className="mt-4 border-white/10 bg-white/4 text-slate-300">{previewError ? "Retry preview" : "Start preview"}</Button>}</div></div>}
+                    : rightPanel === "memory"
+                      ? <DocsPanel docs={buildDocs} />
+                      : previewUrl
+                        ? <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#151a22] p-2 sm:p-3"><div className={`h-full min-h-[520px] overflow-hidden rounded-md border border-white/10 bg-white shadow-2xl transition-[width] duration-200 ${previewViewport === "mobile" ? "w-[390px] max-w-full" : previewViewport === "tablet" ? "w-[820px] max-w-full" : "w-full"}`}><iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full w-full border-0 bg-white" /></div></div>
+                        : <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto overscroll-contain p-6 text-center"><div><Monitor className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">{previewError || "The live preview will appear here as soon as the website is ready."}</p>{isWebsite && activeSession && <Button size="sm" variant="outline" onClick={() => void activatePreview(activeSession.id)} className="mt-4 border-white/10 bg-white/4 text-slate-300">{previewError ? "Retry preview" : "Start preview"}</Button>}</div></div>}
           </div>
         </div>}</div>
 
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
           {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planApproval ? "Approve frontend phase plan" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planApproval ? "Approval freezes the tailored slice roadmap and starts the frontend build. BORG will execute each slice in a bounded mini-loop inside isolated worktrees." : "This mini-plan is limited to the current approved slice. Approved frontend slices execute automatically inside the frozen phase plan."}</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planApproval ? "Revise plan" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planApproval ? "Approve plan" : "Build slice"}</Button></div></div>}
-          {deliveryReady && activeSession?.workflowRole !== "frontend_slice" && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Website check complete</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}The verified result is ready in Preview. Save the change set when you are happy with it.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
-          {taskState === "COMPLETE" && sliceState && !["working", "plan_pending"].includes(sliceState.status) && <div className="mx-auto mb-3 max-w-3xl rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
-            <p className="text-sm font-medium text-[#d9ffb5]">{sliceState.status === "ready" ? `Frontend plan approved — ${sliceState.currentTitle} is ready` : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? "Frontend complete — backend phase is available" : "Frontend complete — static site can be finalized") : `Slice ${sliceState.current + 1} of ${sliceState.total} complete — continuing automatically`}</p>
-            <p className="mt-1 text-xs text-slate-400">{sliceState.status === "ready" ? "Slice 1 starts a lightweight mini-loop in a new session. BORG will not rediscover or re-plan the whole website." : sliceState.status === "awaiting_feedback" ? "The verified slice is saved. BORG is starting the next approved slice; you can still review Preview, Changes, and Docs." : "Review Preview, Changes, and Docs. The frontend completion gate is ready for your decision."}</p>
-            {sliceState.status !== "ready" && <Input value={sliceFeedback} onChange={(event) => setSliceFeedback(event.target.value)} placeholder="What worked, and what should change? “Looks good” is enough to continue." aria-label="Feedback on this slice" className="mt-3 border-white/10 bg-white/4 text-slate-100" />}
-            <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setRightPanel("docs")} className="border-white/10 bg-transparent text-slate-300">Read docs</Button>{sliceState.status === "ready" ? <Button size="sm" disabled={sliceBusy} onClick={() => void startSliceSession("initial")} className="bg-[#a7ff4f] text-[#071007]">Start slice 1</Button> : sliceState.status === "frontend_complete" ? (sliceState.backendRequired ? <Button size="sm" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("backend")} className="bg-[#a7ff4f] text-[#071007]">Plan backend in new session</Button> : null) : <><Button size="sm" variant="outline" disabled={!sliceFeedback.trim() || sliceBusy} onClick={() => void startSliceSession("revise")} className="border-white/10 bg-transparent text-slate-300">Revise this slice</Button><Button size="sm" disabled={sliceBusy} onClick={() => void startSliceSession("advance")} className="bg-[#a7ff4f] text-[#071007]">Approve and start next slice</Button></>}</div>
+          {deliveryReady && (!isWebsite || !sliceState) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Verified changes ready</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}Review the diff before saving this non-workflow change set.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
+          {taskState === "COMPLETE" && sliceState?.status === "frontend_complete" && <div className="mx-auto mb-3 max-w-3xl rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
+            <p className="text-sm font-medium text-[#d9ffb5]">Frontend complete</p>
+            <p className="mt-1 text-xs leading-5 text-slate-400">{sliceState.backendRequired ? "Every approved frontend slice is verified. The approved product requires a separate backend phase, which will consume the finished frontend contract without rebuilding the UI." : "Every approved frontend slice is verified. Review Preview, Changes, and Evidence as the completed frontend product."}</p>
+            {sliceState.backendRequired && <>
+              <Input value={sliceFeedback} onChange={(event) => setSliceFeedback(event.target.value)} placeholder="Optional notes for the backend phase…" aria-label="Backend phase notes" className="mt-3 border-white/10 bg-white/4 text-slate-100" />
+              <Button size="sm" disabled={sliceBusy} onClick={() => void startBackendPhase()} className="mt-3 bg-[#a7ff4f] text-[#071007]">{sliceBusy ? "Starting…" : "Start backend phase"}</Button>
+            </>}
           </div>}
           <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); if (taskBusy) return; const value = request; setRequest(""); void runTask(value); }}>
             <Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={taskBusy || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={isWebsite ? "Describe a change to this website…" : `Ask BORG in ${activeMode.toUpperCase()} mode…`} />

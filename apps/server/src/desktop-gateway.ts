@@ -659,6 +659,20 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === "GET" && request.url === "/api/tools") return send(response, 200, { tools: toolStatus() });
+  if (request.url === "/api/vision" && (request.method === "GET" || request.method === "POST")) {
+    void (async () => {
+      const body = request.method === "POST" ? await readText(request) : undefined;
+      const upstream = await fetch(`${coreUrl}/api/vision`, {
+        method: request.method,
+        headers: request.method === "POST" ? { "content-type": "application/json" } : undefined,
+        body,
+        signal: AbortSignal.timeout(10_000),
+      });
+      const payload = await upstream.json().catch(() => ({ error: `Visual quality configuration failed (${upstream.status}).` }));
+      return send(response, upstream.status, payload);
+    })().catch((error) => send(response, 502, { error: error instanceof Error ? error.message : "Unable to reach the visual quality service." }));
+    return;
+  }
   if (request.method === "POST" && request.url === "/api/tools") {
     void readJson(request).then(async (input) => {
       internet.save({ internetEnabled: input.internetEnabled, apiKey: input.ollamaApiKey ?? input.apiKey, clearApiKey: input.clearApiKey });
@@ -668,6 +682,32 @@ const server = createServer((request, response) => {
       internet.markConnectionFailed(error instanceof Error ? error.message : "Unable to configure internet tools");
       return send(response, 400, { error: error instanceof Error ? error.message : "Unable to configure internet tools", tools: toolStatus() });
     });
+    return;
+  }
+
+  const visualBaselineRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/visual-baselines$/);
+  if (request.method === "POST" && visualBaselineRoute) {
+    const taskId = decodeURIComponent(visualBaselineRoute[1]);
+    void readJson(request).then(async (input) => {
+      const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/visual-baselines`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const body = await upstream.json().catch(() => ({})) as { accepted?: unknown[]; error?: string };
+      if (!upstream.ok) return send(response, upstream.status, body);
+
+      const session = chats.sessionForTask(taskId);
+      const runtime = await coreTaskRuntime(taskId);
+      let workflowStarted = false;
+      if (session?.repositoryPath && runtime.workflow?.projectPlan && runtime.task?.state === "DELIVERY_READY") {
+        const root = rootWorkflowSession(session);
+        const deliveredWorkflow = await saveVerifiedFrontendSlice(taskId, root, () => {});
+        if (deliveredWorkflow) workflowStarted = Boolean(await driveWorkflow(root, deliveredWorkflow));
+      }
+      return send(response, 200, { ...body, workflowStarted });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to accept visual baselines." }));
     return;
   }
 

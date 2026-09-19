@@ -114,6 +114,29 @@ const teamPolicies = new TeamPolicyService();
 const maxRepairAttempts = 2;
 const maxDesignRefinements = 3;
 
+async function visionRuntimeStatus() {
+  const policy = vision.status();
+  try {
+    const response = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw new Error(`Ollama model discovery returned ${response.status}.`);
+    const body = await response.json() as { models?: { name?: string; model?: string }[] };
+    const modelAvailable = (body.models ?? []).some((item) => item.name === policy.model || item.model === policy.model);
+    return {
+      ...policy,
+      modelAvailable,
+      availabilityState: modelAvailable ? "available" as const : "missing" as const,
+      availabilityError: modelAvailable ? null : `Vision model ${policy.model} is not installed in Ollama.`,
+    };
+  } catch (error) {
+    return {
+      ...policy,
+      modelAvailable: false,
+      availabilityState: "connection_failed" as const,
+      availabilityError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function recordModelInput(taskId: string, role: string, selectedModel: string, sliceId: string | null, manifest: ContextItem[], body: string) {
   const id = randomUUID();
   tasks.saveModelContext({ id, taskId, role, model: selectedModel, sliceId, inputText: body, manifest, inputSha256: createHash("sha256").update(body).digest("hex"), createdAt: new Date().toISOString() });
@@ -125,6 +148,29 @@ function commitBuildDocs(repositoryPath: string, message: string) {
   const staged = execFileSync("git", ["-C", repositoryPath, "diff", "--cached", "--name-only", "--", ".localcode/build"], { encoding: "utf8" }).trim();
   if (!staged) return;
   execFileSync("git", ["-C", repositoryPath, "-c", "user.name=BORG", "-c", "user.email=borg@local.invalid", "commit", "-m", message, "--", ".localcode/build"], { stdio: "ignore" });
+}
+
+function pendingVisualBaselineCandidates(taskId: string): BaselineCandidate[] {
+  const events = tasks.listEvents(taskId);
+  const latest = events.findLast((event) => event.type === "VISUAL_REGRESSION_COMPLETED");
+  const report = latest?.payload.report as VisualRegressionReport | undefined;
+  if (!report?.requiresAcceptance) return [];
+  const accepted = new Set<string>();
+  for (const event of events.filter((candidate) => candidate.type === "VISUAL_BASELINES_ACCEPTED")) {
+    const values = Array.isArray(event.payload.accepted) ? event.payload.accepted as Array<{ profileId?: string; screenshotName?: string }> : [];
+    for (const value of values) accepted.add(`${value.profileId ?? ""}::${value.screenshotName ?? ""}`);
+  }
+  return report.comparisons
+    .filter((comparison) => comparison.status === "missing-baseline")
+    .filter((comparison) => !accepted.has(`${comparison.profileId}::${comparison.screenshotName}`))
+    .map((comparison) => ({
+      profileId: comparison.profileId,
+      screenshotName: comparison.screenshotName,
+      candidatePath: comparison.candidate.path,
+      candidateSha256: comparison.candidate.sha256,
+      width: comparison.candidate.width,
+      height: comparison.candidate.height,
+    }));
 }
 
 function commitProjectRegistries(repositoryPath: string) {
@@ -706,7 +752,11 @@ const server = createServer((request, response) => {
     const ownedWorkflow = projectWorkflow?.taskId === task.id ? projectWorkflow : null;
     const plan = projectPlanFromWorkflow(ownedWorkflow, root);
     const slice = sliceStateFromWorkflow(ownedWorkflow, plan, root);
-    return send(response, 200, { status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow) });
+    const baselineCandidates = pendingVisualBaselineCandidates(taskId);
+    return send(response, 200, {
+      status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length }),
+      baselineCandidates,
+    });
   }
 
   const changesRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/changes$/);
@@ -738,6 +788,12 @@ const server = createServer((request, response) => {
       if (task.state !== "DELIVERY_READY") return send(response, 409, { error: "Task is not ready for delivery." });
       const blockingFindings = blockingReviewFindings(tasks.listReviewFindings(taskId));
       if (blockingFindings.length) return send(response, 409, { error: "Unresolved high or critical review findings block delivery.", findingIds: blockingFindings.map((value) => value.id) });
+      const baselineCandidates = pendingVisualBaselineCandidates(taskId);
+      if (baselineCandidates.length) return send(response, 409, {
+        code: "VISUAL_BASELINE_APPROVAL_REQUIRED",
+        error: `${baselineCandidates.length} verified visual baseline candidate(s) require operator acceptance before delivery.`,
+        candidates: baselineCandidates,
+      });
       const method = String(input.method ?? "").toLowerCase();
       if (method !== "export" && method !== "commit") return send(response, 400, { error: "Delivery method must be export or commit." });
       const isFrontendSlice = tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED");
@@ -803,21 +859,21 @@ const server = createServer((request, response) => {
     const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
     const designBrief = latestDesignBrief(taskId) ?? (parsedPersistedDesignBrief?.success ? parsedPersistedDesignBrief.data : null);
     const designContext = designBrief ? designBriefPrompt(designBrief) : "";
-    const priorDeliveredWebsiteTask = websiteProject
-      ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
-      : false;
-    const websiteWorkflow: WebsiteWorkflowKind = priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
-    const websiteContext = websiteProject && !readSliceState(approvedWorktreePath) ? websiteGenerationContext({
-      name: websiteProject.name,
-      template: websiteProject.template,
-      originalBrief: websiteProject.originalBrief,
-    }, websiteWorkflow) : "";
     const taskWorkflow = workflow.get(task.projectId);
     const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
     const projectPlan = websiteProject ? projectPlanFromWorkflow(ownedTaskWorkflow, approvedWorktreePath) : null;
     const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED")
       ? sliceStateFromWorkflow(ownedTaskWorkflow, projectPlan, approvedWorktreePath)
       : null;
+    const priorDeliveredWebsiteTask = websiteProject
+      ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
+      : false;
+    const websiteWorkflow: WebsiteWorkflowKind = sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+    const websiteContext = websiteProject ? websiteGenerationContext({
+      name: websiteProject.name,
+      template: websiteProject.template,
+      originalBrief: websiteProject.originalBrief,
+    }, websiteWorkflow) : "";
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
     const teamPolicy = teamPolicies.load(access.load().repositoryPath);
@@ -834,8 +890,16 @@ const server = createServer((request, response) => {
     let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
       let repairEvidence = "";
+      let implementationBudgetContinuations = 0;
+      let implementationBudgetExhausted = false;
       performPreflight("execution_start");
-      const compiledSlice = sliceState ? compileFrontendContext({ root: approvedWorktreePath, phase: "frontend", sliceIndex: sliceState.current }) : null;
+      const compiledSlice = sliceState && projectPlan ? compileFrontendContext({
+        root: approvedWorktreePath,
+        phase: "frontend",
+        sliceIndex: sliceState.current,
+        authority: { plan: projectPlan, state: sliceState },
+        productContract: websiteContext,
+      }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
@@ -869,7 +933,8 @@ const server = createServer((request, response) => {
           task = scheduleImplementationRetry(task, emit, decision.action, decision);
           continue;
         }
-        const { answer, usedTools } = implementationResult;
+        const { answer, usedTools, budgetExhausted } = implementationResult;
+        implementationBudgetExhausted = Boolean(budgetExhausted);
         if (sliceState) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
           const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
@@ -897,7 +962,20 @@ const server = createServer((request, response) => {
             continue;
           }
         }
-        appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, attempt: task.attempts });
+        if (sliceState && budgetExhausted && implementationBudgetContinuations < 1) {
+          implementationBudgetContinuations += 1;
+          appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_CONTINUATION", {
+            continuation: implementationBudgetContinuations,
+            toolBudgetExhausted: true,
+          });
+          if (activeRoleAssignment) finishRole(activeRoleAssignment, "completed", emit);
+          activeRoleAssignment = null;
+          repairEvidence = "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
+          emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same slice once with compact context instead of treating partial progress as complete." });
+          continue;
+        }
+        if (sliceState && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
+        appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, budgetExhausted: Boolean(budgetExhausted), attempt: task.attempts });
         finishRole(activeRoleAssignment, "completed", emit);
         recordHandoff({
           task,
@@ -979,7 +1057,7 @@ const server = createServer((request, response) => {
         }
 
         let visionReview: VisionReviewResult | null = null;
-        if (verification.browserEvidence) {
+        if (verification.browserEvidence && !designBrief) {
           const visionStatus = vision.status();
           appendTaskEvent(taskId, "VISION_REVIEW_STARTED", { provider: visionStatus.provider, model: visionStatus.model, attempt: task.attempts });
           emit({ type: "vision.review.started", provider: visionStatus.provider, model: visionStatus.model });
@@ -1107,7 +1185,22 @@ const server = createServer((request, response) => {
         emit({ type: "stage.updated", stage: "Review", status: "active" });
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, packs, emit);
-        const review = await runFreshReview({ ollamaUrl, model: reviewerModel, taskId, request: task.request, diff: diff.stdout ?? "", verification, specialistInstructions: specialistInstructions.reviewer, onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledSlice?.sliceId ?? null, [], body) : undefined });
+        const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
+        const review = await runFreshReview({
+          ollamaUrl,
+          model: reviewerModel,
+          taskId,
+          request: task.request,
+          projectGoal: projectPlan?.siteGoal,
+          sliceTitle: activeSlice?.title,
+          sliceOutcome: activeSlice?.outcome,
+          acceptanceCriteria: activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
+          implementationBudgetExhausted,
+          diff: diff.stdout ?? "",
+          verification,
+          specialistInstructions: specialistInstructions.reviewer,
+          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledSlice?.sliceId ?? null, [], body) : undefined,
+        });
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
         const reviewHistory = recordCompletedReview(
@@ -1199,6 +1292,11 @@ const server = createServer((request, response) => {
     return;
   }
   const baselineRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/visual-baselines$/);
+  if (request.method === "GET" && baselineRoute) {
+    const taskId = decodeURIComponent(baselineRoute[1]);
+    if (!tasks.findTask(taskId)) return send(response, 404, { error: "Task not found." });
+    return send(response, 200, { candidates: pendingVisualBaselineCandidates(taskId) });
+  }
   if (request.method === "POST" && baselineRoute) {
     const taskId = decodeURIComponent(baselineRoute[1]);
     void readJson(request).then((input) => {
@@ -1415,11 +1513,15 @@ const server = createServer((request, response) => {
       .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid access policy" }));
     return;
   }
-  if (request.method === "GET" && request.url === "/api/vision") return send(response, 200, { vision: vision.status() });
+  if (request.method === "GET" && request.url === "/api/vision") {
+    void visionRuntimeStatus().then((status) => send(response, 200, { vision: status }))
+      .catch((error) => send(response, 500, { error: error instanceof Error ? error.message : "Unable to inspect visual quality model." }));
+    return;
+  }
   if (request.method === "POST" && request.url === "/api/vision") {
-    void readJson(request).then((input) => {
+    void readJson(request).then(async (input) => {
       vision.save(input);
-      return send(response, 200, { vision: vision.status() });
+      return send(response, 200, { vision: await visionRuntimeStatus() });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid vision settings" }));
     return;
   }
@@ -1466,7 +1568,15 @@ const server = createServer((request, response) => {
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "advance") throw new Error("The current slice is not ready to advance.");
       if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "revise") throw new Error("There is no completed slice waiting for revision.");
       const teamPolicy = teamPolicies.load(access.load().repositoryPath);
-      const route = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
+      const routed = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
+      const websiteFrontend = mode !== "ask" && Boolean(selectedWebsite) && rawSliceAction !== "backend";
+      const route = websiteFrontend && !routed.disciplines.includes("frontend")
+        ? {
+            primary: "frontend" as EngineeringDiscipline,
+            disciplines: ["frontend" as EngineeringDiscipline, ...routed.disciplines].slice(0, 6),
+            reasons: ["BORG website frontend phase", ...routed.reasons],
+          }
+        : routed;
       const packs = selectSpecialistPacks(route.disciplines);
       let task: Task = {
         ...createTask({ id: randomUUID(), projectId, request: requestText }),
@@ -1535,8 +1645,8 @@ const server = createServer((request, response) => {
       const priorDeliveredWebsiteTask = websiteProject
         ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== task.id && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
         : false;
-      const websiteWorkflow: WebsiteWorkflowKind = priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
-      const websiteContext = websiteProject && !slicedApplication ? websiteGenerationContext({
+      const websiteWorkflow: WebsiteWorkflowKind = projectPlanning || slicedApplication ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+      const websiteContext = websiteProject ? websiteGenerationContext({
         name: websiteProject.name,
         template: websiteProject.template,
         originalBrief: websiteProject.originalBrief,
@@ -1560,7 +1670,13 @@ const server = createServer((request, response) => {
         const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
         const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
         sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
-        compiledArchitectContext = compileFrontendContext({ root: websiteProject.path, phase: "frontend", sliceIndex: nextIndex });
+        compiledArchitectContext = compileFrontendContext({
+          root: websiteProject.path,
+          phase: "frontend",
+          sliceIndex: nextIndex,
+          authority: { plan: projectPlan, state: plannedSlice },
+          productContract: websiteContext,
+        });
         repositoryContext = compiledArchitectContext.text;
       }
       if (rawSliceAction === "backend" && websiteProject) {

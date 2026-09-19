@@ -111,7 +111,19 @@ async function startFakeOllama(mode: FailureMode, implementerPrompts: string[]) 
 
       let message: Record<string, unknown>;
       if (system.includes("fresh-context code reviewer")) {
-        message = { role: "assistant", content: JSON.stringify({ verdict: "pass", summary: "Verified recovery change is scoped and correct.", findings: [] }) };
+        message = {
+          role: "assistant",
+          content: JSON.stringify({
+            verdict: "pass",
+            summary: "Verified recovery change is scoped and correct.",
+            criteria: [
+              { criterion: "hero communicates the primary offer", verdict: "pass", evidence: "The fixture's approved recovery path preserves the first-slice implementation contract." },
+              { criterion: "desktop and mobile layouts are usable", verdict: "pass", evidence: "Deterministic verification and the fixture contract report the responsive slice as usable." },
+              { criterion: "visible navigation controls work", verdict: "pass", evidence: "The scoped fixture introduces no broken navigation control and verification passes." },
+            ],
+            findings: [],
+          }),
+        };
       } else if (system.includes("BORG's approved implementation agent")) {
         implementerPrompts.push(user);
         const recovering = user.includes("RECOVERY:");

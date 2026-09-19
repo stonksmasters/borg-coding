@@ -7,7 +7,7 @@ BORG is a local-first coding agent, not a generic chatbot.
 - Keep model providers replaceable behind adapters.
 - Keep filesystem, shell, Git, and verification operations explicit and inspectable.
 - Never hide a tool side effect inside a model adapter.
-- Preserve ASK / EDIT / AGENT permission semantics.
+- Preserve ASK / PLAN / EDIT / AGENT permission semantics.
 - Prefer small typed packages over a single backend blob.
 - All repository paths must be constrained to the selected workspace root.
 - Every implementation flow should be able to end with lint, typecheck, tests, and build verification.
@@ -18,4 +18,4 @@ BORG is a local-first coding agent, not a generic chatbot.
 
 - Ollama
 - `qwen3-coder:30b`
-- OpenCode runtime adapter
+- Direct brokered Ollama runtime (`apps/server/src/ollama-agent.ts`)

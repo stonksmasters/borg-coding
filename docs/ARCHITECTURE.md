@@ -1,6 +1,6 @@
 # BORG Code Architecture
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 
 ## Overview
 
@@ -80,9 +80,11 @@ For example, a frontend slice may internally use an Implementer, Verifier, and R
 
 ## Canonical state ownership
 
-Server-side workflow state is authoritative.
+A single persistent `WorkflowEngine` owns project progression. SQLite is the durable source of truth. The desktop gateway transports commands and streams events; it does not invent progression. `.localcode/build/` is a generated knowledge projection for compact model context and human inspection, not an independent workflow authority.
 
-The UI should render the persisted project/task state rather than infer progress from assistant prose. Model output can explain work, but it must not be the source of truth for whether a plan is approved, a slice is complete, verification passed, or a phase has advanced.
+Normal website builds reuse the project's primary chat/session. Slice boundaries are durable workflow/task boundaries, not hidden child-chat ownership boundaries.
+
+The UI should render the persisted project/task state rather than infer progress from assistant prose. The server exposes a normalized `RunView` containing phase, slice, stage, current action, verification state, blocker, and next action. Model output can explain work, but it must not be the source of truth for whether a plan is approved, a slice is complete, verification passed, or a phase has advanced.
 
 Durable state includes:
 
@@ -108,7 +110,7 @@ BORG repository docs describe how BORG works.
 
 .localcode/build/ describes the website currently being built: plan, decisions, data contracts, slice state, and handoffs.
 
-The generated project docs exist so important decisions do not need to remain in model memory.
+The generated project docs exist so important decisions do not need to remain in model memory. They are regenerated from authoritative state after workflow mutations and should never be used to override newer SQLite workflow state.
 
 ## Preview and verification
 
@@ -126,7 +128,9 @@ User-facing slices should be exercised in a real browser whenever possible. Veri
 - design-quality review;
 - screenshots.
 
-A model claim that something works is not verification evidence.
+A model claim that something works is not verification evidence. Fresh review must account for the active slice outcome and acceptance criteria, and a required criterion without evidence is treated as not proven.
+
+Visual regression has two different failure classes: a true regression/dimension/comparison failure blocks verification, while a first verified screenshot without a baseline becomes a separate operator-acceptance gate. BORG never writes or updates a visual baseline automatically.
 
 ## Recovery
 
