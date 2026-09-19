@@ -10,6 +10,37 @@ export type ProjectSlice = {
   scope: string[];
   acceptanceCriteria: string[];
 };
+export type ProjectSitemapPage = {
+  id: string;
+  name: string;
+  route: string;
+  purpose: string;
+  sections: string[];
+  componentIds: string[];
+  acceptanceCriteria: string[];
+};
+export type PlannedComponent = {
+  id: string;
+  name: string;
+  kind: "layout" | "section" | "ui" | "feature";
+  purpose: string;
+  usedBy: string[];
+  variants: string[];
+  acceptanceCriteria: string[];
+};
+export type ProjectStyleSystem = {
+  direction: string;
+  colors: string[];
+  typography: string[];
+  spacing: string[];
+  radii: string[];
+  shadows: string[];
+  layoutPrinciples: string[];
+  motion: string[];
+  responsive: string[];
+  accessibility: string[];
+  avoid: string[];
+};
 export type ProjectPlan = {
   version: 2;
   revision: number;
@@ -19,6 +50,9 @@ export type ProjectPlan = {
   audience: string;
   pages: string[];
   features: string[];
+  sitemap: ProjectSitemapPage[];
+  components: PlannedComponent[];
+  styles: ProjectStyleSystem;
   visualDirection: string;
   backendRequired: boolean;
   slices: ProjectSlice[];
@@ -85,7 +119,93 @@ function list(value: unknown, fallback: string[] = []) {
 }
 function slug(value: string, index: number) {
   const next = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
-  return next || `slice-${index + 1}`;
+  return next || `item-${index + 1}`;
+}
+function route(value: unknown, fallback: string) {
+  const next = clean(value, fallback).replace(/\s+/g, "-").toLowerCase();
+  return next.startsWith("/") ? next : `/${next.replace(/^\/+/, "")}`;
+}
+function fallbackStyles(commerce: boolean): ProjectStyleSystem {
+  return {
+    direction: commerce
+      ? "Premium mobile-first commerce with strong product imagery, disciplined hierarchy, and trustworthy transaction surfaces."
+      : "A coherent premium visual system derived from the approved brief and Design Director direction.",
+    colors: commerce
+      ? ["Use a restrained neutral foundation.", "Reserve accent color for interaction, status, and merchandising emphasis.", "Maintain WCAG-aware foreground/background contrast."]
+      : ["Define semantic background, surface, text, muted, border, accent, success, warning, and danger roles.", "Avoid arbitrary one-off colors outside the shared token system."],
+    typography: ["Define display, heading, body, label, and code roles.", "Use a deliberate type scale and line-height rhythm.", "Preserve readable measure and hierarchy on mobile."],
+    spacing: ["Use a consistent spacing scale for page gutters, sections, stacks, and component internals.", "Prefer shared spacing tokens over isolated pixel values."],
+    radii: ["Define a small radius scale and use it consistently by component role."],
+    shadows: ["Use elevation sparingly and consistently; avoid random decorative shadows."],
+    layoutPrinciples: ["Use a shared content width and page gutter system.", "Vary section composition intentionally instead of repeating identical centered card grids.", "Keep alignment and visual rhythm consistent across routes."],
+    motion: ["Motion should reinforce hierarchy or state change.", "Respect reduced-motion preferences.", "Avoid decorative motion that competes with content."],
+    responsive: ["Recompose important layouts for narrow screens rather than merely shrinking desktop.", "Keep touch targets, spacing, and navigation intentional at mobile widths."],
+    accessibility: ["Maintain visible focus states.", "Do not rely on color alone for meaning.", "Keep text and interactive contrast accessible."],
+    avoid: ["Centered-everything layouts", "Repetitive generic card grids", "Arbitrary gradients", "Excessive pill styling", "One-off style values that bypass shared tokens"],
+  };
+}
+function fallbackSitemap(brief: string, commerce: boolean, dashboard: boolean, contentHeavy: boolean, seller: boolean, admin: boolean, accounts: boolean): ProjectSitemapPage[] {
+  const text = brief.toLowerCase();
+  const pages: Array<{ name: string; route: string; purpose: string; sections: string[] }> = [];
+  const add = (name: string, pageRoute: string, purpose: string, sections: string[]) => {
+    if (!pages.some((page) => page.route === pageRoute)) pages.push({ name, route: pageRoute, purpose, sections });
+  };
+  if (commerce) {
+    add("Home", "/", "Introduce the marketplace and drive product discovery.", ["Navigation", "Hero / discovery entry", "Featured products", "Categories", "Trust / social proof", "Primary CTA", "Footer"]);
+    add("Discovery", "/discover", "Browse personalized and editorial discovery feeds.", ["Discovery controls", "Feed", "Creator / seller recommendations", "Loading and empty states"]);
+    add("Search", "/search", "Search, filter, sort, and compare products.", ["Search input", "Filter / sort controls", "Results", "No-results state"]);
+    add("Product", "/products/:id", "Evaluate a product and choose a purchasable variant.", ["Media gallery", "Product summary", "Variant selection", "Seller summary", "Reviews", "Related products"]);
+    add("Cart", "/cart", "Review and edit intended purchases.", ["Cart groups", "Line items", "Totals", "Saved items", "Checkout CTA"]);
+    add("Checkout", "/checkout", "Complete the purchase flow with clear validation.", ["Contact / address", "Delivery", "Payment", "Order review", "Validation states"]);
+    add("Order confirmation", "/orders/:id/confirmation", "Confirm purchase and explain next steps.", ["Confirmation", "Order summary", "Next actions"]);
+    if (accounts) add("Account", "/account", "Manage identity, saved data, and order history.", ["Profile", "Addresses", "Wishlist", "Recently viewed", "Orders"]);
+    if (seller) {
+      add("Seller storefront", "/sellers/:id", "Present a seller's brand and catalog.", ["Seller identity", "Catalog", "Policies / trust", "Reviews"]);
+      add("Seller dashboard", "/seller", "Manage products, inventory, orders, and store performance.", ["Seller navigation", "Overview", "Products", "Inventory", "Orders", "Promotions", "Analytics"]);
+    }
+    if (admin) add("Admin", "/admin", "Operate marketplace-wide administration.", ["Admin navigation", "Overview", "Users", "Sellers", "Products", "Orders", "Reviews", "Categories", "Promotions"]);
+  } else if (dashboard) {
+    add("Dashboard", "/", "Provide the primary operational overview and navigation.", ["Application navigation", "Overview / KPI summary", "Primary work queue", "Recent activity", "Empty / loading states"]);
+    add("Activity", "/activity", "Inspect recent operational events and records.", ["Filters", "Activity list / table", "Detail state"]);
+    add("Settings", "/settings", "Manage application preferences and configuration.", ["Settings navigation", "Preferences", "Account / workspace settings"]);
+  } else {
+    add("Home", "/", "Communicate the primary value proposition and direct users into the site's core journey.", ["Navigation", "Hero", "Primary proof / value sections", "Primary CTA", "Footer"]);
+    if (/service|offering|solution/.test(text)) add("Services", "/services", "Explain services or solutions in enough detail to support a decision.", ["Services overview", "Service details", "Proof / process", "CTA"]);
+    if (/portfolio|project|work|case study/.test(text)) add("Work", "/work", "Show representative work and outcomes.", ["Work index", "Featured case studies", "Project cards", "CTA"]);
+    if (/about|team|company|story/.test(text)) add("About", "/about", "Explain the people, story, and credibility behind the site.", ["Story", "Team / credibility", "Values / approach", "CTA"]);
+    if (/pricing|plan|subscription/.test(text)) add("Pricing", "/pricing", "Explain plans, value, and purchasing choices.", ["Plan comparison", "Feature comparison", "FAQ", "CTA"]);
+    if (contentHeavy) add("Articles", "/articles", "Support content discovery and reading.", ["Featured content", "Categories / filters", "Article list", "Search"]);
+    if (/contact|lead|book|appointment|quote|waitlist|signup|sign up/.test(text)) add("Contact", "/contact", "Provide the primary conversion or contact path.", ["Contact / conversion form", "Trust details", "Alternative contact", "Success / error states"]);
+  }
+  return pages.map((page, index) => ({
+    id: slug(page.name, index),
+    ...page,
+    componentIds: [],
+    acceptanceCriteria: ["Route is reachable and intentional.", "All listed sections are represented.", "Responsive and accessible behavior is defined."],
+  }));
+}
+function fallbackComponents(sitemap: ProjectSitemapPage[]): PlannedComponent[] {
+  const components = new Map<string, PlannedComponent>();
+  const add = (name: string, kind: PlannedComponent["kind"], purpose: string, pageId: string, index: number) => {
+    const id = slug(name, index);
+    const existing = components.get(id);
+    if (existing) {
+      if (!existing.usedBy.includes(pageId)) existing.usedBy.push(pageId);
+      return id;
+    }
+    components.set(id, { id, name, kind, purpose, usedBy: [pageId], variants: [], acceptanceCriteria: ["Reusable where its role repeats.", "Responsive and accessible states are defined."] });
+    return id;
+  };
+  for (const page of sitemap) {
+    page.componentIds = page.sections.map((section, index) => add(
+      section,
+      /navigation|footer/i.test(section) ? "layout" : /form|search|filter|control|gallery|table|list|card/i.test(section) ? "feature" : "section",
+      `${section} for ${page.name}.`,
+      page.id,
+      index,
+    ));
+  }
+  return [...components.values()];
 }
 function writeState(root: string, state: SliceState) {
   const dir = docsDirectory(root);
@@ -134,7 +254,7 @@ export function readPersistedDesignBrief(root: string): Record<string, unknown> 
   } catch { return null; }
 }
 function planMarkdown(plan: ProjectPlan) {
-  return `# Approved frontend phase plan\n\nStatus: **${plan.status.replaceAll("_", " ")}** · Revision ${plan.revision}\n\n## Site goal\n\n${plan.siteGoal}\n\n## Audience\n\n${plan.audience}\n\n## Visual direction\n\n${plan.visualDirection}\n\n## Pages\n\n${plan.pages.map((item) => `- ${item}`).join("\n") || "- Single page"}\n\n## Features\n\n${plan.features.map((item) => `- ${item}`).join("\n") || "- Content and navigation"}\n\n## Frontend slices\n\n${plan.slices.map((slice, index) => `${index + 1}. **${slice.title}** — ${slice.outcome}\n   - Scope: ${slice.scope.join("; ") || "As defined by the approved brief"}\n   - Acceptance: ${slice.acceptanceCriteria.join("; ") || "Working preview and relevant verification"}`).join("\n")}\n\n## Frontend completion gate\n\n${plan.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\n## Backend phase\n\n${plan.backendRequired ? "Required after frontend approval because the brief needs server features, stored data, accounts, or integrations." : "Not required by the approved brief. The site may be marked complete after the frontend completion gate passes."}\n\n<borg-project-plan>${JSON.stringify(plan)}</borg-project-plan>\n`;
+  return `# Approved frontend phase plan\n\nStatus: **${plan.status.replaceAll("_", " ")}** · Revision ${plan.revision}\n\n## Site goal\n\n${plan.siteGoal}\n\n## Audience\n\n${plan.audience}\n\n## Visual direction\n\n${plan.visualDirection}\n\n## Sitemap\n\n${plan.sitemap.map((page) => `- **${page.name}** \`${page.route}\` — ${page.purpose}\n  - Sections: ${page.sections.join("; ")}`).join("\n")}\n\n## Planned components\n\n${plan.components.map((component) => `- **${component.name}** [${component.kind}] — ${component.purpose}\n  - Used by: ${component.usedBy.join(", ") || "shared/global"}`).join("\n")}\n\n## Global style system\n\n${plan.styles.direction}\n\n- Colors: ${plan.styles.colors.join("; ")}\n- Typography: ${plan.styles.typography.join("; ")}\n- Spacing: ${plan.styles.spacing.join("; ")}\n- Radii: ${plan.styles.radii.join("; ")}\n- Shadows: ${plan.styles.shadows.join("; ")}\n- Layout: ${plan.styles.layoutPrinciples.join("; ")}\n- Motion: ${plan.styles.motion.join("; ")}\n- Responsive: ${plan.styles.responsive.join("; ")}\n- Accessibility: ${plan.styles.accessibility.join("; ")}\n- Avoid: ${plan.styles.avoid.join("; ")}\n\n## Features\n\n${plan.features.map((item) => `- ${item}`).join("\n") || "- Content and navigation"}\n\n## Frontend slices\n\n${plan.slices.map((slice, index) => `${index + 1}. **${slice.title}** — ${slice.outcome}\n   - Scope: ${slice.scope.join("; ") || "As defined by the approved brief"}\n   - Acceptance: ${slice.acceptanceCriteria.join("; ") || "Working preview and relevant verification"}`).join("\n")}\n\n## Frontend completion gate\n\n${plan.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\n## Backend phase\n\n${plan.backendRequired ? "Required after frontend approval because the brief needs server features, stored data, accounts, or integrations." : "Not required by the approved brief. The site may be marked complete after the frontend completion gate passes."}\n\n<borg-project-plan>${JSON.stringify(plan)}</borg-project-plan>\n`;
 }
 function stateFromPlan(plan: ProjectPlan, brief: string, status: SliceState["status"], taskId: string | null, previous?: SliceState | null): SliceState {
   const current = Math.max(0, Math.min(previous?.current ?? 0, Math.max(0, plan.slices.length - 1)));
@@ -172,8 +292,20 @@ export function readProjectPlan(root: string): ProjectPlan | null {
   try {
     const match = safeRead(join(docsDirectory(root), "plan.md")).match(planMarker);
     if (!match) return null;
-    const value = JSON.parse(match[1]) as ProjectPlan;
-    return value.version === 2 && Array.isArray(value.slices) && value.slices.length > 0 ? value : null;
+    const value = JSON.parse(match[1]) as Partial<ProjectPlan>;
+    if (value.version !== 2 || !Array.isArray(value.slices) || !value.slices.length) return null;
+    const pages = Array.isArray(value.pages) ? value.pages : [];
+    const sitemap = Array.isArray(value.sitemap) && value.sitemap.length
+      ? value.sitemap
+      : pages.map((name, index) => ({ id: slug(name, index), name, route: index === 0 ? "/" : `/${slug(name, index)}`, purpose: `${name} page.`, sections: [], componentIds: [], acceptanceCriteria: [] }));
+    const components = Array.isArray(value.components) ? value.components : fallbackComponents(sitemap);
+    return {
+      ...(value as ProjectPlan),
+      pages: pages.length ? pages : sitemap.map((page) => page.name),
+      sitemap,
+      components,
+      styles: value.styles ?? fallbackStyles(false),
+    };
   } catch { return null; }
 }
 
@@ -262,9 +394,9 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
     acceptanceCriteria: ["typecheck and build pass", "key browser journeys pass", "mobile and desktop reviews pass", "accessibility and visual reviews are complete", "no obvious placeholder or dead-control quality remains"],
   });
 
-  const pages = commerce
-    ? ["Home", "Discovery", "Search", "Product", "Cart", "Checkout", "Order confirmation", "Account", ...(seller ? ["Seller storefront", "Seller dashboard"] : []), ...(admin ? ["Admin"] : [])]
-    : ["Pages and routes required by the brief"];
+  const sitemap = fallbackSitemap(brief, commerce, dashboard, contentHeavy, seller, admin, accounts);
+  const components = fallbackComponents(sitemap);
+  const pages = sitemap.map((page) => page.name);
   const features = commerce
     ? ["Product discovery", "Search and filtering", "Product variants", "Cart", "Checkout", "Orders", ...(social ? ["Social engagement", "Recommendations"] : []), ...(seller ? ["Seller management"] : []), ...(admin ? ["Administration"] : [])]
     : ["Content, navigation, and interactions required by the brief"];
@@ -276,6 +408,9 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
     audience: commerce ? "Shoppers discovering and purchasing products, plus any seller/admin roles required by the brief." : "People described by the approved brief.",
     pages,
     features,
+    sitemap,
+    components,
+    styles: fallbackStyles(commerce),
     visualDirection: commerce ? "Premium, mobile-first commercial product design with immersive discovery and trustworthy purchase flows." : "Follow the approved brief and Design Director direction; establish a coherent reusable visual system.",
     backendRequired, slices,
     acceptanceCriteria: [
@@ -308,13 +443,80 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
       };
     }).filter((slice) => slice.title && slice.outcome);
     if (slices.length < 2) return fallback;
+
+    const rawSitemap = Array.isArray(raw.sitemap) ? raw.sitemap.slice(0, 30) : [];
+    const sitemap = rawSitemap.length ? rawSitemap.map((item, index) => {
+      const value = item as Record<string, unknown>;
+      const name = clean(value.name, clean(value.title, `Page ${index + 1}`));
+      const id = slug(clean(value.id, name), index);
+      return {
+        id,
+        name,
+        route: route(value.route, index === 0 ? "/" : `/${id}`),
+        purpose: clean(value.purpose, `${name} page.`),
+        sections: list(value.sections),
+        componentIds: list(value.componentIds).map((componentId, componentIndex) => slug(componentId, componentIndex)),
+        acceptanceCriteria: list(value.acceptanceCriteria, fallback.acceptanceCriteria),
+      };
+    }) : list(raw.pages, fallback.pages).map((name, index) => ({
+      id: slug(name, index),
+      name,
+      route: index === 0 ? "/" : `/${slug(name, index)}`,
+      purpose: `${name} page.`,
+      sections: [],
+      componentIds: [],
+      acceptanceCriteria: fallback.acceptanceCriteria,
+    }));
+
+    const pageIds = new Set(sitemap.map((page) => page.id));
+    const rawComponents = Array.isArray(raw.components) ? raw.components.slice(0, 80) : [];
+    const components = rawComponents.length ? rawComponents.map((item, index) => {
+      const value = item as Record<string, unknown>;
+      const name = clean(value.name, `Component ${index + 1}`);
+      const kind = ["layout", "section", "ui", "feature"].includes(String(value.kind)) ? String(value.kind) as PlannedComponent["kind"] : "section";
+      return {
+        id: slug(clean(value.id, name), index),
+        name,
+        kind,
+        purpose: clean(value.purpose, `${name} reusable interface element.`),
+        usedBy: list(value.usedBy).map((pageId, pageIndex) => slug(pageId, pageIndex)).filter((pageId) => pageIds.has(pageId)),
+        variants: list(value.variants),
+        acceptanceCriteria: list(value.acceptanceCriteria, ["Responsive and accessible states are defined."]),
+      };
+    }) : fallbackComponents(sitemap);
+
+    const componentIds = new Set(components.map((component) => component.id));
+    for (const page of sitemap) page.componentIds = page.componentIds.filter((id) => componentIds.has(id));
+    for (const component of components) for (const pageId of component.usedBy) {
+      const page = sitemap.find((candidate) => candidate.id === pageId);
+      if (page && !page.componentIds.includes(component.id)) page.componentIds.push(component.id);
+    }
+
+    const rawStyles = raw.styles && typeof raw.styles === "object" && !Array.isArray(raw.styles) ? raw.styles as Record<string, unknown> : {};
+    const styles: ProjectStyleSystem = {
+      direction: clean(rawStyles.direction, clean(raw.visualDirection, fallback.styles.direction)),
+      colors: list(rawStyles.colors, fallback.styles.colors),
+      typography: list(rawStyles.typography, fallback.styles.typography),
+      spacing: list(rawStyles.spacing, fallback.styles.spacing),
+      radii: list(rawStyles.radii, fallback.styles.radii),
+      shadows: list(rawStyles.shadows, fallback.styles.shadows),
+      layoutPrinciples: list(rawStyles.layoutPrinciples, fallback.styles.layoutPrinciples),
+      motion: list(rawStyles.motion, fallback.styles.motion),
+      responsive: list(rawStyles.responsive, fallback.styles.responsive),
+      accessibility: list(rawStyles.accessibility, fallback.styles.accessibility),
+      avoid: list(rawStyles.avoid, fallback.styles.avoid),
+    };
+
     return {
       ...fallback,
       siteGoal: clean(raw.siteGoal, fallback.siteGoal),
       audience: clean(raw.audience, fallback.audience),
-      pages: list(raw.pages, fallback.pages),
+      pages: sitemap.map((page) => page.name),
       features: list(raw.features, fallback.features),
-      visualDirection: clean(raw.visualDirection, fallback.visualDirection),
+      sitemap,
+      components,
+      styles,
+      visualDirection: clean(raw.visualDirection, styles.direction),
       backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallback.backendRequired,
       slices,
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
@@ -323,8 +525,18 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
 }
 
 export function projectPlanningPrompt(brief: string): string {
-  return `OUTER WEBSITE PHASE PLAN. This is the one full planning loop for the frontend phase. Inspect the brief and approved repository context, then propose a tailored frontend slice plan. Do not implement anything. For a homepage, enumerate its actual sections and reusable components, then assign every section to an explicit slice scope. Put the shell and hero in the first slice, then plan the remaining homepage sections and interactions in subsequent bounded slices; do not hide the whole homepage under one generic slice. Include a final review slice. A marketplace or dashboard may need more slices. Every slice must have one concrete user-visible outcome and fit in one bounded implementation/verification session. Content and interactions come before dedicated final audits; basic responsive and accessible behavior is required from the first slice. End your response with exactly one machine-readable block using this shape:
-<borg-project-plan>{"siteGoal":"...","audience":"...","pages":["..."],"features":["..."],"visualDirection":"...","backendRequired":false,"slices":[{"id":"...","title":"...","outcome":"...","scope":["..."],"acceptanceCriteria":["..."]}],"acceptanceCriteria":["..."]}</borg-project-plan>
+  return `OUTER WEBSITE PHASE PLAN. This is the one full planning loop for the frontend phase. Inspect the brief and approved repository context, then plan the COMPLETE website before implementation. Do not implement anything.
+
+Your plan has three first-class structure artifacts:
+1. SITEMAP: enumerate every route/page the finished website should contain. Each page needs a stable id, route, purpose, ordered sections, componentIds, and page-level acceptance criteria. Do not collapse a multi-page product into "pages required by the brief."
+2. COMPONENT INVENTORY: enumerate the reusable/buildable layout, section, UI, and feature components needed for the sitemap. Each component needs a stable id, purpose, kind, page usage, variants, and acceptance criteria. This inventory is the future authority for component-focused workspaces.
+3. GLOBAL STYLE SYSTEM: define site-wide visual rules independently from any single component: color roles, typography, spacing, radii, shadows, layout principles, motion, responsive behavior, accessibility, and explicit anti-patterns. Style feedback must be able to change this system without redefining page/component behavior.
+
+Then create bounded implementation slices that cover the sitemap and component inventory. Assign every major page section and planned component to at least one slice. Put shell/navigation and the primary entry experience early; include a final cross-page review slice. Every slice must have one concrete user-visible outcome and fit in one bounded implementation/verification session.
+
+End your response with exactly one machine-readable block using this shape:
+<borg-project-plan>{"siteGoal":"...","audience":"...","pages":["Home"],"features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["Navigation","Hero"],"componentIds":["site-header","hero"],"acceptanceCriteria":["..."]}],"components":[{"id":"site-header","name":"Site Header","kind":"layout","purpose":"...","usedBy":["home"],"variants":["desktop","mobile"],"acceptanceCriteria":["..."]}],"styles":{"direction":"...","colors":["..."],"typography":["..."],"spacing":["..."],"radii":["..."],"shadows":["..."],"layoutPrinciples":["..."],"motion":["..."],"responsive":["..."],"accessibility":["..."],"avoid":["..."]},"visualDirection":"...","backendRequired":false,"slices":[{"id":"...","title":"...","outcome":"...","scope":["..."],"acceptanceCriteria":["..."]}],"acceptanceCriteria":["..."]}</borg-project-plan>
+
 The only project files authorized during PLAN are planning documents under .localcode/build/**/*.md, persisted by BORG after your response. Do not create source, component, style, asset, configuration, backend, API, auth, or database files; do not run builds, tests, previews, or verification. Brief: ${brief}`;
 }
 
@@ -333,9 +545,11 @@ export function persistProposedProjectPlan(root: string, brief: string, plan: Pr
   mkdirSync(dir, { recursive: true });
   const previousPlan = readProjectPlan(root);
   const proposed = { ...plan, revision: previousPlan ? previousPlan.revision + 1 : Math.max(1, plan.revision), status: "proposed" as const, approvedAt: null };
-  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are a generated knowledge projection of the durable SQLite workflow state. SQLite owns progression; these files provide portable, inspectable context for slice sessions and may be rebuilt from the workflow record. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
+  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Planned components](components.md)\n- [Global style system](styles.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are a generated knowledge projection of the durable SQLite workflow state. SQLite owns progression; these files provide portable, inspectable context for slice sessions and may be rebuilt from the workflow record. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
   writeFileSync(join(dir, "brief.md"), `# Product brief\n\n${brief.trim()}\n`);
-  writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.pages.map((page) => `- ${page}`).join("\n")}\n`);
+  writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.sitemap.map((page) => `## ${page.name}\n\n- ID: \`${page.id}\`\n- Route: \`${page.route}\`\n- Purpose: ${page.purpose}\n- Sections: ${page.sections.join("; ") || "To be resolved during implementation"}\n- Components: ${page.componentIds.join(", ") || "None assigned"}\n- Acceptance: ${page.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
+  writeFileSync(join(dir, "components.md"), `# Planned components\n\n${proposed.components.map((component) => `## ${component.name}\n\n- ID: \`${component.id}\`\n- Kind: ${component.kind}\n- Purpose: ${component.purpose}\n- Used by: ${component.usedBy.join(", ") || "shared/global"}\n- Variants: ${component.variants.join(", ") || "default"}\n- Acceptance: ${component.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
+  writeFileSync(join(dir, "styles.md"), `# Global style system\n\n## Direction\n\n${proposed.styles.direction}\n\n## Colors\n${proposed.styles.colors.map((item) => `- ${item}`).join("\n")}\n\n## Typography\n${proposed.styles.typography.map((item) => `- ${item}`).join("\n")}\n\n## Spacing\n${proposed.styles.spacing.map((item) => `- ${item}`).join("\n")}\n\n## Radii\n${proposed.styles.radii.map((item) => `- ${item}`).join("\n")}\n\n## Shadows\n${proposed.styles.shadows.map((item) => `- ${item}`).join("\n")}\n\n## Layout principles\n${proposed.styles.layoutPrinciples.map((item) => `- ${item}`).join("\n")}\n\n## Motion\n${proposed.styles.motion.map((item) => `- ${item}`).join("\n")}\n\n## Responsive\n${proposed.styles.responsive.map((item) => `- ${item}`).join("\n")}\n\n## Accessibility\n${proposed.styles.accessibility.map((item) => `- ${item}`).join("\n")}\n\n## Avoid\n${proposed.styles.avoid.map((item) => `- ${item}`).join("\n")}\n`);
   initializeProjectModel(root, proposed);
   writeFileSync(join(dir, "plan.md"), planMarkdown(proposed));
   writeFileSync(join(dir, "current-slice.md"), "# Current slice\n\nWaiting for approval of the frontend phase plan.\n");
@@ -447,7 +661,7 @@ export function markSliceReady(
 export function readProjectDocs(root: string): ProjectDoc[] {
   let dir: string;
   try { dir = docsDirectory(root); } catch { return []; }
-  const names = ["README.md", "brief.md", designBriefFile, "site-map.md", "plan.md", "current-slice.md", "current-plan.md", "decisions.md", "progress.md", "verification.md", "known-issues.md", "data-contract.md", "handoff.md", "history.md", stateFile, workflowFile];
+  const names = ["README.md", "brief.md", designBriefFile, "site-map.md", "components.md", "styles.md", "plan.md", "current-slice.md", "current-plan.md", "decisions.md", "progress.md", "verification.md", "known-issues.md", "data-contract.md", "handoff.md", "history.md", stateFile, workflowFile];
   if (existsSync(join(dir, "plans")) && lstatSync(join(dir, "plans")).isDirectory()) names.push(...readdirSync(join(dir, "plans")).filter((name) => name.endsWith(".md")).sort().map((name) => `plans/${name}`));
   return names.flatMap((name) => {
     const path = join(dir, name);

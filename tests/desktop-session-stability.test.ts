@@ -42,6 +42,32 @@ test("chat sessions, messages, selected mode, and pending escalation survive rep
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("focused website sessions persist independently with durable scope ids", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-focused-session-"));
+  const database = join(root, "borg.db");
+  try {
+    const repository = new SqliteChatRepository(database);
+    const primary = createChatSession({ id: "site-root", title: "Site", activeMode: "edit", repositoryPath: "C:\\Code\\site", workspaceId: "site", workflowRole: "primary" });
+    const styles = createChatSession({ id: "site-styles", title: "Site · Styles", activeMode: "edit", repositoryPath: primary.repositoryPath, workspaceId: "site::styles", parentSessionId: primary.id, workflowRole: "styles", focusId: "global" });
+    const page = createChatSession({ id: "site-home", title: "Site · Page · Home", activeMode: "edit", repositoryPath: primary.repositoryPath, workspaceId: "site::page::home", parentSessionId: primary.id, workflowRole: "page", focusId: "home" });
+    const component = createChatSession({ id: "site-hero", title: "Site · Component · Hero", activeMode: "edit", repositoryPath: primary.repositoryPath, workspaceId: "site::component::hero", parentSessionId: primary.id, workflowRole: "component", focusId: "hero" });
+    repository.saveSession(primary);
+    repository.saveSession(styles);
+    repository.saveSession(page);
+    repository.saveSession(component);
+    repository.close();
+
+    const reopened = new SqliteChatRepository(database);
+    assert.equal(reopened.findSession(styles.id)?.focusId, "global");
+    assert.equal(reopened.findSession(styles.id)?.workflowRole, "styles");
+    assert.equal(reopened.findSession(page.id)?.focusId, "home");
+    assert.equal(reopened.findSession(page.id)?.workflowRole, "page");
+    assert.equal(reopened.findSession(component.id)?.focusId, "hero");
+    assert.equal(reopened.findSession(component.id)?.workflowRole, "component");
+    reopened.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("internet settings persist metadata while credentials remain outside config files", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-internet-config-"));
   try {

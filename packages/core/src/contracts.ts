@@ -29,6 +29,43 @@ export const WorkflowProjectSliceSchema = z.object({
 });
 export type WorkflowProjectSlice = z.infer<typeof WorkflowProjectSliceSchema>;
 
+export const WorkflowSitemapPageSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  route: z.string().startsWith("/"),
+  purpose: z.string(),
+  sections: z.array(z.string()),
+  componentIds: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()),
+});
+export type WorkflowSitemapPage = z.infer<typeof WorkflowSitemapPageSchema>;
+
+export const WorkflowPlannedComponentSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  kind: z.enum(["layout", "section", "ui", "feature"]),
+  purpose: z.string(),
+  usedBy: z.array(z.string()),
+  variants: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()),
+});
+export type WorkflowPlannedComponent = z.infer<typeof WorkflowPlannedComponentSchema>;
+
+export const WorkflowStyleSystemSchema = z.object({
+  direction: z.string(),
+  colors: z.array(z.string()),
+  typography: z.array(z.string()),
+  spacing: z.array(z.string()),
+  radii: z.array(z.string()),
+  shadows: z.array(z.string()),
+  layoutPrinciples: z.array(z.string()),
+  motion: z.array(z.string()),
+  responsive: z.array(z.string()),
+  accessibility: z.array(z.string()),
+  avoid: z.array(z.string()),
+});
+export type WorkflowStyleSystem = z.infer<typeof WorkflowStyleSystemSchema>;
+
 export const WorkflowProjectPlanSchema = z.object({
   version: z.literal(2),
   revision: z.number().int().positive(),
@@ -38,6 +75,9 @@ export const WorkflowProjectPlanSchema = z.object({
   audience: z.string(),
   pages: z.array(z.string()),
   features: z.array(z.string()),
+  sitemap: z.array(WorkflowSitemapPageSchema).optional(),
+  components: z.array(WorkflowPlannedComponentSchema).optional(),
+  styles: WorkflowStyleSystemSchema.optional(),
   visualDirection: z.string(),
   backendRequired: z.boolean(),
   slices: z.array(WorkflowProjectSliceSchema).min(1),

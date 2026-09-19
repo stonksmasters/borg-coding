@@ -16,7 +16,8 @@ import { AccessController } from "../../../packages/repository/src/access-contro
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
 import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
-import type { ProjectPlan } from "../../../packages/web-builder/src/slice-docs.ts";
+import { readProjectModel } from "../../../packages/web-builder/src/project-model.ts";
+import { readProjectPlan, type ProjectPlan } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const gatewayPort = Number(process.env.BORG_GATEWAY_PORT ?? 4312);
 const coreUrl = process.env.BORG_CORE_URL ?? "http://127.0.0.1:4311";
@@ -85,6 +86,34 @@ function compactTitle(request: string): string {
 }
 
 function formatProjectPlan(plan: ProjectPlan): string {
+  const sitemap = plan.sitemap?.length ? plan.sitemap.map((page) => [
+    `### ${page.name} · \`${page.route}\``,
+    page.purpose,
+    `Sections: ${page.sections.join(" · ") || "None specified"}`,
+    `Components: ${page.componentIds.join(", ") || "None assigned"}`,
+  ].join("\n")).join("\n\n") : plan.pages.map((page) => `- ${page}`).join("\n");
+
+  const components = plan.components?.length ? plan.components.map((component) => [
+    `### ${component.name} · ${component.kind}`,
+    component.purpose,
+    `Used by: ${component.usedBy.join(", ") || "shared/global"}`,
+    `Variants: ${component.variants.join(", ") || "default"}`,
+  ].join("\n")).join("\n\n") : "- Components will be derived from the approved sitemap.";
+
+  const styles = plan.styles ? [
+    plan.styles.direction,
+    `- Colors: ${plan.styles.colors.join("; ")}`,
+    `- Typography: ${plan.styles.typography.join("; ")}`,
+    `- Spacing: ${plan.styles.spacing.join("; ")}`,
+    `- Radii: ${plan.styles.radii.join("; ")}`,
+    `- Shadows: ${plan.styles.shadows.join("; ")}`,
+    `- Layout: ${plan.styles.layoutPrinciples.join("; ")}`,
+    `- Motion: ${plan.styles.motion.join("; ")}`,
+    `- Responsive: ${plan.styles.responsive.join("; ")}`,
+    `- Accessibility: ${plan.styles.accessibility.join("; ")}`,
+    `- Avoid: ${plan.styles.avoid.join("; ")}`,
+  ].join("\n") : plan.visualDirection;
+
   const slices = plan.slices.map((slice, index) => [
     `## ${index + 1}. ${slice.title}`,
     "",
@@ -105,8 +134,14 @@ function formatProjectPlan(plan: ProjectPlan): string {
     `**Visual direction:** ${plan.visualDirection}`,
     `**Backend after frontend:** ${plan.backendRequired ? "Required" : "Not required"}`,
     "",
-    "## Planned pages",
-    ...plan.pages.map((page) => `- ${page}`),
+    "## Sitemap",
+    sitemap,
+    "",
+    "## Component inventory",
+    components,
+    "",
+    "## Global style system",
+    styles,
     "",
     "## Planned capabilities",
     ...plan.features.map((feature) => `- ${feature}`),
@@ -424,11 +459,21 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
   try {
     appendMessage({ sessionId: session.id, role: "user", kind: "prose", text: prompt });
     if (session.title === "New chat") session = chats.updateSession(session.id, { title: compactTitle(prompt) }) ?? session;
+    if (session.repositoryPath) {
+      const currentAccess = access.load();
+      if (currentAccess.repositoryPath !== session.repositoryPath) access.save({ repositoryPath: session.repositoryPath, documents: currentAccess.documents });
+    }
 
+    const focusedAction = session.workflowRole === "styles"
+      ? "style"
+      : session.workflowRole === "page" || session.workflowRole === "component"
+        ? session.workflowRole
+        : sliceAction;
+    const scopeId = session.workflowRole === "page" || session.workflowRole === "component" ? session.focusId : null;
     const upstream = await fetch(`${coreUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode, sliceAction, workflowCommandId }),
+      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode, sliceAction: focusedAction, scopeId, workflowCommandId }),
       signal: controller.signal,
     });
     if (!upstream.ok || !upstream.body) throw new Error(`Planning stream failed (${upstream.status}).`);
@@ -507,7 +552,7 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
       await approveCoreTask(taskId);
       emitToClient({ type: "mode.authorized", taskId, mode: session.activeMode, message: `${session.activeMode.toUpperCase()} authorization is active for this session.` });
       await pipeExecution(taskId, session, emitToClient, controller);
-      if (sliceAction && sliceAction !== "backend") {
+      if (sliceAction && ["initial", "advance", "revise"].includes(sliceAction)) {
         const workflowState = await saveVerifiedFrontendSlice(taskId, session, emitToClient);
         await driveWorkflow(session, workflowState);
       }
@@ -612,6 +657,63 @@ const server = createServer((request, response) => {
       return send(response, 201, { session, messages: [] });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create chat session" }));
     return;
+  }
+
+  const styleFocusRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)\/focus\/styles$/);
+  if (styleFocusRoute && request.method === "POST") {
+    const source = chats.findSession(decodeURIComponent(styleFocusRoute[1]));
+    if (!source) return send(response, 404, { error: "Session not found." });
+    const root = rootWorkflowSession(source);
+    if (!root.repositoryPath) return send(response, 409, { error: "Styles workspace requires a website repository." });
+    const plan = readProjectPlan(root.repositoryPath);
+    if (!plan || plan.status === "proposed") return send(response, 409, { error: "Approve the website structure plan before opening focused workspaces." });
+    const existing = chats.listSessions().find((candidate) => candidate.parentSessionId === root.id && candidate.workflowRole === "styles");
+    const session = existing ?? createChatSession({
+      id: randomUUID(),
+      title: `${root.title} · Styles`,
+      activeMode: root.activeMode,
+      repositoryPath: root.repositoryPath,
+      workspaceId: `${root.workspaceId}::styles`,
+      provider: root.provider,
+      model: root.model,
+      parentSessionId: root.id,
+      workflowRole: "styles",
+      focusId: "global",
+    });
+    if (!existing) chats.saveSession(session);
+    return send(response, 200, { session });
+  }
+
+  const objectFocusRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)\/focus\/(page|component)\/([^/?]+)$/);
+  if (objectFocusRoute && request.method === "POST") {
+    const source = chats.findSession(decodeURIComponent(objectFocusRoute[1]));
+    if (!source) return send(response, 404, { error: "Session not found." });
+    const root = rootWorkflowSession(source);
+    if (!root.repositoryPath) return send(response, 409, { error: "Focused workspace requires a website repository." });
+    const plan = readProjectPlan(root.repositoryPath);
+    if (!plan || plan.status === "proposed") return send(response, 409, { error: "Approve the website structure plan before opening focused workspaces." });
+    const role = objectFocusRoute[2] as "page" | "component";
+    const focusId = decodeURIComponent(objectFocusRoute[3]);
+    const model = readProjectModel(root.repositoryPath);
+    const target = role === "page"
+      ? model.pages.find((page) => page.id === focusId)
+      : model.components.find((component) => component.id === focusId);
+    if (!target) return send(response, 404, { error: `Unknown ${role} scope: ${focusId}` });
+    const existing = chats.listSessions().find((candidate) => candidate.parentSessionId === root.id && candidate.workflowRole === role && candidate.focusId === focusId);
+    const session = existing ?? createChatSession({
+      id: randomUUID(),
+      title: `${root.title} · ${role === "page" ? "Page" : "Component"} · ${target.name}`,
+      activeMode: root.activeMode,
+      repositoryPath: root.repositoryPath,
+      workspaceId: `${root.workspaceId}::${role}::${focusId}`,
+      provider: root.provider,
+      model: root.model,
+      parentSessionId: root.id,
+      workflowRole: role,
+      focusId,
+    });
+    if (!existing) chats.saveSession(session);
+    return send(response, 200, { session, target });
   }
 
   const sessionRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)$/);
@@ -826,7 +928,7 @@ const server = createServer((request, response) => {
       });
       writeEvent(response, { type: "task.state", taskId, state: body.task?.state ?? "IMPLEMENTING", workflow: body.workflow ?? null });
       await pipeExecution(taskId, session, (event) => writeEvent(response, event), controller);
-      if (session.repositoryPath) {
+      if (session.repositoryPath && !["styles", "page", "component"].includes(session.workflowRole)) {
         const root = rootWorkflowSession(session);
         const deliveredWorkflow = await saveVerifiedFrontendSlice(taskId, root, (event) => writeEvent(response, event));
         if (deliveredWorkflow) await driveWorkflow(root, deliveredWorkflow);

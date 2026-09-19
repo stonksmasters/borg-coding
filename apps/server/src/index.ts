@@ -63,7 +63,7 @@ import { preflightFailureMessage, runWorkspacePreflight } from "../../../package
 import { projectWorkflowState } from "../../../packages/web-builder/src/workflow-projection.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
-import { compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
+import { compileFocusedFrontendContext, compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
@@ -483,8 +483,19 @@ function syncDeliveredWorkflowProjection(task: Task, state: WorkflowState, repos
 }
 
 function projectPlanFromWorkflow(state: WorkflowState | null, fallbackRoot: string | null): ProjectPlan | null {
-  if (state?.projectPlan) return state.projectPlan as ProjectPlan;
-  return fallbackRoot ? readProjectPlan(fallbackRoot) : null;
+  const persisted = fallbackRoot ? readProjectPlan(fallbackRoot) : null;
+  if (!state?.projectPlan) return persisted;
+  const durable = state.projectPlan as ProjectPlan;
+  if (Array.isArray(durable.sitemap) && Array.isArray(durable.components) && durable.styles) return durable;
+  if (!persisted) return durable;
+  return {
+    ...durable,
+    sitemap: persisted.sitemap,
+    components: persisted.components,
+    styles: persisted.styles,
+    pages: durable.pages?.length ? durable.pages : persisted.pages,
+    features: durable.features?.length ? durable.features : persisted.features,
+  };
 }
 
 function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan | null, fallbackRoot: string | null): SliceState | null {
@@ -724,7 +735,9 @@ const server = createServer((request, response) => {
     const repositoryPath = taskProjectRepository(taskId);
     const root = approvedPath && websiteInfo(approvedPath) ? approvedPath : repositoryPath && websiteInfo(repositoryPath) ? repositoryPath : null;
     if (!root) return send(response, 200, { docs: [], slice: null });
-    return send(response, 200, { docs: readProjectDocs(root), slice: readSliceState(root) });
+    const events = tasks.listEvents(taskId);
+    const independentWorkspace = events.some((event) => event.type === "STYLE_WORKSPACE_SELECTED" || event.type === "FOCUSED_WORKSPACE_SELECTED");
+    return send(response, 200, { docs: readProjectDocs(root), slice: independentWorkspace ? null : readSliceState(root) });
   }
   const taskPreviewRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/preview$/);
   if (request.method === "POST" && taskPreviewRoute) {
@@ -972,13 +985,32 @@ const server = createServer((request, response) => {
     const taskWorkflow = workflow.get(task.projectId);
     const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
     const projectPlan = websiteProject ? projectPlanFromWorkflow(ownedTaskWorkflow, approvedWorktreePath) : null;
+    const focusedWorkspaceEvent = websiteProject ? tasks.listEvents(taskId).findLast((event) => event.type === "FOCUSED_WORKSPACE_SELECTED") : null;
+    const focusedWorkspace = focusedWorkspaceEvent?.payload as { scopeType?: "page" | "component"; scopeId?: string } | undefined;
+    const focusedExecutionScope = focusedWorkspace?.scopeType && focusedWorkspace.scopeId
+      ? { type: focusedWorkspace.scopeType, id: focusedWorkspace.scopeId } as const
+      : null;
+    const focusedBrowserRoute = focusedExecutionScope && projectPlan
+      ? (() => {
+          const staticRoute = (route: string | null | undefined) =>
+            route && route.startsWith("/") && !/[:\[]/.test(route) ? route : null;
+          if (focusedExecutionScope.type === "page") {
+            return staticRoute(projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id)?.route);
+          }
+          const component = projectPlan.components.find((item) => item.id === focusedExecutionScope.id);
+          return component?.usedBy
+            .map((pageId) => staticRoute(projectPlan.sitemap.find((page) => page.id === pageId)?.route))
+            .find((route): route is string => Boolean(route)) ?? null;
+        })()
+      : null;
+    const styleWorkspace = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "STYLE_WORKSPACE_SELECTED");
     const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED")
       ? sliceStateFromWorkflow(ownedTaskWorkflow, projectPlan, approvedWorktreePath)
       : null;
     const priorDeliveredWebsiteTask = websiteProject
       ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
       : false;
-    const websiteWorkflow: WebsiteWorkflowKind = sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+    const websiteWorkflow: WebsiteWorkflowKind = styleWorkspace || focusedExecutionScope ? "iterative_edit" : sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
     const websiteContext = websiteProject ? websiteGenerationContext({
       name: websiteProject.name,
       template: websiteProject.template,
@@ -986,6 +1018,9 @@ const server = createServer((request, response) => {
     }, websiteWorkflow) : "";
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
+    const styleExecutionContext = styleWorkspace && websiteProject
+      ? `GLOBAL STYLE WORKSPACE. Preserve sitemap, routes, page purposes, component responsibilities, content hierarchy, interactions, and data behavior. Change shared visual primitives first: theme/tokens, typography, spacing, radii, shadows, layout rhythm, responsive styling, motion, and accessibility presentation. Avoid one-off component patches when a shared rule can solve the request. Verify representative pages at mobile and desktop widths.\n\n${readProjectDocs(approvedWorktreePath).filter((doc) => /\/(styles|design-brief|site-map|components)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 5000)}`).join("\n\n").slice(0, 24_000)}`
+      : "";
     const teamPolicy = teamPolicies.load(taskProjectRepository(taskId));
     const activeDisciplines = (task.disciplines.length ? task.disciplines : [teamPolicy.defaultDiscipline]) as EngineeringDiscipline[];
     const primaryDiscipline = activeDisciplines[0];
@@ -1027,7 +1062,15 @@ const server = createServer((request, response) => {
         authority: { plan: projectPlan, state: sliceState },
         productContract: websiteContext,
       }) : null;
+      const compiledFocus = focusedExecutionScope ? compileFocusedFrontendContext({
+        root: approvedWorktreePath,
+        scope: focusedExecutionScope,
+        productContract: websiteContext,
+      }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
+      const focusedExecutionPrompt = compiledFocus
+        ? `FOCUSED ${focusedExecutionScope!.type.toUpperCase()} WORKSPACE [${focusedExecutionScope!.id}]. Modify only the selected ${focusedExecutionScope!.type} and direct dependencies represented in the focused context. Preserve unrelated pages/components and the approved global style system. Do not perform repository-wide redesign or planning.\n\n${compiledFocus.text}`
+        : "";
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
@@ -1039,11 +1082,11 @@ const server = createServer((request, response) => {
         try {
           implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
-          limits: sliceState ? { toolRounds: 12, toolCalls: 28 } : undefined,
-          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledSlice?.sliceId ?? null, compiledSlice?.manifest ?? [], body) : undefined,
+          limits: sliceState || focusedExecutionScope || styleWorkspace ? { toolRounds: 12, toolCalls: 28 } : undefined,
+          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, compiledFocus?.manifest ?? compiledSlice?.manifest ?? [], body) : undefined,
           messages: [
             ...(taskContext.executionState === "REPAIR" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
-            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionContext ? styleExecutionContext + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
           });
@@ -1063,7 +1106,7 @@ const server = createServer((request, response) => {
         }
         const { answer, usedTools, budgetExhausted } = implementationResult;
         implementationBudgetExhausted = Boolean(budgetExhausted);
-        if (sliceState) {
+        if (sliceState || focusedExecutionScope || styleWorkspace) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
           const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
           if (!sourceProgress) {
@@ -1090,7 +1133,7 @@ const server = createServer((request, response) => {
             continue;
           }
         }
-        if (sliceState && budgetExhausted && implementationBudgetContinuations < 1) {
+        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted && implementationBudgetContinuations < 1) {
           implementationBudgetContinuations += 1;
           appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_CONTINUATION", {
             continuation: implementationBudgetContinuations,
@@ -1098,11 +1141,15 @@ const server = createServer((request, response) => {
           });
           if (activeRoleAssignment) finishRole(activeRoleAssignment, "completed", emit);
           activeRoleAssignment = null;
-          repairEvidence = "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
-          emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same slice once with compact context instead of treating partial progress as complete." });
+          repairEvidence = focusedExecutionScope
+            ? `The bounded implementation tool budget ended before the focused ${focusedExecutionScope.type} edit demonstrated completion. Continue the SAME focused scope [${focusedExecutionScope.id}] from the current worktree state. Do not re-plan or inspect unrelated pages/components.`
+            : styleWorkspace
+              ? "The bounded implementation tool budget ended before the global style edit demonstrated completion. Continue the SAME style task from the current worktree state without changing site structure."
+              : "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
+          emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same scoped task once with compact context instead of treating partial progress as complete." });
           continue;
         }
-        if (sliceState && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
+        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
         appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, budgetExhausted: Boolean(budgetExhausted), attempt: task.attempts });
         finishRole(activeRoleAssignment, "completed", emit);
         recordHandoff({
@@ -1148,10 +1195,52 @@ const server = createServer((request, response) => {
           task = scheduleRepair(task, emit, decision.action, decision);
           continue;
         }
-        const specialistEvidence = evaluateSpecialistEvidence(packs, deterministicVerification);
+        let focusedBrowserEvidence: BrowserEvidenceReport | null = null;
+        let focusedBrowserFailure: string | null = null;
+        if (focusedBrowserRoute) {
+          const serverUrl = processRuntime.findRunning(taskId, "dev_server")?.url;
+          if (!serverUrl) {
+            focusedBrowserFailure = "Focused route verification requires the managed development server.";
+          } else {
+            const focusedUrl = new URL(focusedBrowserRoute, serverUrl).toString();
+            try {
+              await tools.execute(
+                { function: { name: "browser_responsive", arguments: { url: focusedUrl, accessibility: true } } },
+                "agent", taskContext, "verifier", activeDisciplines,
+              );
+              const closed = await tools.execute(
+                { function: { name: "browser_close", arguments: {} } },
+                "agent", taskContext, "verifier", activeDisciplines,
+              ) as { report?: BrowserEvidenceReport | null };
+              focusedBrowserEvidence = closed.report ?? null;
+              appendTaskEvent(taskId, "FOCUSED_BROWSER_VERIFICATION_COMPLETED", {
+                scope: focusedExecutionScope,
+                route: focusedBrowserRoute,
+                passed: focusedBrowserEvidence?.passed ?? false,
+              });
+            } catch (error) {
+              focusedBrowserFailure = error instanceof Error ? error.message : String(error);
+              appendTaskEvent(taskId, "FOCUSED_BROWSER_VERIFICATION_FAILED", {
+                scope: focusedExecutionScope,
+                route: focusedBrowserRoute,
+                message: focusedBrowserFailure,
+              });
+            }
+          }
+        }
+        const verificationEvidence = focusedBrowserEvidence
+          ? { ...deterministicVerification, browserEvidence: focusedBrowserEvidence }
+          : deterministicVerification;
+        const specialistEvidence = evaluateSpecialistEvidence(packs, verificationEvidence);
         const verification = {
           ...deterministicVerification,
-          passed: Boolean(deterministicVerification.passed) && specialistEvidence.passed,
+          browserEvidence: focusedBrowserEvidence ?? deterministicVerification.browserEvidence,
+          focusedBrowserRoute,
+          focusedBrowserFailure,
+          passed: Boolean(deterministicVerification.passed)
+            && !focusedBrowserFailure
+            && (focusedBrowserEvidence?.passed ?? true)
+            && specialistEvidence.passed,
           specialistEvidence,
           specialistInstructions: specialistInstructions.verifier,
         };
@@ -1188,7 +1277,7 @@ const server = createServer((request, response) => {
           }
           const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
           const recentChanges = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim());
-          const context = buildRepairContext({ sliceId: compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
+          const context = buildRepairContext({ sliceId: compiledFocus?.sliceId ?? compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
           repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({ browserEvidence: verification.browserEvidence, specialistEvidence: verification.specialistEvidence }).slice(0, 40_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
           setExecutionState("REPAIR");
@@ -1344,6 +1433,20 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, packs, emit);
         const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
+        const styleAcceptance = styleWorkspace && projectPlan?.styles
+          ? [
+              projectPlan.styles.direction,
+              ...projectPlan.styles.layoutPrinciples,
+              ...projectPlan.styles.responsive,
+              ...projectPlan.styles.accessibility,
+              ...projectPlan.styles.avoid.map((item) => `Avoid: ${item}`),
+            ]
+          : [];
+        const focusedAcceptance = focusedExecutionScope && projectPlan
+          ? focusedExecutionScope.type === "page"
+            ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
+            : projectPlan.components.find((component) => component.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
+          : [];
         const review = await runFreshReview({
           ollamaUrl,
           model: reviewerModel,
@@ -1352,12 +1455,12 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           projectGoal: projectPlan?.siteGoal,
           sliceTitle: activeSlice?.title,
           sliceOutcome: activeSlice?.outcome,
-          acceptanceCriteria: activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
+          acceptanceCriteria: focusedAcceptance.length ? focusedAcceptance : styleAcceptance.length ? styleAcceptance : activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
           implementationBudgetExhausted,
           diff: diff.stdout ?? "",
           verification,
           specialistInstructions: specialistInstructions.reviewer,
-          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledSlice?.sliceId ?? null, [], body) : undefined,
+          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, [], body) : undefined,
         });
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
@@ -1415,6 +1518,13 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           return;
         }
 
+        if (focusedExecutionScope && projectPlan) {
+          const changedPaths = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim()).filter((path) => path && !path.includes(" -> "));
+          updateVerifiedProjectModel(approvedWorktreePath, changedPaths, focusedAcceptance);
+          appendTaskEvent(taskId, "FOCUSED_WORKSPACE_VERIFIED", { scopeType: focusedExecutionScope.type, scopeId: focusedExecutionScope.id, changedPaths });
+          status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
+          diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
+        }
         if (sliceState && projectPlan) {
           const summary = `Verified ${currentSlice(projectPlan, sliceState).title}.\n\nChanged files:\n${(status.stdout ?? "").slice(0, 1200)}\n\nVerification: passed.\n\nReview: ${review.summary.slice(0, 1200)}`;
           const changedPaths = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim()).filter((path) => path && !path.includes(" -> "));
@@ -1441,7 +1551,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         tools.execute({ function: { name: "browser_close", arguments: {} } }, "agent", taskContext),
       ]);
       const message = error instanceof Error ? error.message : "Approved implementation failed";
-      if (websiteInfo(approvedWorktreePath) && readSliceState(approvedWorktreePath)) {
+      if (tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED") && websiteInfo(approvedWorktreePath) && readSliceState(approvedWorktreePath)) {
         const failedSlice = readSliceState(approvedWorktreePath)!;
         setFrontendWorkflowStage(approvedWorktreePath, "blocked", { currentSlice: failedSlice.current, totalSlices: failedSlice.total, taskId, detail: message });
       }
@@ -1720,12 +1830,21 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const durableWorkflow = workflow.get(projectId);
       const projectPlan = selectedWebsite ? projectPlanFromWorkflow(durableWorkflow, selectedWebsite.path) : null;
       const previousSlice = selectedWebsite ? sliceStateFromWorkflow(durableWorkflow, projectPlan, selectedWebsite.path) : null;
-      if (mode !== "ask" && selectedWebsite && projectPlan?.status === "approved" && ensureProjectModel(selectedWebsite.path, projectPlan)) commitProjectRegistries(selectedWebsite.path);
+      if (mode !== "ask" && selectedWebsite && projectPlan && projectPlan.status !== "proposed" && ensureProjectModel(selectedWebsite.path, projectPlan)) commitProjectRegistries(selectedWebsite.path);
       const rawSliceAction = String(input.sliceAction ?? "initial");
       if (rawSliceAction === "retry") throw new Error("Blocked tasks must be retried through their existing task continuation endpoint.");
       const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
-      const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
-      const miniLoop = slicedApplication;
+      const focusedPlanReady = Boolean(selectedWebsite && projectPlan && projectPlan.status !== "proposed");
+      if (mode !== "ask" && ["style", "page", "component"].includes(rawSliceAction) && !focusedPlanReady) {
+        throw new Error("Approve the website plan before starting a focused Page, Component, or Styles workspace.");
+      }
+      const styleFocus = mode !== "ask" && rawSliceAction === "style" && focusedPlanReady;
+      const focusType = rawSliceAction === "page" || rawSliceAction === "component" ? rawSliceAction as "page" | "component" : null;
+      const focusId = focusType ? String(input.scopeId ?? "").trim() : "";
+      const objectFocus = mode !== "ask" && Boolean(focusType && focusId && focusedPlanReady);
+      if (focusType && !focusId) throw new Error(`${focusType} workspace is missing its durable scope id.`);
+      const slicedApplication = mode !== "ask" && !["backend", "style", "page", "component"].includes(rawSliceAction) && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
+      const miniLoop = slicedApplication || styleFocus || objectFocus;
       if (rawSliceAction === "backend" && (previousSlice?.status !== "frontend_complete" || projectPlan?.backendRequired !== true)) throw new Error("Backend planning is available only after an approved frontend completion gate for a site that requires backend work.");
       const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
       if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready") throw new Error("Review the finished slice before starting another.");
@@ -1762,13 +1881,21 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const startedWorkflow = workflow.start(
         task,
         rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : slicedApplication ? "frontend_slice" : "general",
-        slicedApplication ? "Continuing the approved project workflow without repository rediscovery." : "Planning the requested project work.",
+        slicedApplication
+          ? "Continuing the approved project workflow without repository rediscovery."
+          : objectFocus
+            ? `Planning a focused ${focusType} edit without changing the main frontend slice workflow.`
+            : styleFocus
+              ? "Planning a global style edit without changing the main frontend slice workflow."
+              : "Planning the requested project work.",
         { commandId: workflowCommandId, feedback: sliceAction === "revise" ? requestText : undefined },
       );
       syncWorkflowProjection(task, startedWorkflow);
       if (selectedPath) appendTaskEvent(task.id, "TASK_REPOSITORY_BOUND", { repositoryPath: selectedPath });
       if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
       if (slicedApplication) appendTaskEvent(task.id, "FRONTEND_SLICE_SELECTED", { action: sliceAction, feedback: previousSlice ? requestText : "", previous: previousSlice?.current ?? null });
+      if (styleFocus) appendTaskEvent(task.id, "STYLE_WORKSPACE_SELECTED", { scope: "global", feedback: requestText });
+      if (objectFocus && focusType) appendTaskEvent(task.id, "FOCUSED_WORKSPACE_SELECTED", { scopeType: focusType, scopeId: focusId, feedback: requestText });
       if (rawSliceAction === "backend") appendTaskEvent(task.id, "BACKEND_PHASE_SELECTED", { feedback: requestText });
       writeEvent(response, { type: "task.created", task });
       const emit = (event: Record<string, unknown>) => {
@@ -1811,7 +1938,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const priorDeliveredWebsiteTask = websiteProject
         ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== task.id && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
         : false;
-      const websiteWorkflow: WebsiteWorkflowKind = projectPlanning || slicedApplication ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+      const websiteWorkflow: WebsiteWorkflowKind = projectPlanning || slicedApplication ? "initial_generation" : styleFocus || objectFocus || priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
       const websiteContext = websiteProject ? websiteGenerationContext({
         name: websiteProject.name,
         template: websiteProject.template,
@@ -1832,6 +1959,25 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
             .map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 14_000);
           repositoryContext += `\n\nExisting proposed plan to revise explicitly:\n${planningDocs}`;
         }
+      } else if (objectFocus && focusType && websiteProject && projectPlan) {
+        compiledArchitectContext = compileFocusedFrontendContext({
+          root: websiteProject.path,
+          scope: { type: focusType, id: focusId },
+          productContract: websiteContext,
+        });
+        repositoryContext = compiledArchitectContext.text;
+        const scopedRegistry = focusType === "page"
+          ? projectPlan.sitemap.find((page) => page.id === focusId)
+          : projectPlan.components.find((component) => component.id === focusId);
+        const scopeName = scopedRegistry?.name ?? focusId;
+        sliceDirective = `FOCUSED ${focusType.toUpperCase()} WORKSPACE — ${scopeName} [${focusId}]. This is an isolated maintenance workspace inside an already-approved website. Work only on the selected ${focusType} and its direct dependencies. Preserve the approved global style system, sitemap, unrelated pages, unrelated components, application behavior outside this scope, and shared contracts. If the requested change would require a structural or global-style change, explain that boundary instead of silently broadening scope. Use the focused registry and targeted source context below; do not rediscover or re-plan the whole repository.`;
+      } else if (styleFocus && websiteProject && projectPlan) {
+        const docs = readProjectDocs(websiteProject.path);
+        const styleContext = ["styles.md", "design-brief.md", "site-map.md", "components.md", "decisions.md"]
+          .flatMap((name) => docs.filter((doc) => doc.path.endsWith(`/${name}`)))
+          .map((doc) => `${doc.path}\n${doc.content.slice(0, 5000)}`).join("\n\n").slice(0, 24_000);
+        sliceDirective = `GLOBAL STYLE WORKSPACE. The approved sitemap, component responsibilities, content hierarchy, routes, behavior, and data contracts are fixed scope boundaries. Work only on the website-wide visual system: shared color tokens, typography, spacing, radii, shadows, layout rhythm, global responsive rules, motion, and accessibility styling. Prefer shared theme/token/style primitives over component-by-component one-off patches. Do not add/remove pages, rewrite product behavior, redesign information architecture, or change component responsibilities unless the operator explicitly says the style request requires it. Verify the result across representative pages and mobile/desktop widths.\n\nApproved global style context:\n${styleContext}`;
+        repositoryContext = `STYLE FOCUS: use the approved style/design docs and targeted source reads. Do not rediscover or replan the whole website.\n\n${styleContext}`;
       } else if (slicedApplication && websiteProject && projectPlan && previousSlice) {
         const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
         const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
