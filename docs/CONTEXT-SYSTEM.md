@@ -1,6 +1,6 @@
 # BORG Context System
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 
 ## Purpose
 
@@ -8,7 +8,7 @@ BORG needs long-running project memory without turning every model call into a f
 
 The solution is a Context Compiler: a server-owned layer that assembles the smallest sufficient context for the current action from durable project state.
 
-Some of the required inputs already exist today through project plans, slice state, handoffs, repository intelligence, checkpoints, and generated build documents. The next step is to make context assembly explicit, typed, bounded, and testable.
+The Context Compiler now exists as an explicit, bounded service for frontend work. It consumes authoritative project-plan and slice state when available, pins the global website product/design contract, records a provenance manifest, and adds only relevant project-model, handoff, decision, evidence, and source-file context. Generated build files remain fallback/projection inputs for migration and inspection rather than progression authority.
 
 ## Core distinction
 
@@ -175,20 +175,25 @@ Do not rely on the model to remember:
 
 Those belong to the system.
 
-## Implementation direction
+## Current implementation
 
-The Context Compiler should become a first-class server service with:
+The current compiler provides:
 
-- typed inputs;
-- typed output sections;
-- token or character budgets;
-- source provenance;
-- context diagnostics;
-- per-role and per-action profiles;
-- deterministic inclusion rules where possible;
-- tests proving irrelevant project history is excluded.
+- typed project/slice/scope inputs;
+- authoritative workflow-state injection;
+- pinned website product/design contract;
+- bounded character budgets;
+- source provenance manifests;
+- project-model and registry context;
+- handoff and durable-decision compression;
+- recent verification/review evidence;
+- relevant source selection using path and bounded content signals;
+- persisted exact model-input diagnostics;
+- tests proving irrelevant project files are excluded.
 
-The UI should expose a human-readable summary of the compiled context without exposing private model chain-of-thought.
+The Ollama request trimmer reserves substantially more of its budget for pinned system/product contracts than for old tool history. Under context pressure, stale tool turns should disappear before the current product contract and slice acceptance criteria do.
+
+Next hardening should use language-intelligence dependency mappings for file selection and add richer page/component-specific profiles rather than broadening prompts again.
 
 ## Success criteria
 
