@@ -83,3 +83,32 @@ test("managed development servers stay bounded to the approved worktree", async 
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+
+test("managed preview receives project environment without exposing the value in server evidence", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-browser-env-"));
+  const port = await availablePort();
+  const secret = "preview-secret-value";
+  const runtime = new BrowserVerification({
+    environmentForTask: (taskId) => taskId === "browser-env-test" ? { PROJECT_SECRET: secret } : {},
+  });
+  const context = { taskId: "browser-env-test", worktreePath: root };
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    const started = await runtime.execute("browser_server_start", {
+      command: "node",
+      args: ["-e", `console.log(process.env.PROJECT_SECRET); require('node:http').createServer((_, response) => response.end(process.env.PROJECT_SECRET || 'missing')).listen(${port}, '127.0.0.1')`],
+      url,
+      timeout_seconds: 10,
+    }, context) as { stdout: string; stderr: string };
+
+    assert.equal((await fetch(url)).text instanceof Function, true);
+    const response = await fetch(url);
+    assert.equal(await response.text(), secret);
+    assert.equal(started.stdout.includes(secret), false);
+    assert.equal(started.stderr.includes(secret), false);
+  } finally {
+    await runtime.execute("browser_server_stop", {}, context);
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
