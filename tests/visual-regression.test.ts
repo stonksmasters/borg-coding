@@ -76,7 +76,8 @@ test("visual baselines require explicit acceptance before deterministic comparis
   try {
     const first = service.compare(root, evidence(screenshotPath, original, 2, 1), "quick");
     assert.equal(first.status, "missing-baseline");
-    assert.equal(first.passed, false);
+    assert.equal(first.passed, true);
+    assert.equal(first.requiresAcceptance, true);
     const candidate = first.comparisons[0].candidate;
     assert.deepEqual({ width: candidate.width, height: candidate.height }, { width: 2, height: 2 });
     const accepted = service.acceptBaseline(root, {
@@ -91,6 +92,7 @@ test("visual baselines require explicit acceptance before deterministic comparis
 
     const passing = service.compare(root, evidence(screenshotPath, original, 2, 2), "quick");
     assert.equal(passing.status, "pass");
+    assert.equal(passing.requiresAcceptance, false);
     assert.equal(passing.comparisons[0].changedPixels, 0);
     assert.ok(passing.comparisons[0].diff?.path.endsWith("-diff.png"));
 
