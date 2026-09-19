@@ -21,7 +21,7 @@ import {
   type TaskContinuation,
   type TaskState,
 } from "../../../packages/core/src/contracts.ts";
-import { assertTransition } from "../../../packages/core/src/state-machine.ts";
+import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
 import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
@@ -49,9 +49,12 @@ import { assertArchitectOutput, architectRepairPrompt, validateArchitectOutput }
 import { runFreshReview } from "./fresh-review.ts";
 import { deriveWorkflowStatus } from "./workflow-status.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
+import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
-import { prepareWebsiteWorkspace, websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { preflightFailureMessage, runWorkspacePreflight } from "../../../packages/web-builder/src/workspace-preflight.ts";
+import { projectWorkflowState } from "../../../packages/web-builder/src/workflow-projection.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
@@ -70,6 +73,7 @@ import {
 const databasePath = resolve(process.env.BORG_DATABASE_PATH ?? ".borg/borg.db");
 mkdirSync(dirname(databasePath), { recursive: true });
 const tasks = new SqliteTaskRepository(databasePath);
+const workflow = new WorkflowEngine(tasks);
 const access = new AccessController(resolve(".borg/access.json"));
 const memory = new RepositoryMemory(resolve(".borg/repository-memory.db"));
 const worktreeRoot = resolve(".borg/worktrees");
@@ -334,10 +338,12 @@ function recoverInterruptedTasks(): void {
 }
 
 function transitionTask(task: Task, state: TaskState, emit?: (event: Record<string, unknown>) => void): Task {
-  assertTransition(task.state, state);
-  const updated = { ...task, state, updatedAt: new Date().toISOString() };
-  tasks.saveTask(updated);
-  appendTaskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: state });
+  const { task: updated, workflow: workflowState } = workflow.transition(task, state);
+  const root = access.load().repositoryPath;
+  if (root && tasks.findApproval(task.id)?.status === "APPROVED") {
+    try { projectWorkflowState(root, workflowState); }
+    catch (error) { appendTaskEvent(task.id, "WORKFLOW_PROJECTION_FAILED", { message: error instanceof Error ? error.message : String(error) }); }
+  }
   const automaticKind: Partial<Record<TaskState, TaskCheckpoint["kind"]>> = {
     AWAITING_APPROVAL: "plan_complete",
     VERIFYING: "implementation_complete",
@@ -346,7 +352,7 @@ function transitionTask(task: Task, state: TaskState, emit?: (event: Record<stri
   };
   const kind = automaticKind[state];
   if (kind) createCheckpointSnapshot(updated, kind);
-  emit?.({ type: "task.state", taskId: task.id, state });
+  emit?.({ type: "task.state", taskId: task.id, state, workflow: workflowState });
   return updated;
 }
 
@@ -428,22 +434,32 @@ function scheduleDesignRefinement(task: Task, emit: (event: Record<string, unkno
   return updated;
 }
 
-function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
+function recoveryPayload(updated: Task, reason: string, recovery?: RecoveryDecision) {
+  return { attempt: updated.attempts, maximum: maxRepairAttempts, reason, category: recovery?.category ?? null, action: recovery?.action ?? null };
+}
+
+function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
   createCheckpointSnapshot(task, "pre_repair");
   let updated = transitionTask(task, "IMPLEMENTING", emit);
   updated = { ...updated, attempts: updated.attempts + 1, updatedAt: new Date().toISOString() };
   tasks.saveTask(updated);
-  appendTaskEvent(task.id, "REPAIR_SCHEDULED", { attempt: updated.attempts, maximum: maxRepairAttempts, reason });
-  emit({ type: "repair.scheduled", attempt: updated.attempts, maximum: maxRepairAttempts, message: reason });
+  const payload = recoveryPayload(updated, reason, recovery);
+  appendTaskEvent(task.id, "REPAIR_SCHEDULED", payload);
+  if (recovery) appendTaskEvent(task.id, "IMPLEMENTATION_RECOVERY_SCHEDULED", payload);
+  emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
+  if (recovery) workflow.recovery(updated, recovery.category, recovery.action, false);
   return updated;
 }
 
-function scheduleImplementationRetry(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
+function scheduleImplementationRetry(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
   createCheckpointSnapshot(task, "pre_repair");
   const updated = { ...task, attempts: task.attempts + 1, updatedAt: new Date().toISOString() };
   tasks.saveTask(updated);
-  appendTaskEvent(task.id, "IMPLEMENTATION_RETRY_SCHEDULED", { attempt: updated.attempts, maximum: maxRepairAttempts, reason });
-  emit({ type: "repair.scheduled", attempt: updated.attempts, maximum: maxRepairAttempts, message: reason });
+  const payload = recoveryPayload(updated, reason, recovery);
+  appendTaskEvent(task.id, "IMPLEMENTATION_RETRY_SCHEDULED", payload);
+  if (recovery) appendTaskEvent(task.id, "IMPLEMENTATION_RECOVERY_SCHEDULED", payload);
+  emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
+  if (recovery) workflow.recovery(updated, recovery.category, recovery.action, false);
   return updated;
 }
 
@@ -583,7 +599,7 @@ const server = createServer((request, response) => {
     const root = approval?.worktreePath ?? (typeof recordedRoot === "string" ? recordedRoot : access.load().repositoryPath);
     const plan = root ? readProjectPlan(root) : null;
     const slice = root ? readSliceState(root) : null;
-    return send(response, 200, { status: deriveWorkflowStatus(task, events, plan, slice) });
+    return send(response, 200, { status: deriveWorkflowStatus(task, events, plan, slice, workflow.get(task.projectId)) });
   }
 
   const changesRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/changes$/);
@@ -626,7 +642,12 @@ const server = createServer((request, response) => {
           isFrontendSlice && repositoryPath ? { repositoryPath, expectedBaseCommit: approval.baseCommit! } : undefined);
         appendTaskEvent(taskId, "DELIVERY_COMPLETED", { result });
         task = transitionTask(task, "COMPLETE");
-        return send(response, 200, { task, delivery: result });
+        if (isFrontendSlice && repositoryPath) {
+          const state = readSliceState(repositoryPath);
+          const plan = readProjectPlan(repositoryPath);
+          if (state && plan) workflow.slice(task, { index: state.current, total: plan.slices.length, title: state.currentTitle, status: "awaiting_feedback" });
+        }
+        return send(response, 200, { task, workflow: workflow.get(task.projectId), delivery: result });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Delivery failed";
         appendTaskEvent(taskId, "DELIVERY_FAILED", { method, message });
@@ -656,9 +677,18 @@ const server = createServer((request, response) => {
       if (eventType.startsWith("tool.") || eventType.startsWith("runtime.turn.")) appendTaskEvent(taskId, eventType.toUpperCase().replaceAll(".", "_"), enriched);
       if (eventType === "activity.updated") appendTaskEvent(taskId, "AGENT_ACTIVITY", { activity: event.activity });
     };
+    const performPreflight = (reason: string) => {
+      const report = runWorkspacePreflight(approvedWorktreePath, { reason, repair: true, expectedGitHead: approval.baseCommit ?? undefined });
+      appendTaskEvent(taskId, "WORKSPACE_PREFLIGHT_COMPLETED", { report });
+      emit({ type: "workspace.preflight.completed", report });
+      if (!report.passed) {
+        appendTaskEvent(taskId, "WORKSPACE_PREFLIGHT_BLOCKED", { report });
+        throw new Error(`Workspace preflight blocked execution: ${preflightFailureMessage(report)}`);
+      }
+      return report;
+    };
     const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
     const websiteProject = websiteInfo(approvedWorktreePath);
-    if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
     const persistedDesignBrief = websiteProject ? readPersistedDesignBrief(approvedWorktreePath) : null;
     const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
     const designBrief = latestDesignBrief(taskId) ?? (parsedPersistedDesignBrief?.success ? parsedPersistedDesignBrief.data : null);
@@ -690,16 +720,19 @@ const server = createServer((request, response) => {
     let activeRoleAssignment: RoleAssignment | null = null;
     void (async () => {
       let repairEvidence = "";
+      performPreflight("execution_start");
       const compiledSlice = sliceState ? compileFrontendContext({ root: approvedWorktreePath, phase: "frontend", sliceIndex: sliceState.current }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       while (task) {
-        if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
+        if (task.attempts > 0) performPreflight("retry_start");
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
         const repairPrompt = repairEvidence
           ? `Evidence-driven follow-up. Address only the concrete failure or refinement evidence below, then inspect the diff.\n\n${repairEvidence}`
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
-        const { answer, usedTools } = await runOllamaAgent({
+        let implementationResult: Awaited<ReturnType<typeof runOllamaAgent>>;
+        try {
+          implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
           limits: sliceState ? { toolRounds: 12, toolCalls: 28 } : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledSlice?.sliceId ?? null, compiledSlice?.manifest ?? [], body) : undefined,
@@ -707,7 +740,22 @@ const server = createServer((request, response) => {
             { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
-        });
+          });
+        } catch (error) {
+          if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
+          activeRoleAssignment = null;
+          const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
+          appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
+          if (decision.disposition === "fatal") {
+            workflow.recovery(task, decision.category, decision.action, true);
+            throw error;
+          }
+          const recoveryPreflight = performPreflight("implementation_recovery");
+          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+          task = scheduleImplementationRetry(task, emit, decision.action, decision);
+          continue;
+        }
+        const { answer, usedTools } = implementationResult;
         if (sliceState) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
           const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
@@ -721,13 +769,17 @@ const server = createServer((request, response) => {
                 const payload = event.payload as Record<string, unknown>;
                 return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
               });
-            appendTaskEvent(taskId, "IMPLEMENTATION_NO_PROGRESS", { attempt: task.attempts, toolFailures });
-            if (task.attempts >= maxRepairAttempts) {
-              throw new Error(`Slice made no source-file progress after ${maxRepairAttempts + 1} bounded implementation attempts. Recent tool failures: ${toolFailures.join(" | ") || "none recorded"}`);
+            const failure = toolFailures.at(-1) ?? "The implementation attempt completed without any source-file progress.";
+            const decision = classifyImplementationFailure(failure, task.attempts, maxRepairAttempts, { noProgress: true });
+            appendTaskEvent(taskId, "IMPLEMENTATION_NO_PROGRESS", { attempt: task.attempts, toolFailures, decision });
+            appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
+            if (decision.disposition === "fatal") {
+              workflow.recovery(task, decision.category, decision.action, true);
+              throw new Error(`Slice recovery stopped: ${decision.reason}`);
             }
-            if (websiteProject) prepareWebsiteWorkspace(approvedWorktreePath);
-            repairEvidence = `The previous implementation attempt produced no source-file changes. Stay inside the current approved slice and do not rediscover or re-plan the project. BORG has re-prepared the canonical workspace directories. For every new file, use worktree_write; it creates missing parent directories automatically. Use worktree_patch only for existing files. Recent tool failures:\n${toolFailures.length ? toolFailures.join("\n") : "No specific tool failure was recorded; inspect the current slice context and make the smallest concrete source change."}`;
-            task = scheduleImplementationRetry(task, emit, "Implementation produced no source-file changes; retrying the same approved slice without re-planning.");
+            const recoveryPreflight = performPreflight("no_progress_recovery");
+            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
+            task = scheduleImplementationRetry(task, emit, decision.action, decision);
             continue;
           }
         }
@@ -749,18 +801,31 @@ const server = createServer((request, response) => {
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_verifying", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Implementation produced source changes. Deterministic and browser verification are running." });
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         emit({ type: "tool.started", tool: "verification_run", input: { profile: verificationProfile } });
-        const deterministicVerification = await tools.execute(
-          { function: { name: "verification_run", arguments: { profile: verificationProfile } } },
-          "agent",
-          taskContext,
-          "verifier",
-          activeDisciplines,
-        ) as {
+        let deterministicVerification: {
           passed?: boolean;
           results?: unknown[];
           browserEvidence?: BrowserEvidenceReport | null;
           visualRegression?: VisualRegressionReport;
         };
+        try {
+          deterministicVerification = await tools.execute(
+            { function: { name: "verification_run", arguments: { profile: verificationProfile } } },
+            "agent", taskContext, "verifier", activeDisciplines,
+          ) as typeof deterministicVerification;
+        } catch (error) {
+          if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
+          activeRoleAssignment = null;
+          const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
+          appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "verification" });
+          if (decision.disposition === "fatal") {
+            workflow.recovery(task, decision.category, decision.action, true);
+            throw error;
+          }
+          const recoveryPreflight = performPreflight("verification_recovery");
+          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+          task = scheduleRepair(task, emit, decision.action, decision);
+          continue;
+        }
         const specialistEvidence = evaluateSpecialistEvidence(packs, deterministicVerification);
         const verification = {
           ...deterministicVerification,
@@ -988,7 +1053,10 @@ const server = createServer((request, response) => {
           const changedPaths = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim()).filter((path) => path && !path.includes(" -> "));
           updateVerifiedProjectModel(approvedWorktreePath, changedPaths, currentSlice(projectPlan, sliceState).acceptanceCriteria);
           const ready = markSliceReady(approvedWorktreePath, taskId, summary);
-          if (ready) appendTaskEvent(taskId, "FRONTEND_SLICE_READY", { slice: ready.current, status: ready.status });
+          if (ready) {
+            appendTaskEvent(taskId, "FRONTEND_SLICE_READY", { slice: ready.current, status: ready.status });
+            workflow.slice(task, { index: ready.current, total: ready.total, title: ready.currentTitle, status: "awaiting_feedback" });
+          }
           status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
           diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
         }
@@ -1136,6 +1204,7 @@ const server = createServer((request, response) => {
     const currentApproval = tasks.findApproval(taskId);
     return send(response, 200, {
       task,
+      workflow: workflow.get(task.projectId),
       approval: currentApproval,
       projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_PROPOSED"),
       findings: tasks.listFindings(taskId),
@@ -1160,6 +1229,7 @@ const server = createServer((request, response) => {
       if (decision === "reject") {
         const rejected = { ...approval, status: "REJECTED" as const, decidedAt: new Date().toISOString() };
         tasks.saveApproval(rejected);
+        workflow.approvalDecided(task, rejected, isProjectPlanApproval ? "project_plan" : "execution");
         appendTaskEvent(task.id, isProjectPlanApproval ? "PROJECT_PLAN_REVISION_REQUESTED" : "APPROVAL_REJECTED", { approvalId: approval.id });
         const repositoryPath = access.load().repositoryPath;
         if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: isProjectPlanApproval ? "Frontend phase plan requires revision." : "Implementation mini-plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
@@ -1176,7 +1246,8 @@ const server = createServer((request, response) => {
         tasks.saveApproval(approved);
         appendTaskEvent(task.id, "PROJECT_PLAN_APPROVED", { approvalId: approval.id, revision: approvedProject.plan.revision });
         task = transitionTask(task, "COMPLETE");
-        return send(response, 200, { task, approval: approved, projectPlanApproved: true, projectPlan: approvedProject.plan, slice: approvedProject.state });
+        const workflowState = workflow.approvalDecided(task, approved, "project_plan");
+        return send(response, 200, { task, approval: approved, workflow: workflowState, projectPlanApproved: true, projectPlan: approvedProject.plan, slice: approvedProject.state });
       }
       const worktree = await worktrees.create(repositoryPath, task.id);
       const sliceIntent = tasks.listEvents(task.id).findLast((event) => event.type === "FRONTEND_SLICE_SELECTED")?.payload as { action?: SliceAction; feedback?: string } | undefined;
@@ -1190,17 +1261,18 @@ const server = createServer((request, response) => {
       }
       const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: worktree.path, baseCommit: worktree.baseCommit };
       tasks.saveApproval(approved);
+      workflow.approvalDecided(task, approved, "execution");
       appendTaskEvent(task.id, "APPROVAL_APPROVED", { approvalId: approval.id, worktreePath: worktree.path, baseCommit: worktree.baseCommit });
       recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: `Implementation plan approved at base commit ${worktree.baseCommit}.`, taskId: task.id, path: null, line: null, createdAt: approved.decidedAt! });
       createCheckpointSnapshot(task, "pre_edit", { mode: recordedMode(task.id) });
       task = transitionTask(task, "IMPLEMENTING");
-      return send(response, 200, { task, approval: approved, worktree: worktrees.describe(worktree) });
+      return send(response, 200, { task, approval: approved, workflow: workflow.get(task.projectId), worktree: worktrees.describe(worktree) });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to decide approval" }));
     return;
   }
   if (request.method === "GET" && request.url?.startsWith("/api/tasks")) {
     const projectId = new URL(request.url, `http://localhost:${port}`).searchParams.get("projectId") ?? "local";
-    return send(response, 200, { tasks: tasks.listTasks(projectId) });
+    return send(response, 200, { tasks: tasks.listTasks(projectId), workflow: workflow.get(projectId) });
   }
   if (request.method === "GET" && request.url === "/api/access") return send(response, 200, { access: access.describe() });
   if (request.method === "POST" && request.url === "/api/access") {
@@ -1265,6 +1337,8 @@ const server = createServer((request, response) => {
         riskLevel: minimumRiskFor(packs),
       };
       tasks.saveTask(task);
+      workflow.start(task, rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : slicedApplication ? "frontend_slice" : "general",
+        slicedApplication ? "Continuing the approved project workflow without repository rediscovery." : "Planning the requested project work.");
       const created = { id: randomUUID(), taskId: task.id, type: "TASK_CREATED", payload: { state: task.state }, occurredAt: task.createdAt };
       tasks.appendEvent(created);
       if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
@@ -1431,6 +1505,7 @@ const server = createServer((request, response) => {
           }, emit);
           const approval = createApproval({ id: randomUUID(), taskId: task.id });
           tasks.saveApproval(approval);
+          workflow.approvalRequested(task, approval, proposedProjectPlan ? "project_plan" : "execution");
           appendTaskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, mode, kind: proposedProjectPlan ? "project_plan" : "execution" });
           task = transitionTask(task, "AWAITING_APPROVAL", emit);
           if (proposedProjectPlan) {

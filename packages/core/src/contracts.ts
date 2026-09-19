@@ -16,6 +16,9 @@ export const reviewFindingStates = ["open", "accepted", "fixed", "waived", "fals
 export const reviewDecisionActions = ["accept", "mark_fixed", "waive", "false_positive", "reopen", "supersede"] as const;
 export const reviewDecisionActors = ["operator", "reviewer", "system"] as const;
 export const reviewRunStatuses = ["running", "completed", "failed"] as const;
+export const workflowPhases = ["planning", "frontend", "backend", "delivery", "complete"] as const;
+export const workflowStatuses = ["idle", "planning", "awaiting_approval", "running", "verifying", "reviewing", "awaiting_feedback", "recovery_required", "complete", "blocked", "failed", "cancelled"] as const;
+export const workflowActions = ["plan", "await_approval", "start_slice", "implement", "verify", "repair", "checkpoint", "advance_slice", "request_feedback", "plan_backend", "deliver", "recover", "none"] as const;
 
 export const TaskSchema = z.object({
   id: z.string().min(1), projectId: z.string().min(1), request: z.string().min(1),
@@ -76,6 +79,16 @@ export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
 
 export const TaskEventSchema = z.object({ id: z.string().min(1), taskId: z.string().min(1), type: z.string().min(1), payload: z.record(z.string(), z.unknown()), occurredAt: z.string().datetime() });
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
+
+export const WorkflowStateSchema = z.object({
+  projectId: z.string().min(1), taskId: z.string().min(1).nullable(),
+  phase: z.enum(workflowPhases), status: z.enum(workflowStatuses), nextAction: z.enum(workflowActions),
+  planApprovalId: z.string().min(1).nullable(), planApproved: z.boolean(),
+  sliceIndex: z.number().int().nonnegative().nullable(), sliceTotal: z.number().int().positive().nullable(), sliceTitle: z.string().nullable(),
+  repairAttempt: z.number().int().nonnegative(), recoveryCategory: z.string().nullable(), detail: z.string(),
+  version: z.number().int().positive(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
+});
+export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
 
 
 export type EngineeringRole = (typeof engineeringRoles)[number];

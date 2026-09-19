@@ -1,4 +1,4 @@
-import type { Task, TaskEvent } from "../../../packages/core/src/contracts.ts";
+import type { Task, TaskEvent, WorkflowState } from "../../../packages/core/src/contracts.ts";
 import type { ProjectPlan, SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const steps = ["IMPLEMENTATION_RESPONSE_COMPLETED", "VERIFICATION_COMPLETED", "REVIEW_COMPLETED", "FRONTEND_SLICE_READY", "DELIVERY_READY"];
@@ -12,7 +12,7 @@ function activityDetail(event: TaskEvent) {
   return event.type.replaceAll("_", " ").toLowerCase();
 }
 
-export function deriveWorkflowStatus(task: Task, events: TaskEvent[], plan: ProjectPlan | null, slice: SliceState | null) {
+export function deriveWorkflowStatus(task: Task, events: TaskEvent[], plan: ProjectPlan | null, slice: SliceState | null, workflow: WorkflowState | null = null) {
   const latestActivity = events.findLast((event) => event.type === "AGENT_ACTIVITY");
   const latestVerification = events.findLast((event) => event.type === "VERIFICATION_COMPLETED");
   const completed = steps.filter((type) => events.some((event) => event.type === type));
@@ -27,17 +27,21 @@ export function deriveWorkflowStatus(task: Task, events: TaskEvent[], plan: Proj
   return {
     taskId: task.id,
     taskState: task.state,
-    phase: "frontend" as const,
-    sliceIndex: slice?.current ?? null,
-    sliceTotal: slice?.total ?? null,
-    sliceTitle: slice?.currentTitle ?? null,
+    source: workflow ? "sqlite" as const : "legacy_projection" as const,
+    workflowVersion: workflow?.version ?? null,
+    phase: workflow?.phase ?? "frontend",
+    status: workflow?.status ?? task.state.toLowerCase(),
+    sliceIndex: workflow?.sliceIndex ?? slice?.current ?? null,
+    sliceTotal: workflow?.sliceTotal ?? slice?.total ?? null,
+    sliceTitle: workflow?.sliceTitle ?? slice?.currentTitle ?? null,
     objective: plan && slice ? plan.slices[slice.current]?.outcome ?? task.request : task.request,
     currentAction: terminal ? task.state.toLowerCase().replaceAll("_", " ") : (latestActivity?.payload.activity as { title?: string } | undefined)?.title ?? task.state.toLowerCase().replaceAll("_", " "),
     completed,
     pending: steps.filter((type) => !completed.includes(type)),
     verificationPassed: (latestVerification?.payload.verification as { passed?: boolean } | undefined)?.passed ?? null,
-    repairAttempt: task.attempts,
-    nextAction,
+    repairAttempt: workflow?.repairAttempt ?? task.attempts,
+    nextAction: workflow?.nextAction ?? nextAction,
+    detail: workflow?.detail ?? null,
     activity: events.filter((event) => visibleEvents.has(event.type)).slice(-80).map((event) => ({
       type: event.type,
       occurredAt: event.occurredAt,

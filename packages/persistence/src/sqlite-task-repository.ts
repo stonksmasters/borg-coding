@@ -12,6 +12,7 @@ import {
   TaskContinuationSchema,
   TaskEventSchema,
   TaskSchema,
+  WorkflowStateSchema,
   type Approval,
   type Finding,
   type Handoff,
@@ -24,6 +25,7 @@ import {
   type TaskCheckpoint,
   type TaskContinuation,
   type TaskEvent,
+  type WorkflowState,
 } from "../../core/src/contracts.ts";
 
 export class SqliteTaskRepository {
@@ -44,6 +46,11 @@ export class SqliteTaskRepository {
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         type TEXT NOT NULL, payload TEXT NOT NULL, occurred_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS project_workflows (
+        project_id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+        phase TEXT NOT NULL, status TEXT NOT NULL, next_action TEXT NOT NULL,
+        version INTEGER NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS model_contexts (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -142,6 +149,38 @@ export class SqliteTaskRepository {
   listTasks(projectId: string): Task[] {
     const rows = this.database.prepare("SELECT data FROM tasks WHERE project_id = ? ORDER BY updated_at DESC").all(projectId) as { data: string }[];
     return rows.map((row) => TaskSchema.parse(JSON.parse(row.data)));
+  }
+
+  saveWorkflow(state: WorkflowState): void {
+    const value = WorkflowStateSchema.parse(state);
+    this.database.prepare(`
+      INSERT INTO project_workflows (project_id, task_id, phase, status, next_action, version, updated_at, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET task_id=excluded.task_id, phase=excluded.phase,
+      status=excluded.status, next_action=excluded.next_action, version=excluded.version,
+      updated_at=excluded.updated_at, data=excluded.data
+    `).run(value.projectId, value.taskId, value.phase, value.status, value.nextAction, value.version, value.updatedAt, JSON.stringify(value));
+  }
+
+  findWorkflow(projectId: string): WorkflowState | null {
+    const row = this.database.prepare("SELECT data FROM project_workflows WHERE project_id = ?").get(projectId) as { data: string } | undefined;
+    return row ? WorkflowStateSchema.parse(JSON.parse(row.data)) : null;
+  }
+
+  commitWorkflowTransition(task: Task, event: TaskEvent, state: WorkflowState): void {
+    const taskValue = TaskSchema.parse(task);
+    const eventValue = TaskEventSchema.parse(event);
+    const workflowValue = WorkflowStateSchema.parse(state);
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.saveTask(taskValue);
+      this.appendEvent(eventValue);
+      this.saveWorkflow(workflowValue);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   appendEvent(event: TaskEvent): void {
