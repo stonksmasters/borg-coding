@@ -1472,9 +1472,9 @@ export function BorgWorkspaceV2() {
             {rightPanel === "plan"
               ? <PlanPanel plan={latestPlan} designBrief={designBrief} />
               : rightPanel === "sitemap"
-                ? <StructurePanel view="sitemap" docs={buildDocs} focusBusy={focusBusy} onOpenPage={(page) => void openFocusedWorkspace("page", page.id)} />
+                ? <StructurePanel view="sitemap" docs={buildDocs} focusBusy={focusBusy || taskBusy} onOpenPage={(page) => void openFocusedWorkspace("page", page.id)} />
               : rightPanel === "components"
-                ? <StructurePanel view="components" docs={buildDocs} focusBusy={focusBusy} onOpenComponent={(component) => void openFocusedWorkspace("component", component.id)} />
+                ? <StructurePanel view="components" docs={buildDocs} focusBusy={focusBusy || taskBusy} onOpenComponent={(component) => void openFocusedWorkspace("component", component.id)} />
               : rightPanel === "styles"
                 ? <StructurePanel view="styles" docs={buildDocs} styleBusy={styleBusy || taskBusy} onStyleFeedback={startStyleWorkspace} />
               : rightPanel === "files"
