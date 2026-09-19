@@ -100,6 +100,18 @@ test("approving a frontend plan server-side starts slice 1, mutates source, and 
           projectPlanApproved: true,
           task: { id: "plan-task", state: "COMPLETE" },
           approval: { id: "plan-approval", taskId: "plan-task", status: "APPROVED", worktreePath: null, baseCommit: null },
+          workflow: {
+            projectId: "integration-site",
+            taskId: "plan-task",
+            status: "idle",
+            nextAction: "start_slice",
+            pendingCommand: {
+              id: "integration-site:1:start_slice",
+              action: "start_slice",
+              workflowVersion: 1,
+              createdAt: new Date().toISOString(),
+            },
+          },
         });
       }
 
@@ -195,6 +207,7 @@ test("approving a frontend plan server-side starts slice 1, mutates source, and 
     await waitFor(() => deliveryCalls === 1);
     assert.equal((chatRequest as Record<string, unknown> | null)?.mode, "edit");
     assert.equal((chatRequest as Record<string, unknown> | null)?.sliceAction, "initial");
+    assert.equal((chatRequest as Record<string, unknown> | null)?.workflowCommandId, "integration-site:1:start_slice");
     assert.match(readFileSync(join(src, "App.tsx"), "utf8"), /Slice 1 built/);
     assert.equal(deliveryCalls, 1);
 
