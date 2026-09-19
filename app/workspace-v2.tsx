@@ -1210,39 +1210,36 @@ export function BorgWorkspaceV2() {
                 {WEBSITE_EXAMPLES.map((example) => <button key={example} type="button" onClick={() => setRequest(example)} className="rounded-lg border border-white/8 bg-black/10 px-3 py-2.5 text-left text-xs leading-5 text-slate-400 transition hover:border-white/15 hover:bg-white/[0.03] hover:text-slate-200">{example}</button>)}
               </div>
             </div> : <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-white/[0.015] p-8 text-center"><div><Bot className="mx-auto mb-3 size-7 text-slate-600" /><p className="text-sm font-medium text-slate-300">Developer session</p><p className="mt-1 text-sm text-slate-500">Use this advanced workspace for repository tasks that are not tied to a BORG website.</p></div></div>}
-            {activeTaskId && isWebsite && <div role="status" aria-live="polite" className="rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
-              <div className="flex items-start gap-3"><span className={`mt-1.5 size-2 shrink-0 rounded-full bg-[#a7ff4f] ${streaming || taskIsRunning(taskState) ? "animate-pulse" : ""}`} /><div><p className="text-sm font-medium text-[#d9ffb5]">{currentProgress?.title ?? (builderStep === 4 ? "Frontend ready for review" : "BORG is working")}</p><p className="mt-1 text-xs leading-5 text-slate-400">{currentProgress?.detail ?? "BORG is continuing the current website build."}</p></div></div>
-              <div className="mt-4 grid grid-cols-5 gap-1">{BUILDER_STEPS.map((step, index) => <div key={step} className="min-w-0"><div className={`h-1 rounded-full ${index <= builderStep ? "bg-[#a7ff4f]" : "bg-white/8"}`} /><p className={`mt-1 truncate text-[9px] uppercase tracking-wide ${index <= builderStep ? "text-[#cfff9e]" : "text-slate-700"}`}>{step}</p></div>)}</div>
-            </div>}
-            {workflowStatus && <section aria-label="Frontend execution status" className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-xs text-slate-400">
-              <p className="font-semibold uppercase tracking-wide text-[#a7ff4f]">Frontend{workflowStatus.sliceIndex !== null ? ` · Slice ${workflowStatus.sliceIndex + 1}/${workflowStatus.sliceTotal ?? "?"}` : ""}</p>
-              <p className="mt-2 text-sm font-medium text-slate-200">{workflowStatus.sliceTitle ?? "Project planning"}</p>
-              <p className="mt-2">Objective: {workflowStatus.objective}</p>
-              <p className="mt-1">Current action: {workflowStatus.currentAction}</p>
-              <p className="mt-1">Verification: {workflowStatus.verificationPassed === null ? "Pending" : workflowStatus.verificationPassed ? "Passed" : "Failed"} · Repair attempts: {workflowStatus.repairAttempt}</p>
-              <p className="mt-1">Next: {workflowStatus.nextAction}</p>
-              <p className="mt-1">State: {workflowStatus.phase} · {workflowStatus.status}{workflowStatus.workflowVersion ? ` · v${workflowStatus.workflowVersion}` : ""}</p>
-              {workflowStatus.detail && <p className="mt-1 text-slate-500">{workflowStatus.detail}</p>}
-              <div className="mt-3 grid grid-cols-2 gap-3"><div><p className="text-slate-300">Completed</p><p className="mt-1">{workflowStatus.completed.map((item) => item.replaceAll("_", " ").toLowerCase()).join(" · ") || "None yet"}</p></div><div><p className="text-slate-300">Pending</p><p className="mt-1">{workflowStatus.pending.map((item) => item.replaceAll("_", " ").toLowerCase()).join(" · ") || "None"}</p></div></div>
-              <details className="mt-3"><summary className="cursor-pointer text-slate-300">Timestamped activity ({workflowStatus.activity.length})</summary><div className="mt-2 max-h-44 overflow-y-auto space-y-1">{workflowStatus.activity.map((item, index) => <p key={`${item.occurredAt}:${index}`}>{new Date(item.occurredAt).toLocaleTimeString()} · {item.detail.replaceAll("_", " ")}</p>)}</div></details>
-              <details className="mt-3"><summary className="cursor-pointer text-slate-300">Model context ({contextRecords.length} requests)</summary><div className="mt-2 max-h-44 overflow-y-auto space-y-2">{contextRecords.map((record) => <button type="button" key={record.id} onClick={() => void openModelContext(record.id)} className="block w-full rounded border border-white/10 p-2 text-left hover:bg-white/5"><span className="text-slate-200">{record.role} · {record.model}</span><span className="block text-slate-500">{new Date(record.createdAt).toLocaleTimeString()} · {record.manifest.length} included items</span></button>)}</div></details>
-              {selectedContext && <details open className="mt-3 rounded border border-white/10 p-2"><summary className="cursor-pointer text-slate-200">Saved input · {selectedContext.role}</summary><div className="mt-2 space-y-1">{selectedContext.manifest.map((item, index) => <p key={`${item.path}:${index}`}>{item.path} — {item.reason} ({item.characters} characters)</p>)}</div><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[10px]">{selectedContext.inputText}</pre></details>}
-            </section>}
-            <ActivityFeed activities={activities} />
-            {activityItems.length > 0 && <details className="rounded-lg border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer select-none font-medium text-slate-400">Technical activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
+            {workflowStatus?.run && isWebsite && <RunStatusCard run={workflowStatus.run} active={streaming || taskIsRunning(taskState)} />}
+            {activeTaskId && <details className="rounded-xl border border-white/8 bg-white/[0.015] px-4 py-3 text-xs text-slate-500">
+              <summary className="cursor-pointer select-none font-medium text-slate-400">Execution inspector</summary>
+              <div className="mt-4 space-y-4">
+                <ActivityFeed activities={activities} />
+                {workflowStatus && <section className="rounded-lg border border-white/8 p-3">
+                  <div className="grid gap-2 sm:grid-cols-2"><p><span className="text-slate-300">Durable state:</span> {workflowStatus.phase} · {workflowStatus.status}</p><p><span className="text-slate-300">Workflow:</span> {workflowStatus.source}{workflowStatus.workflowVersion ? ` · v${workflowStatus.workflowVersion}` : ""}</p></div>
+                  <details className="mt-3"><summary className="cursor-pointer text-slate-300">Timestamped activity ({workflowStatus.activity.length})</summary><div className="mt-2 max-h-44 space-y-1 overflow-y-auto">{workflowStatus.activity.map((item, index) => <p key={`${item.occurredAt}:${index}`}>{new Date(item.occurredAt).toLocaleTimeString()} · {item.detail.replaceAll("_", " ")}</p>)}</div></details>
+                </section>}
+                <details className="rounded-lg border border-white/8 p-3">
+                  <summary className="cursor-pointer text-slate-300">Model context ({contextRecords.length} requests)</summary>
+                  <div className="mt-2 max-h-44 space-y-2 overflow-y-auto">{contextRecords.map((record) => <button type="button" key={record.id} onClick={() => void openModelContext(record.id)} className="block w-full rounded border border-white/10 p-2 text-left hover:bg-white/5"><span className="text-slate-200">{record.role} · {record.model}</span><span className="block text-slate-500">{new Date(record.createdAt).toLocaleTimeString()} · {record.manifest.length} included items</span></button>)}</div>
+                  {selectedContext && <div className="mt-3 rounded border border-white/10 p-2"><p className="text-slate-200">Saved input · {selectedContext.role}</p><div className="mt-2 space-y-1">{selectedContext.manifest.map((item, index) => <p key={`${item.path}:${index}`}>{item.path} — {item.reason} ({item.characters} characters)</p>)}</div><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[10px]">{selectedContext.inputText}</pre></div>}
+                </details>
+                {activityItems.length > 0 && <details className="rounded-lg border border-white/8 p-3"><summary className="cursor-pointer text-slate-300">Low-level tool activity ({activityItems.length})</summary><ul className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pl-4">{activityItems.map((item, index) => <li key={`${index}:${item}`} className="break-words">{item}</li>)}</ul></details>}
+              </div>
+            </details>}
           </div>
         </div></div>{(activeTaskId || previewUrl || previewError || latestPlan || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden overscroll-contain border-t border-white/8 lg:min-h-0 lg:basis-[65%] lg:flex-none lg:border-l lg:border-t-0">
           <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-1.5">
             <div className="flex items-center gap-1">
               <button type="button" disabled={!isWebsite} onClick={() => { setRightPanel("preview"); if (activeSession && !previewUrl) void activatePreview(activeSession.id); }} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "preview" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
+              <button type="button" disabled={!latestPlan && !designBrief} onClick={() => setRightPanel("plan")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "plan" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
               <button type="button" onClick={() => setRightPanel("changes")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "changes" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Changes{changes.files.length ? ` (${changes.files.length})` : ""}</button>
-              <button type="button" onClick={() => { setRightPanel("docs"); if (activeTaskId) void refreshDocs(activeTaskId); }} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "docs" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300"}`}>Docs</button>
+              <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("evidence")} className={`rounded px-2.5 py-1 text-xs font-medium ${rightPanel === "evidence" ? "bg-white/8 text-slate-200" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Evidence{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</button>
               <details className="relative">
                 <summary className="list-none cursor-pointer rounded px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-white/5 hover:text-slate-300">Advanced</summary>
-                <div className="absolute left-0 z-40 mt-2 w-40 rounded-lg border border-white/10 bg-[#11161e] p-1.5 shadow-2xl">
-                  <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Plan</button>
-                  <button type="button" disabled={!designBrief} onClick={() => setRightPanel("evidence")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Design review{designReview?.status === "repair" ? " •" : ""}</button>
-                  <button type="button" onClick={() => setRightPanel("terminal")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
+                <div className="absolute left-0 z-40 mt-2 w-44 rounded-lg border border-white/10 bg-[#11161e] p-1.5 shadow-2xl">
+                  <button type="button" onClick={() => setRightPanel("logs")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Logs{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
+                  <button type="button" onClick={() => { setRightPanel("memory"); if (activeTaskId) void refreshDocs(activeTaskId); }} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Project memory</button>
                 </div>
               </details>
             </div>
@@ -1264,18 +1261,18 @@ export function BorgWorkspaceV2() {
           </div>}
           <div className="flex min-h-0 flex-1 overflow-hidden">
             {rightPanel === "plan"
-              ? <PlanPanel plan={latestPlan} />
-              : rightPanel === "docs"
-                ? <DocsPanel docs={buildDocs} />
+              ? <PlanPanel plan={latestPlan} designBrief={designBrief} />
               : rightPanel === "changes"
                 ? <ChangesPanel changes={changes} />
-                : rightPanel === "design"
-                  ? <DesignPanel brief={designBrief} review={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} />
-                  : rightPanel === "terminal"
+                : rightPanel === "evidence"
+                  ? <EvidencePanel verificationStatus={workflowStatus?.run.verification.status ?? "pending"} designReview={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} blockingFindings={blockingFindingIds.length} onOpenReviewHistory={() => setReviewOpen(true)} onOpenLogs={() => setRightPanel("logs")} />
+                  : rightPanel === "logs"
                     ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
-                    : previewUrl
-                    ? <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#151a22] p-2 sm:p-3"><div className={`h-full min-h-[520px] overflow-hidden rounded-md border border-white/10 bg-white shadow-2xl transition-[width] duration-200 ${previewViewport === "mobile" ? "w-[390px] max-w-full" : previewViewport === "tablet" ? "w-[820px] max-w-full" : "w-full"}`}><iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full w-full border-0 bg-white" /></div></div>
-                    : <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto overscroll-contain p-6 text-center"><div><Monitor className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">{previewError || "The live preview will appear here as soon as the website is ready."}</p>{isWebsite && activeSession && <Button size="sm" variant="outline" onClick={() => void activatePreview(activeSession.id)} className="mt-4 border-white/10 bg-white/4 text-slate-300">{previewError ? "Retry preview" : "Start preview"}</Button>}</div></div>}
+                    : rightPanel === "memory"
+                      ? <DocsPanel docs={buildDocs} />
+                      : previewUrl
+                        ? <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#151a22] p-2 sm:p-3"><div className={`h-full min-h-[520px] overflow-hidden rounded-md border border-white/10 bg-white shadow-2xl transition-[width] duration-200 ${previewViewport === "mobile" ? "w-[390px] max-w-full" : previewViewport === "tablet" ? "w-[820px] max-w-full" : "w-full"}`}><iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full w-full border-0 bg-white" /></div></div>
+                        : <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto overscroll-contain p-6 text-center"><div><Monitor className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">{previewError || "The live preview will appear here as soon as the website is ready."}</p>{isWebsite && activeSession && <Button size="sm" variant="outline" onClick={() => void activatePreview(activeSession.id)} className="mt-4 border-white/10 bg-white/4 text-slate-300">{previewError ? "Retry preview" : "Start preview"}</Button>}</div></div>}
           </div>
         </div>}</div>
 
