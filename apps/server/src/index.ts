@@ -63,8 +63,8 @@ import { preflightFailureMessage, runWorkspacePreflight } from "../../../package
 import { projectWorkflowState } from "../../../packages/web-builder/src/workflow-projection.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
-import { compileFocusedFrontendContext, compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
-import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
+import { compileFocusedFrontendContext, compileFrontendContext, type ContextItem, type ContextScope } from "../../../packages/web-builder/src/context-compiler.ts";
+import { ensureProjectModel, readProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
