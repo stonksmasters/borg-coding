@@ -11,7 +11,7 @@ export function EnvironmentPanel({ variables, busy, error, onSave, onDelete }: {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   return <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-7"><div className="mx-auto max-w-3xl space-y-6">
-    <header><p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#a7ff4f]">Environment</p><h2 className="mt-3 text-xl font-semibold text-white">Project variables</h2><p className="mt-2 text-sm leading-6 text-slate-500">Values stay hidden after they are saved. Updates are written to the project&apos;s local .env file.</p></header>
+    <header><p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#a7ff4f]">Environment</p><h2 className="mt-3 text-xl font-semibold text-white">Project variables</h2><p className="mt-2 text-sm leading-6 text-slate-500">Values stay hidden after they are saved. BORG stores them through the desktop credential store and injects them only into this project&apos;s task processes.</p></header>
     <form className="grid gap-2 rounded-xl border border-white/8 bg-white/[0.02] p-4 sm:grid-cols-[1fr_1fr_auto]" onSubmit={(event) => { event.preventDefault(); void onSave(name, value).then(() => { setName(""); setValue(""); }); }}>
       <Input value={name} onChange={(event) => setName(event.target.value.toUpperCase())} placeholder="VARIABLE_NAME" className="border-white/10 bg-black/20 font-mono" />
       <Input value={value} onChange={(event) => setValue(event.target.value)} placeholder="Value" type="password" className="border-white/10 bg-black/20" />
