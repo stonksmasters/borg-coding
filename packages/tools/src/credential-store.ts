@@ -21,7 +21,7 @@ export class DesktopCredentialStore implements CredentialStore {
       timeout: 5_000,
     });
     if (result.status !== 0) return null;
-    return result.stdout.trim() || null;
+    return result.stdout.length ? result.stdout : null;
   }
 
   set(target: string, secret: string): void {
