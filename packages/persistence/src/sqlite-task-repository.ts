@@ -167,20 +167,26 @@ export class SqliteTaskRepository {
     return row ? WorkflowStateSchema.parse(JSON.parse(row.data)) : null;
   }
 
-  commitWorkflowTransition(task: Task, event: TaskEvent, state: WorkflowState): void {
-    const taskValue = TaskSchema.parse(task);
-    const eventValue = TaskEventSchema.parse(event);
-    const workflowValue = WorkflowStateSchema.parse(state);
+  commitWorkflowMutation(input: { state: WorkflowState; task?: Task; approval?: Approval; events?: TaskEvent[] }): void {
+    const workflowValue = WorkflowStateSchema.parse(input.state);
+    const taskValue = input.task ? TaskSchema.parse(input.task) : null;
+    const approvalValue = input.approval ? ApprovalSchema.parse(input.approval) : null;
+    const eventValues = (input.events ?? []).map((event) => TaskEventSchema.parse(event));
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      this.saveTask(taskValue);
-      this.appendEvent(eventValue);
+      if (taskValue) this.saveTask(taskValue);
+      if (approvalValue) this.saveApproval(approvalValue);
+      for (const event of eventValues) this.appendEvent(event);
       this.saveWorkflow(workflowValue);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  commitWorkflowTransition(task: Task, event: TaskEvent, state: WorkflowState): void {
+    this.commitWorkflowMutation({ task, events: [event], state });
   }
 
   appendEvent(event: TaskEvent): void {
