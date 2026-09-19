@@ -80,6 +80,15 @@ test("exact model input and manifest survive reopening the local task database",
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("workflow run view surfaces pending visual baseline approval as the next operator gate", () => {
+  const task = { ...createTask({ id: "baseline-status", projectId: "local", request: "Build storefront" }), state: "DELIVERY_READY" as const };
+  const restored = deriveWorkflowStatus(task, [], null, null, null, { baselineApprovalCount: 2 });
+  assert.equal(restored.run.stage, "awaiting_approval");
+  assert.match(restored.run.headline, /Visual baseline approval/);
+  assert.match(restored.nextAction, /Evidence/);
+  assert.equal(restored.currentAction, "waiting for visual baseline approval");
+});
+
 test("workflow status after restart follows durable failure and verification evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-workflow-status-"));
   const path = join(root, "tasks.sqlite");
