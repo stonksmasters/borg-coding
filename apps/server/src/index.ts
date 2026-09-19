@@ -63,8 +63,8 @@ import { preflightFailureMessage, runWorkspacePreflight } from "../../../package
 import { projectWorkflowState } from "../../../packages/web-builder/src/workflow-projection.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
-import { compileFocusedFrontendContext, compileFrontendContext, type ContextItem, type ContextScope } from "../../../packages/web-builder/src/context-compiler.ts";
-import { ensureProjectModel, readProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
+import { compileFocusedFrontendContext, compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
+import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
@@ -735,7 +735,9 @@ const server = createServer((request, response) => {
     const repositoryPath = taskProjectRepository(taskId);
     const root = approvedPath && websiteInfo(approvedPath) ? approvedPath : repositoryPath && websiteInfo(repositoryPath) ? repositoryPath : null;
     if (!root) return send(response, 200, { docs: [], slice: null });
-    return send(response, 200, { docs: readProjectDocs(root), slice: readSliceState(root) });
+    const events = tasks.listEvents(taskId);
+    const independentWorkspace = events.some((event) => event.type === "STYLE_WORKSPACE_SELECTED" || event.type === "FOCUSED_WORKSPACE_SELECTED");
+    return send(response, 200, { docs: readProjectDocs(root), slice: independentWorkspace ? null : readSliceState(root) });
   }
   const taskPreviewRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/preview$/);
   if (request.method === "POST" && taskPreviewRoute) {
@@ -995,7 +997,7 @@ const server = createServer((request, response) => {
     const priorDeliveredWebsiteTask = websiteProject
       ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
       : false;
-    const websiteWorkflow: WebsiteWorkflowKind = styleWorkspace ? "iterative_edit" : sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+    const websiteWorkflow: WebsiteWorkflowKind = styleWorkspace || focusedExecutionScope ? "iterative_edit" : sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
     const websiteContext = websiteProject ? websiteGenerationContext({
       name: websiteProject.name,
       template: websiteProject.template,
@@ -1091,7 +1093,7 @@ const server = createServer((request, response) => {
         }
         const { answer, usedTools, budgetExhausted } = implementationResult;
         implementationBudgetExhausted = Boolean(budgetExhausted);
-        if (sliceState) {
+        if (sliceState || focusedExecutionScope || styleWorkspace) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
           const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
           if (!sourceProgress) {
@@ -1118,7 +1120,7 @@ const server = createServer((request, response) => {
             continue;
           }
         }
-        if (sliceState && budgetExhausted && implementationBudgetContinuations < 1) {
+        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted && implementationBudgetContinuations < 1) {
           implementationBudgetContinuations += 1;
           appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_CONTINUATION", {
             continuation: implementationBudgetContinuations,
@@ -1126,11 +1128,15 @@ const server = createServer((request, response) => {
           });
           if (activeRoleAssignment) finishRole(activeRoleAssignment, "completed", emit);
           activeRoleAssignment = null;
-          repairEvidence = "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
-          emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same slice once with compact context instead of treating partial progress as complete." });
+          repairEvidence = focusedExecutionScope
+            ? `The bounded implementation tool budget ended before the focused ${focusedExecutionScope.type} edit demonstrated completion. Continue the SAME focused scope [${focusedExecutionScope.id}] from the current worktree state. Do not re-plan or inspect unrelated pages/components.`
+            : styleWorkspace
+              ? "The bounded implementation tool budget ended before the global style edit demonstrated completion. Continue the SAME style task from the current worktree state without changing site structure."
+              : "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
+          emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same scoped task once with compact context instead of treating partial progress as complete." });
           continue;
         }
-        if (sliceState && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
+        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
         appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, budgetExhausted: Boolean(budgetExhausted), attempt: task.attempts });
         finishRole(activeRoleAssignment, "completed", emit);
         recordHandoff({
@@ -1399,7 +1405,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           diff: diff.stdout ?? "",
           verification,
           specialistInstructions: specialistInstructions.reviewer,
-          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledSlice?.sliceId ?? null, [], body) : undefined,
+          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, [], body) : undefined,
         });
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
@@ -1490,7 +1496,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         tools.execute({ function: { name: "browser_close", arguments: {} } }, "agent", taskContext),
       ]);
       const message = error instanceof Error ? error.message : "Approved implementation failed";
-      if (websiteInfo(approvedWorktreePath) && readSliceState(approvedWorktreePath)) {
+      if (tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED") && websiteInfo(approvedWorktreePath) && readSliceState(approvedWorktreePath)) {
         const failedSlice = readSliceState(approvedWorktreePath)!;
         setFrontendWorkflowStage(approvedWorktreePath, "blocked", { currentSlice: failedSlice.current, totalSlices: failedSlice.total, taskId, detail: message });
       }
@@ -1816,7 +1822,13 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const startedWorkflow = workflow.start(
         task,
         rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : slicedApplication ? "frontend_slice" : "general",
-        slicedApplication ? "Continuing the approved project workflow without repository rediscovery." : "Planning the requested project work.",
+        slicedApplication
+          ? "Continuing the approved project workflow without repository rediscovery."
+          : objectFocus
+            ? `Planning a focused ${focusType} edit without changing the main frontend slice workflow.`
+            : styleFocus
+              ? "Planning a global style edit without changing the main frontend slice workflow."
+              : "Planning the requested project work.",
         { commandId: workflowCommandId, feedback: sliceAction === "revise" ? requestText : undefined },
       );
       syncWorkflowProjection(task, startedWorkflow);
@@ -1867,7 +1879,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const priorDeliveredWebsiteTask = websiteProject
         ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== task.id && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
         : false;
-      const websiteWorkflow: WebsiteWorkflowKind = projectPlanning || slicedApplication ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+      const websiteWorkflow: WebsiteWorkflowKind = projectPlanning || slicedApplication ? "initial_generation" : styleFocus || objectFocus || priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
       const websiteContext = websiteProject ? websiteGenerationContext({
         name: websiteProject.name,
         template: websiteProject.template,
