@@ -794,6 +794,45 @@ const server = createServer((request, response) => {
     return;
   }
 
+  const retryRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/retry$/);
+  if (request.method === "POST" && retryRoute) {
+    const taskId = decodeURIComponent(retryRoute[1]);
+    const session = chats.sessionForTask(taskId);
+    if (!session) return send(response, 404, { error: "Chat session for task was not found." });
+    if (activeStreams.has(session.id)) return send(response, 409, { error: "This session already has an active runtime." });
+    const controller = new AbortController();
+    activeStreams.set(session.id, controller);
+    response.writeHead(200, headers("application/x-ndjson; charset=utf-8"));
+    void (async () => {
+      const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/retry`, {
+        method: "POST",
+        signal: controller.signal,
+      });
+      const body = await upstream.json().catch(() => ({})) as { task?: { state?: string }; workflow?: CoreWorkflowState; error?: string };
+      if (!upstream.ok) throw new Error(body.error ?? `Retry failed (${upstream.status}).`);
+      appendMessage({
+        sessionId: session.id,
+        taskId,
+        role: "system",
+        kind: "status",
+        text: "Retrying the blocked task in its existing approved worktree with a fresh bounded repair budget.",
+      });
+      writeEvent(response, { type: "task.state", taskId, state: body.task?.state ?? "IMPLEMENTING", workflow: body.workflow ?? null });
+      await pipeExecution(taskId, session, (event) => writeEvent(response, event), controller);
+      if (session.repositoryPath) {
+        const root = rootWorkflowSession(session);
+        const deliveredWorkflow = await saveVerifiedFrontendSlice(taskId, root, (event) => writeEvent(response, event));
+        if (deliveredWorkflow) await driveWorkflow(root, deliveredWorkflow);
+      }
+      writeEvent(response, { type: "stream.completed", taskId });
+    })().catch((error) => writeEvent(response, { type: "runtime.failed", taskId, message: error instanceof Error ? error.message : "Retry failed" }))
+      .finally(() => {
+        if (activeStreams.get(session.id) === controller) activeStreams.delete(session.id);
+        response.end();
+      });
+    return;
+  }
+
   const executeRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/execute$/);
   if (request.method === "POST" && executeRoute) {
     void streamExecutionRoute(decodeURIComponent(executeRoute[1]), response);
