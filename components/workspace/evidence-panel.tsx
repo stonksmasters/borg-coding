@@ -55,7 +55,7 @@ export function EvidencePanel({
       {baselineCandidates.length > 0 && <section className="rounded-xl border border-sky-300/20 bg-sky-300/[0.04] p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="max-w-xl">
-            <div className="flex items-center gap-2 text-sky-100"><ImageCheck className="size-4" /><p className="text-sm font-medium">Visual baseline approval required</p></div>
+            <div className="flex items-center gap-2 text-sky-100"><BadgeCheck className="size-4" /><p className="text-sm font-medium">Visual baseline approval required</p></div>
             <p className="mt-2 text-xs leading-5 text-slate-400">These screenshots passed the current implementation checks but do not yet have an operator-approved comparison baseline. BORG will not checkpoint this slice until you accept them.</p>
             <div className="mt-3 flex flex-wrap gap-1.5">{baselineCandidates.map((candidate) => <span key={`${candidate.profileId}:${candidate.screenshotName}`} className="rounded border border-sky-300/10 bg-sky-300/[0.035] px-2 py-1 font-mono text-[10px] text-sky-100">{candidate.profileId}/{candidate.screenshotName}</span>)}</div>
             {baselineError && <p className="mt-3 text-xs text-red-200">{baselineError}</p>}
