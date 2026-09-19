@@ -1724,8 +1724,9 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const rawSliceAction = String(input.sliceAction ?? "initial");
       if (rawSliceAction === "retry") throw new Error("Blocked tasks must be retried through their existing task continuation endpoint.");
       const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
-      const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
-      const miniLoop = slicedApplication;
+      const styleFocus = mode !== "ask" && rawSliceAction === "style" && Boolean(selectedWebsite && projectPlan?.status === "approved");
+      const slicedApplication = mode !== "ask" && rawSliceAction !== "backend" && rawSliceAction !== "style" && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
+      const miniLoop = slicedApplication || styleFocus;
       if (rawSliceAction === "backend" && (previousSlice?.status !== "frontend_complete" || projectPlan?.backendRequired !== true)) throw new Error("Backend planning is available only after an approved frontend completion gate for a site that requires backend work.");
       const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
       if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready") throw new Error("Review the finished slice before starting another.");
@@ -1769,6 +1770,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       if (selectedPath) appendTaskEvent(task.id, "TASK_REPOSITORY_BOUND", { repositoryPath: selectedPath });
       if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
       if (slicedApplication) appendTaskEvent(task.id, "FRONTEND_SLICE_SELECTED", { action: sliceAction, feedback: previousSlice ? requestText : "", previous: previousSlice?.current ?? null });
+      if (styleFocus) appendTaskEvent(task.id, "STYLE_WORKSPACE_SELECTED", { scope: "global", feedback: requestText });
       if (rawSliceAction === "backend") appendTaskEvent(task.id, "BACKEND_PHASE_SELECTED", { feedback: requestText });
       writeEvent(response, { type: "task.created", task });
       const emit = (event: Record<string, unknown>) => {
@@ -1832,6 +1834,13 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
             .map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 14_000);
           repositoryContext += `\n\nExisting proposed plan to revise explicitly:\n${planningDocs}`;
         }
+      } else if (styleFocus && websiteProject && projectPlan) {
+        const docs = readProjectDocs(websiteProject.path);
+        const styleContext = ["styles.md", "design-brief.md", "site-map.md", "components.md", "decisions.md"]
+          .flatMap((name) => docs.filter((doc) => doc.path.endsWith(`/${name}`)))
+          .map((doc) => `${doc.path}\n${doc.content.slice(0, 5000)}`).join("\n\n").slice(0, 24_000);
+        sliceDirective = `GLOBAL STYLE WORKSPACE. The approved sitemap, component responsibilities, content hierarchy, routes, behavior, and data contracts are fixed scope boundaries. Work only on the website-wide visual system: shared color tokens, typography, spacing, radii, shadows, layout rhythm, global responsive rules, motion, and accessibility styling. Prefer shared theme/token/style primitives over component-by-component one-off patches. Do not add/remove pages, rewrite product behavior, redesign information architecture, or change component responsibilities unless the operator explicitly says the style request requires it. Verify the result across representative pages and mobile/desktop widths.\n\nApproved global style context:\n${styleContext}`;
+        repositoryContext = `STYLE FOCUS: use the approved style/design docs and targeted source reads. Do not rediscover or replan the whole website.\n\n${styleContext}`;
       } else if (slicedApplication && websiteProject && projectPlan && previousSlice) {
         const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
         const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
