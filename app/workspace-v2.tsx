@@ -201,6 +201,7 @@ export function BorgWorkspaceV2() {
   const [environmentError, setEnvironmentError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const activeTaskRef = useRef<string | null>(null);
   const followTranscriptRef = useRef(true);
   const liveAssistantId = useRef<string | null>(null);
   const changeFingerprintRef = useRef<string | null>(null);
@@ -216,7 +217,7 @@ export function BorgWorkspaceV2() {
   const displayTitle = activeWebsiteRoot?.title ?? activeSession?.title ?? "Choose a website";
   const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
   const canStop = streaming && !executionIsRunning(taskState);
-  const canRetry = Boolean(activeSession && !streaming && !runtimeActive && (taskIsRunning(taskState) || taskState === "BLOCKED" || taskState === "FAILED"));
+  const canRetry = Boolean(activeSession && activeTaskId && !streaming && !runtimeActive && taskState === "BLOCKED");
   const actionLabel = canRetry ? "Retry" : executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
   const activityMessages = useMemo(() => messages.filter((message) => message.role === "tool" || (message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.role !== "tool" && !(message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
@@ -321,6 +322,7 @@ export function BorgWorkspaceV2() {
       const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/project`);
       const result = await response.json() as { entries?: ProjectEntry[]; error?: string };
       if (!response.ok) throw new Error(result.error ?? "Unable to load the project files.");
+      if (activeTaskRef.current !== taskId) return;
       setProjectEntries(result.entries ?? []);
     } catch (error) { setProjectError(error instanceof Error ? error.message : "Unable to load the project files."); }
     finally { setProjectLoading(false); }
@@ -328,12 +330,14 @@ export function BorgWorkspaceV2() {
 
   const openProjectFile = useCallback(async (path: string) => {
     if (!activeTaskId) return;
+    const taskId = activeTaskId;
     setProjectLoading(true);
     setProjectError("");
     try {
-      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/project?path=${encodeURIComponent(path)}`);
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/project?path=${encodeURIComponent(path)}`);
       const result = await response.json() as { path?: string; content?: string; error?: string };
       if (!response.ok) throw new Error(result.error ?? "Unable to read this file.");
+      if (activeTaskRef.current !== taskId) return;
       setProjectFile({ path: result.path ?? path, content: result.content ?? "" });
     } catch (error) { setProjectError(error instanceof Error ? error.message : "Unable to read this file."); }
     finally { setProjectLoading(false); }
@@ -344,16 +348,19 @@ export function BorgWorkspaceV2() {
     const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/environment`);
     const result = await response.json() as { variables?: EnvironmentVariable[]; error?: string };
     if (!response.ok) throw new Error(result.error ?? "Unable to load environment variables.");
+    if (activeTaskRef.current !== taskId) return;
     setEnvironmentVariables(result.variables ?? []);
   }, []);
 
   const updateEnvironment = useCallback(async (name: string, value?: string, remove = false) => {
     if (!activeTaskId) return;
+    const taskId = activeTaskId;
     setEnvironmentBusy(true); setEnvironmentError("");
     try {
-      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/environment`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, value, remove }) });
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}/environment`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, value, remove }) });
       const result = await response.json() as { variables?: EnvironmentVariable[]; error?: string };
       if (!response.ok) throw new Error(result.error ?? "Unable to update environment variables.");
+      if (activeTaskRef.current !== taskId) return;
       setEnvironmentVariables(result.variables ?? []);
     } catch (error) { setEnvironmentError(error instanceof Error ? error.message : "Unable to update environment variables."); }
     finally { setEnvironmentBusy(false); }
@@ -419,9 +426,15 @@ export function BorgWorkspaceV2() {
       setDesignRefinementCount(0);
       setBuildDocs([]);
       setSliceState(null);
+      setProjectEntries([]);
+      setProjectFile(null);
+      setProjectError("");
+      setEnvironmentVariables([]);
+      setEnvironmentError("");
       changeFingerprintRef.current = null;
     }
     setActiveTaskId(result.latestTaskId);
+    activeTaskRef.current = result.latestTaskId;
     setApproval(pendingApproval);
     setEscalation(pendingEscalation);
     setPlanApproval(Boolean(pendingApproval && result.projectPlanApproval));
@@ -793,7 +806,7 @@ export function BorgWorkspaceV2() {
     if (buffer.trim()) applyEvent(JSON.parse(buffer) as StreamEvent);
   }
 
-  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend" | "retry", targetSession = activeSession, force = false) {
+  async function runTask(prompt: string, sliceAction?: "initial" | "advance" | "revise" | "backend", targetSession = activeSession, force = false) {
     const clean = prompt.trim();
     if (!targetSession || !clean || (taskBusy && !force)) return;
     const controller = new AbortController();
@@ -832,14 +845,35 @@ export function BorgWorkspaceV2() {
     }
   }
 
-  function retryTask() {
-    if (!activeSession || !canRetry) return;
-    const prompt = [...messages].reverse().find((message) => message.role === "user")?.text.trim();
-    if (!prompt) {
-      setSessionError("The original request is unavailable. Start a new chat to try again.");
-      return;
+  async function retryTask() {
+    if (!activeSession || !activeTaskId || !canRetry) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setStreaming(true);
+    setRuntimeActive(true);
+    setSessionError("");
+    setLiveActivity([]);
+    setActivities([]);
+    try {
+      const response = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/retry`, {
+        method: "POST",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(result.error ?? "Unable to retry blocked task.");
+      }
+      await consumeStream(response);
+      await loadSession(activeSession.id, { restorePreview: false, resetWorkspace: false });
+      const sessionResponse = await fetch(`${API}/api/sessions`);
+      if (sessionResponse.ok) setSessions((await sessionResponse.json() as { sessions: ChatSession[] }).sessions);
+    } catch (error) {
+      if (!controller.signal.aborted) setMessages((current) => [...current, transientMessage("system", error instanceof Error ? error.message : "Retry failed.", "warning")]);
+    } finally {
+      setStreaming(false);
+      setRuntimeActive(false);
+      abortRef.current = null;
     }
-    void runTask(prompt, taskState === "BLOCKED" ? "retry" : undefined, activeSession, true);
   }
 
   async function acceptVisualBaselines() {
