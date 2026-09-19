@@ -22,7 +22,7 @@ test("approved website state yields scoped, durable context and registries", () 
     persistDesignBrief(root, { direction: "Warm product photography" });
     const model = readProjectModel(root);
     assert.ok(model.pages.length > 0);
-    model.components.push({ id: "product-card", name: "Product Card", files: ["src/components/ProductCard.tsx"], usedBy: [], dependencies: [], variants: [], status: "planned", acceptanceCriteria: ["Card is responsive"] });
+    model.components.push({ id: "product-card", name: "Product Card", kind: "ui", purpose: "Present a reusable product summary.", files: ["src/components/ProductCard.tsx"], usedBy: [], dependencies: [], variants: [], status: "planned", acceptanceCriteria: ["Card is responsive"] });
     writeProjectModel(root, model);
     const approvedPlan = {
       ...fallbackProjectPlan("Authoritative product store", "ecommerce"),
