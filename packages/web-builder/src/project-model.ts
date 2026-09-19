@@ -62,7 +62,7 @@ function registryDirectory(root: string) {
   return directory;
 }
 function registryPath(root: string, name: "pages" | "components") { return join(registryDirectory(root), `${name}.json`); }
-function slug(name: string) { return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item"; }
+function slug(name: string) { return name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item"; }
 function uniqueIds(values: Array<{ id: string }>) { if (new Set(values.map((value) => value.id)).size !== values.length) throw new Error("Project registry has duplicate IDs."); }
 function validateRelationships(model: ProjectModel) {
   for (const item of model.pages) for (const id of item.components) if (!model.components.some((candidate) => candidate.id === id)) throw new Error(`Unknown component ${id} on page ${item.id}.`);
@@ -191,12 +191,18 @@ export function updateVerifiedProjectModel(root: string, changedPaths: string[],
       if (path.startsWith("app/") && path.endsWith("/page.tsx")) page.route = path.slice(3, -9).replace(/\[[^\]]+\]/g, ":id") || "/";
     }
   }
+  const validPageIds = new Set(model.pages.map((page) => page.id));
   for (const item of model.components) {
     const content = item.files.filter((path) => existsSync(join(root, path))).map((path) => readFileSync(join(root, path), "utf8")).join("\n");
     item.dependencies = model.components.filter((candidate) => candidate.id !== item.id && candidate.files.some((path) => content.includes(basename(path).replace(/\.[^.]+$/, "")))).map((candidate) => candidate.id);
-    item.usedBy = model.pages.filter((page) => page.files.some((path) => existsSync(join(root, path)) && readFileSync(join(root, path), "utf8").includes(item.name.replaceAll(" ", "")))).map((page) => page.id);
+    const discoveredUsedBy = model.pages.filter((page) => page.files.some((path) => existsSync(join(root, path)) && readFileSync(join(root, path), "utf8").includes(item.name.replaceAll(" ", "")))).map((page) => page.id);
+    item.usedBy = [...new Set([...item.usedBy.filter((id) => validPageIds.has(id)), ...discoveredUsedBy])];
   }
-  for (const page of model.pages) page.components = model.components.filter((item) => item.usedBy.includes(page.id)).map((item) => item.id);
+  const validComponentIds = new Set(model.components.map((item) => item.id));
+  for (const page of model.pages) {
+    const discovered = model.components.filter((item) => item.usedBy.includes(page.id)).map((item) => item.id);
+    page.components = [...new Set([...page.components.filter((id) => validComponentIds.has(id)), ...discovered])];
+  }
   for (const item of [...model.pages, ...model.components]) if (item.files.some((path) => changed.has(path))) item.status = "verified";
   writeProjectModel(root, model);
 }
