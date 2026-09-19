@@ -373,9 +373,9 @@ function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan |
   if (state?.projectPlan && plan && state.sliceIndex !== null) {
     const status: SliceState["status"] = plan.status === "frontend_complete"
       ? "frontend_complete"
-      : state.nextAction === "start_slice"
+      : state.pendingCommand?.action === "start_slice" || state.nextAction === "start_slice"
         ? "ready"
-        : state.status === "awaiting_feedback" || state.nextAction === "advance_slice" || state.nextAction === "request_feedback"
+        : state.pendingCommand?.action === "advance_slice" || state.status === "awaiting_feedback" || state.nextAction === "advance_slice" || state.nextAction === "request_feedback"
           ? "awaiting_feedback"
           : "working";
     return {
