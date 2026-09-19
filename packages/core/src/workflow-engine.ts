@@ -314,7 +314,11 @@ export class WorkflowEngine {
     }, "WORKFLOW_RECOVERY_UPDATED", { category, detail, fatal });
   }
 
-  continueFromCheckpoint(task: Task, continuation: TaskContinuation): { task: Task; workflow: WorkflowState } {
+  continueFromCheckpoint(
+    task: Task,
+    continuation: TaskContinuation,
+    options: { unresolvedReviewFindingIds?: string[] } = {},
+  ): { task: Task; workflow: WorkflowState } {
     if (continuation.taskId !== task.id) throw new Error("Continuation does not belong to this task.");
     if (continuation.previousState !== task.state) {
       throw new Error(`Continuation expected task state ${continuation.previousState}, but task is ${task.state}.`);
@@ -346,6 +350,7 @@ export class WorkflowEngine {
         restoredMode: continuation.restoredMode,
         repositoryState: continuation.repositoryState,
         resumeAction: continuation.resumeAction,
+        unresolvedReviewFindingIds: options.unresolvedReviewFindingIds ?? [],
         workflowVersion: workflow.version,
       }, now)],
     });
