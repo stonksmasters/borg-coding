@@ -752,9 +752,10 @@ const server = createServer((request, response) => {
     const ownedWorkflow = projectWorkflow?.taskId === task.id ? projectWorkflow : null;
     const plan = projectPlanFromWorkflow(ownedWorkflow, root);
     const slice = sliceStateFromWorkflow(ownedWorkflow, plan, root);
+    const baselineCandidates = pendingVisualBaselineCandidates(taskId);
     return send(response, 200, {
-      status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow),
-      baselineCandidates: pendingVisualBaselineCandidates(taskId),
+      status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length }),
+      baselineCandidates,
     });
   }
 
