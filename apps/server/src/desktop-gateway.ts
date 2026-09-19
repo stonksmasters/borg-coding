@@ -460,10 +460,16 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
     appendMessage({ sessionId: session.id, role: "user", kind: "prose", text: prompt });
     if (session.title === "New chat") session = chats.updateSession(session.id, { title: compactTitle(prompt) }) ?? session;
 
+    const focusedAction = session.workflowRole === "styles"
+      ? "style"
+      : session.workflowRole === "page" || session.workflowRole === "component"
+        ? session.workflowRole
+        : sliceAction;
+    const scopeId = session.workflowRole === "page" || session.workflowRole === "component" ? session.focusId : null;
     const upstream = await fetch(`${coreUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode, sliceAction, workflowCommandId }),
+      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode, sliceAction: focusedAction, scopeId, workflowCommandId }),
       signal: controller.signal,
     });
     if (!upstream.ok || !upstream.body) throw new Error(`Planning stream failed (${upstream.status}).`);
