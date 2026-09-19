@@ -33,7 +33,18 @@ test("approved website state yields scoped, durable context and registries", () 
       budgetCharacters: 16_000,
       authority: {
         plan: approvedPlan,
-        state: { current: 1, total: approvedPlan.slices.length, currentTitle: approvedPlan.slices[1].title, status: "working", backendRequired: approvedPlan.backendRequired },
+        state: {
+          version: 2,
+          current: 1,
+          total: approvedPlan.slices.length,
+          currentTitle: approvedPlan.slices[1].title,
+          status: "working",
+          brief: approvedPlan.slices[1].outcome,
+          lastTaskId: "slice-task",
+          feedback: [],
+          planRevision: approvedPlan.revision,
+          backendRequired: approvedPlan.backendRequired,
+        },
       },
       productContract: "PINNED PRODUCT CONTRACT: preserve global ecommerce hierarchy.",
     });
