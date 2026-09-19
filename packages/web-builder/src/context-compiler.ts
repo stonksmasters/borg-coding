@@ -1,11 +1,19 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
-import { readPersistedDesignBrief, readProjectPlan, readSliceState } from "./slice-docs.ts";
+import { readPersistedDesignBrief, readProjectPlan, readSliceState, type ProjectPlan, type SliceState } from "./slice-docs.ts";
 import { readProjectModel, validateProjectSource } from "./project-model.ts";
 
 export type ContextScope = { type: "page" | "component"; id: string } | null;
-export type ContextInput = { root: string; phase: "frontend"; sliceIndex: number; scope?: ContextScope; budgetCharacters?: number };
+export type ContextInput = {
+  root: string;
+  phase: "frontend";
+  sliceIndex: number;
+  scope?: ContextScope;
+  budgetCharacters?: number;
+  authority?: { plan: ProjectPlan; state: SliceState };
+  productContract?: string;
+};
 export type ContextItem = { kind: "document" | "registry" | "source"; path: string; reason: string; characters: number; sha256: string };
 export type CompiledContext = { text: string; manifest: ContextItem[]; characters: number; budgetCharacters: number; sliceId: string };
 
@@ -28,19 +36,25 @@ function sourceCandidates(root: string, relevant: Set<string>) {
     }
   };
   for (const directory of ["src", "app", "components"]) if (existsSync(join(root, directory)) && lstatSync(join(root, directory)).isDirectory()) walk(join(root, directory), directory);
-  return found.map((path) => { const pathWords = tokens(path.replace(/([a-z])([A-Z])/g, "$1 $2")); return { path, score: [...relevant].reduce((score, word) => score + (pathWords.has(word) ? 1 : 0), 0) }; }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, 8).map((item) => item.path);
+  return found.map((path) => {
+    const pathWords = tokens(path.replace(/([a-z])([A-Z])/g, "$1 $2"));
+    let contentWords = new Set<string>();
+    try { contentWords = tokens(readFileSync(join(root, path), "utf8").slice(0, 16_000)); } catch { /* Candidate may disappear between scan and read. */ }
+    const score = [...relevant].reduce((total, word) => total + (pathWords.has(word) ? 3 : 0) + (contentWords.has(word) ? 1 : 0), 0);
+    return { path, score };
+  }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, 10).map((item) => item.path);
 }
 
 export function compileFrontendContext(input: ContextInput): CompiledContext {
   const { root } = input;
-  const plan = readProjectPlan(root);
-  const state = readSliceState(root);
+  const plan = input.authority?.plan ?? readProjectPlan(root);
+  const state = input.authority?.state ?? readSliceState(root);
   if (!plan || !state || plan.status === "proposed") throw new Error("Approved frontend project state is missing. Repair the project plan before continuing.");
   const slice = plan.slices[input.sliceIndex];
   if (!slice) throw new Error(`Frontend slice ${input.sliceIndex + 1} is not in the approved plan.`);
   const model = readProjectModel(root);
   const design = readPersistedDesignBrief(root);
-  const budgetCharacters = Math.max(4_000, Math.min(80_000, input.budgetCharacters ?? 20_000));
+  const budgetCharacters = Math.max(4_000, Math.min(80_000, input.budgetCharacters ?? 36_000));
   const manifest: ContextItem[] = [];
   const sections: string[] = [];
   let characters = 0;
@@ -55,6 +69,7 @@ export function compileFrontendContext(input: ContextInput): CompiledContext {
     manifest.push({ kind, path, reason, characters: section.length, sha256: hash(section) });
     return true;
   };
+  if (input.productContract?.trim()) add("document", "@borg/website-product-contract", "Pinned global website product contract", input.productContract.trim(), true);
   const briefPath = join(root, ".localcode", "build", "brief.md");
   if (!existsSync(briefPath)) throw new Error("Project brief is missing. Repair the project model before continuing.");
   add("document", ".localcode/build/brief.md", "Approved project brief", readFileSync(briefPath, "utf8"), true);
