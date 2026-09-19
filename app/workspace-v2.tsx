@@ -336,7 +336,6 @@ export function BorgWorkspaceV2() {
       if (restoredPlan && ["PLANNING", "AWAITING_APPROVAL", "CANCELLED"].includes(result.task?.state ?? "")) setRightPanel("plan");
       else if (result.session.repositoryPath) setRightPanel("preview");
     }
-    setProgress(null);
     setLiveActivity([]);
     if (resetWorkspace) {
       setActivities([]);
@@ -410,6 +409,14 @@ export function BorgWorkspaceV2() {
         setToolConfig(result.tools);
         setInternetDraft(result.tools.internetEnabled);
       }),
+      fetch(`${API}/api/vision`).then(async (response) => {
+        if (!response.ok) return;
+        const result = await response.json() as { vision: VisionConfig };
+        setVisionConfig(result.vision);
+        setVisionEnabledDraft(result.vision.enabled);
+        setVisionModelDraft(result.vision.model);
+        setVisionBlockingDraft(result.vision.blockingSeverity);
+      }),
       refreshSessions(),
     ]).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to initialize workspace."));
   }, [refreshSessions]);
@@ -453,17 +460,6 @@ export function BorgWorkspaceV2() {
   }, [activeSession?.repositoryPath]);
 
   useEffect(() => {
-    if (!activeSession?.repositoryPath || streaming || taskIsRunning(taskState)) return;
-    const rootId = activeSession.parentSessionId ?? activeSession.id;
-    const children = sessions.filter((session) => session.parentSessionId === rootId && session.workflowRole === "frontend_slice")
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    const latest = children[0];
-    if (latest && latest.id !== activeSession.id && (sliceState?.status === "ready" || sliceState?.status === "awaiting_feedback")) {
-      void loadSession(latest.id).catch((error) => setSessionError(error instanceof Error ? error.message : "Unable to follow the active frontend build."));
-    }
-  }, [activeSession, loadSession, sessions, sliceState?.status, streaming, taskState]);
-
-  useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming]);
 
@@ -491,7 +487,7 @@ export function BorgWorkspaceV2() {
         .finally(() => { polling = false; });
     };
     poll();
-    const interval = taskIsRunning(taskState) || rightPanel === "terminal" ? 750 : 2500;
+    const interval = taskIsRunning(taskState) || rightPanel === "logs" ? 750 : 2500;
     const timer = window.setInterval(poll, interval);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [activeTaskId, refreshProcesses, rightPanel, taskState]);
@@ -639,30 +635,26 @@ export function BorgWorkspaceV2() {
       setDesignBrief(event.brief);
       setDesignReview(null);
       setDesignRefinementCount(0);
-      setRightPanel("design");
+      setRightPanel("evidence");
     } else if (event.type === "design.review.completed" && event.designReview) {
       setDesignReview(event.designReview);
-      setRightPanel("design");
+      setRightPanel("evidence");
     } else if (event.type === "design.refinement.scheduled") {
       setDesignRefinementCount(event.refinement ?? 0);
       if (event.maximum) setMaxDesignRefinements(event.maximum);
-      setRightPanel("design");
+      setRightPanel("evidence");
     } else if (event.type === "design.review.blocked") {
       if (event.designReview) setDesignReview(event.designReview);
-      setRightPanel("design");
+      setRightPanel("evidence");
     } else if (event.type === "activity.updated" && event.activity) {
       const activity = { ...event.activity, taskId: event.taskId ?? event.activity.taskId };
       setActivities((current) => [...current.filter((item) => item.id !== activity.id), activity].slice(-100));
-      setProgress({ title: activity.title, detail: activity.detail ?? `BORG is ${activity.phase} the current task.` });
     } else if (event.type === "stage.updated" && event.status === "active" && event.stage) {
-      const next = stageProgress(event.stage);
-      if (next) setProgress(next);
+      // Durable RunView is the visible source of truth; stage events remain diagnostic history.
     } else if (event.type === "tool.started") {
       const tool = event.tool ?? "tool";
       if (event.taskId && ["worktree_command", "verification_run", "browser_server_start", "browser_server_stop"].includes(tool)) void refreshProcesses(event.taskId);
       const title = toolProgress(tool, event.input);
-      const path = typeof event.input?.path === "string" ? event.input.path : "";
-      setProgress({ title, detail: path ? `Working in ${path}.` : "BORG is continuing this part of the task." });
       setLiveActivity((current) => [...current.slice(-39), `${title} · ${tool}`]);
     } else if (event.type === "tool.completed") {
       if (event.taskId && ["worktree_write", "worktree_patch", "worktree_command", "git_diff", "git_status"].includes(event.tool ?? "")) {
@@ -734,7 +726,6 @@ export function BorgWorkspaceV2() {
     abortRef.current = controller;
     liveAssistantId.current = null;
     setStreaming(true);
-    setProgress({ title: "Reading your request", detail: "BORG will review the project, then show its proposed design choices in the plan." });
     setLiveActivity([]);
     setActivities([]);
     setChanges(EMPTY_CHANGE_SET);
@@ -765,22 +756,22 @@ export function BorgWorkspaceV2() {
     }
   }
 
-  async function startSliceSession(action: "initial" | "advance" | "revise" | "backend") {
+  async function startBackendPhase() {
     const feedback = sliceFeedback.trim();
-    if (!activeSession || sliceBusy || ((action === "revise" || action === "backend") && !feedback)) return;
+    if (!activeSession || sliceBusy) return;
     setSliceBusy(true);
     try {
       const response = await fetch(`${API}/api/frontend-workflow/continue`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: activeSession.id, action, feedback }),
+        body: JSON.stringify({ sessionId: activeSession.id, action: "backend", feedback: feedback || "Plan the approved backend phase from the finished frontend contract." }),
       });
       const result = await response.json() as { session?: ChatSession; error?: string };
-      if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to start the next build session.");
+      if (!response.ok || !result.session) throw new Error(result.error ?? "Unable to start the backend phase.");
       setSliceFeedback("");
       await refreshSessions(result.session.id);
     } catch (error) {
-      setSessionError(error instanceof Error ? error.message : "Unable to start the next slice.");
+      setSessionError(error instanceof Error ? error.message : "Unable to start the backend phase.");
     } finally { setSliceBusy(false); }
   }
 
@@ -800,7 +791,6 @@ export function BorgWorkspaceV2() {
         setEscalation(null);
         setPlanApproval(false);
         setTaskState("COMPLETE");
-        setProgress({ title: "Frontend plan approved", detail: "The roadmap is frozen. Starting slice 1 now." });
         setRightPanel("preview");
         await refreshDocs(activeTaskId);
         if (result.startedSession) {
@@ -815,7 +805,6 @@ export function BorgWorkspaceV2() {
         setPlanApproval(false);
         setTaskState(result.task?.state ?? "IMPLEMENTING");
         setStreaming(true);
-        setProgress(stageProgress("Implementation"));
         changeFingerprintRef.current = "clean";
         setRightPanel("preview");
         await activatePreview(activeSession.id);
@@ -971,14 +960,20 @@ export function BorgWorkspaceV2() {
     setSavingTools(true);
     setToolsError("");
     try {
-      const response = await fetch(`${API}/api/tools`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ internetEnabled: internetDraft, apiKey: apiKeyDraft, clearApiKey: clearApiKeyDraft }) });
-      const result = await response.json() as { tools?: ToolConfig; error?: string };
-      if (!response.ok || !result.tools) throw new Error(result.error ?? "Unable to save internet configuration.");
-      setToolConfig(result.tools);
+      const [toolResponse, visionResponse] = await Promise.all([
+        fetch(`${API}/api/tools`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ internetEnabled: internetDraft, apiKey: apiKeyDraft, clearApiKey: clearApiKeyDraft }) }),
+        fetch(`${API}/api/vision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: visionEnabledDraft, model: visionModelDraft, blockingSeverity: visionBlockingDraft }) }),
+      ]);
+      const toolResult = await toolResponse.json() as { tools?: ToolConfig; error?: string };
+      const visionResult = await visionResponse.json() as { vision?: VisionConfig; error?: string };
+      if (!toolResponse.ok || !toolResult.tools) throw new Error(toolResult.error ?? "Unable to save internet configuration.");
+      if (!visionResponse.ok || !visionResult.vision) throw new Error(visionResult.error ?? "Unable to save visual quality configuration.");
+      setToolConfig(toolResult.tools);
+      setVisionConfig(visionResult.vision);
       setApiKeyDraft("");
       setClearApiKeyDraft(false);
       setToolsOpen(false);
-    } catch (error) { setToolsError(error instanceof Error ? error.message : "Unable to save internet configuration."); }
+    } catch (error) { setToolsError(error instanceof Error ? error.message : "Unable to save runtime configuration."); }
     finally { setSavingTools(false); }
   }
 
@@ -1249,7 +1244,7 @@ export function BorgWorkspaceV2() {
                 <summary className="list-none cursor-pointer rounded px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-white/5 hover:text-slate-300">Advanced</summary>
                 <div className="absolute left-0 z-40 mt-2 w-40 rounded-lg border border-white/10 bg-[#11161e] p-1.5 shadow-2xl">
                   <button type="button" disabled={!latestPlan} onClick={() => setRightPanel("plan")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Plan</button>
-                  <button type="button" disabled={!designBrief} onClick={() => setRightPanel("design")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Design review{designReview?.status === "repair" ? " •" : ""}</button>
+                  <button type="button" disabled={!designBrief} onClick={() => setRightPanel("evidence")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40">Design review{designReview?.status === "repair" ? " •" : ""}</button>
                   <button type="button" onClick={() => setRightPanel("terminal")} className="w-full rounded px-2.5 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200">Terminal{runningProcesses.length ? ` (${runningProcesses.length})` : ""}</button>
                 </div>
               </details>
