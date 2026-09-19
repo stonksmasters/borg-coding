@@ -94,7 +94,14 @@ function latestBlocker(task: Task, events: TaskEvent[], nextAction: string): Run
   };
 }
 
-export function deriveWorkflowStatus(task: Task, events: TaskEvent[], plan: ProjectPlan | null, slice: SliceState | null, workflow: WorkflowState | null = null) {
+export function deriveWorkflowStatus(
+  task: Task,
+  events: TaskEvent[],
+  plan: ProjectPlan | null,
+  slice: SliceState | null,
+  workflow: WorkflowState | null = null,
+  options: { baselineApprovalCount?: number } = {},
+) {
   const latestActivity = events.findLast((event) => event.type === "AGENT_ACTIVITY");
   const latestVerification = events.findLast((event) => event.type === "VERIFICATION_COMPLETED");
   const latestVisual = events.findLast((event) => event.type === "DESIGN_REVIEW_COMPLETED" || event.type === "DESIGN_REVIEW_BLOCKED" || event.type === "VISUAL_REGRESSION_COMPLETED");
@@ -107,11 +114,16 @@ export function deriveWorkflowStatus(task: Task, events: TaskEvent[], plan: Proj
     : task.state === "COMPLETE" ? "Review the completed frontend."
     : task.state === "VERIFYING" ? "Finish verification and independent review."
     : "Continue the current task.";
-  const nextAction = workflow?.nextAction ?? fallbackNextAction;
-  const currentAction = terminal
-    ? task.state.toLowerCase().replaceAll("_", " ")
-    : (latestActivity?.payload.activity as { title?: string } | undefined)?.title ?? task.state.toLowerCase().replaceAll("_", " ");
-  const stage = stageFor(task, events, slice);
+  const baselineApprovalCount = options.baselineApprovalCount ?? 0;
+  const nextAction = baselineApprovalCount > 0
+    ? "Accept the verified visual baseline candidates in Evidence before this slice can be checkpointed."
+    : workflow?.nextAction ?? fallbackNextAction;
+  const currentAction = baselineApprovalCount > 0
+    ? "waiting for visual baseline approval"
+    : terminal
+      ? task.state.toLowerCase().replaceAll("_", " ")
+      : (latestActivity?.payload.activity as { title?: string } | undefined)?.title ?? task.state.toLowerCase().replaceAll("_", " ");
+  const stage = baselineApprovalCount > 0 ? "awaiting_approval" as const : stageFor(task, events, slice);
   const activeSlice = plan && slice ? plan.slices[slice.current] ?? null : null;
   const verificationPassed = (latestVerification?.payload.verification as { passed?: boolean } | undefined)?.passed ?? null;
   const visualStatus = latestVisual?.type === "VISUAL_REGRESSION_COMPLETED"
@@ -119,9 +131,11 @@ export function deriveWorkflowStatus(task: Task, events: TaskEvent[], plan: Proj
     : latestVisual
       ? String((latestVisual.payload.review as { status?: string } | undefined)?.status ?? (latestVisual.type === "DESIGN_REVIEW_BLOCKED" ? "blocked" : "completed"))
       : null;
-  const detail = workflow?.detail
-    ?? (latestActivity?.payload.activity as { detail?: string } | undefined)?.detail
-    ?? (stage === "ready" ? "The current product boundary has passed its required checks." : "BORG is continuing the current persisted workflow.");
+  const detail = baselineApprovalCount > 0
+    ? `${baselineApprovalCount} verified screenshot baseline candidate(s) need explicit operator acceptance before delivery. BORG never updates visual baselines automatically.`
+    : workflow?.detail
+      ?? (latestActivity?.payload.activity as { detail?: string } | undefined)?.detail
+      ?? (stage === "ready" ? "The current product boundary has passed its required checks." : "BORG is continuing the current persisted workflow.");
   const run: RunView = {
     phase: workflow?.phase ?? "frontend",
     slice: slice ? {
@@ -131,7 +145,7 @@ export function deriveWorkflowStatus(task: Task, events: TaskEvent[], plan: Proj
       outcome: activeSlice?.outcome ?? task.request,
     } : null,
     stage,
-    headline: headlineFor(stage, slice),
+    headline: baselineApprovalCount > 0 ? "Visual baseline approval required" : headlineFor(stage, slice),
     detail,
     currentAction,
     verification: {
