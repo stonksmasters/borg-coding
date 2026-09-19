@@ -472,6 +472,8 @@ function recordHandoff(input: {
   });
   tasks.saveHandoff(handoff);
   appendTaskEvent(input.task.id, "ROLE_HANDOFF_RECORDED", { handoff });
+  const handoffWorkflow = workflow.setHandoff(input.task, JSON.stringify(handoff));
+  syncWorkflowProjection(input.task, handoffWorkflow);
   emit?.({ type: "role.handoff", handoff });
   return handoff;
 }
