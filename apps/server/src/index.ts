@@ -150,6 +150,29 @@ function commitBuildDocs(repositoryPath: string, message: string) {
   execFileSync("git", ["-C", repositoryPath, "-c", "user.name=BORG", "-c", "user.email=borg@local.invalid", "commit", "-m", message, "--", ".localcode/build"], { stdio: "ignore" });
 }
 
+function pendingVisualBaselineCandidates(taskId: string): BaselineCandidate[] {
+  const events = tasks.listEvents(taskId);
+  const latest = events.findLast((event) => event.type === "VISUAL_REGRESSION_COMPLETED");
+  const report = latest?.payload.report as VisualRegressionReport | undefined;
+  if (!report?.requiresAcceptance) return [];
+  const accepted = new Set<string>();
+  for (const event of events.filter((candidate) => candidate.type === "VISUAL_BASELINES_ACCEPTED")) {
+    const values = Array.isArray(event.payload.accepted) ? event.payload.accepted as Array<{ profileId?: string; screenshotName?: string }> : [];
+    for (const value of values) accepted.add(`${value.profileId ?? ""}::${value.screenshotName ?? ""}`);
+  }
+  return report.comparisons
+    .filter((comparison) => comparison.status === "missing-baseline")
+    .filter((comparison) => !accepted.has(`${comparison.profileId}::${comparison.screenshotName}`))
+    .map((comparison) => ({
+      profileId: comparison.profileId,
+      screenshotName: comparison.screenshotName,
+      candidatePath: comparison.candidate.path,
+      candidateSha256: comparison.candidate.sha256,
+      width: comparison.candidate.width,
+      height: comparison.candidate.height,
+    }));
+}
+
 function commitProjectRegistries(repositoryPath: string) {
   const paths = [".localcode/build/pages.json", ".localcode/build/components.json"];
   execFileSync("git", ["-C", repositoryPath, "add", "--", ...paths], { stdio: "ignore" });
@@ -729,7 +752,10 @@ const server = createServer((request, response) => {
     const ownedWorkflow = projectWorkflow?.taskId === task.id ? projectWorkflow : null;
     const plan = projectPlanFromWorkflow(ownedWorkflow, root);
     const slice = sliceStateFromWorkflow(ownedWorkflow, plan, root);
-    return send(response, 200, { status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow) });
+    return send(response, 200, {
+      status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow),
+      baselineCandidates: pendingVisualBaselineCandidates(taskId),
+    });
   }
 
   const changesRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/changes$/);
@@ -761,6 +787,12 @@ const server = createServer((request, response) => {
       if (task.state !== "DELIVERY_READY") return send(response, 409, { error: "Task is not ready for delivery." });
       const blockingFindings = blockingReviewFindings(tasks.listReviewFindings(taskId));
       if (blockingFindings.length) return send(response, 409, { error: "Unresolved high or critical review findings block delivery.", findingIds: blockingFindings.map((value) => value.id) });
+      const baselineCandidates = pendingVisualBaselineCandidates(taskId);
+      if (baselineCandidates.length) return send(response, 409, {
+        code: "VISUAL_BASELINE_APPROVAL_REQUIRED",
+        error: `${baselineCandidates.length} verified visual baseline candidate(s) require operator acceptance before delivery.`,
+        candidates: baselineCandidates,
+      });
       const method = String(input.method ?? "").toLowerCase();
       if (method !== "export" && method !== "commit") return send(response, 400, { error: "Delivery method must be export or commit." });
       const isFrontendSlice = tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED");
@@ -1259,6 +1291,11 @@ const server = createServer((request, response) => {
     return;
   }
   const baselineRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/visual-baselines$/);
+  if (request.method === "GET" && baselineRoute) {
+    const taskId = decodeURIComponent(baselineRoute[1]);
+    if (!tasks.findTask(taskId)) return send(response, 404, { error: "Task not found." });
+    return send(response, 200, { candidates: pendingVisualBaselineCandidates(taskId) });
+  }
   if (request.method === "POST" && baselineRoute) {
     const taskId = decodeURIComponent(baselineRoute[1]);
     void readJson(request).then((input) => {
