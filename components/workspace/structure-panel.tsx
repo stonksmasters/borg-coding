@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Layers3, Map, Palette, Route, Sparkles } from "lucide-react";
+import { Layers3, Map as MapIcon, Palette, Route, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DocsPanel, type BuildDoc } from "@/components/workspace/docs-panel";
 
@@ -69,7 +69,7 @@ function SitemapView({ pages, busy, onOpenPage }: { pages: SitemapPage[]; busy: 
   if (!pages.length) return <Empty label="The sitemap will appear after the website plan is generated." />;
   return <div className="h-full overflow-y-auto p-5 sm:p-7">
     <div className="mb-6 flex items-start gap-3">
-      <div className="rounded-lg border border-[#a7ff4f]/15 bg-[#a7ff4f]/5 p-2"><Map className="size-4 text-[#a7ff4f]" /></div>
+      <div className="rounded-lg border border-[#a7ff4f]/15 bg-[#a7ff4f]/5 p-2"><MapIcon className="size-4 text-[#a7ff4f]" /></div>
       <div><h2 className="text-base font-semibold text-white">Website sitemap</h2><p className="mt-1 text-xs leading-5 text-slate-500">The complete page and route contract BORG will build. These IDs are durable so pages can become isolated workspaces later.</p></div>
     </div>
     <div className="space-y-3">{pages.map((page, index) => <section key={page.id} className="rounded-xl border border-white/8 bg-white/[0.025] p-4">
