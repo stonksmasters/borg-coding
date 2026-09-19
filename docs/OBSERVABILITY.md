@@ -1,6 +1,6 @@
 # Execution Observability
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 
 ## Goal
 
@@ -10,7 +10,9 @@ BORG should expose useful execution state without dumping raw internal reasoning
 
 ## Primary status model
 
-At all times, the workspace should be able to show:
+The server now derives a single normalized `RunView` from persisted task/workflow state and task events. The website workspace renders that object instead of maintaining a second client-side progress state.
+
+At all times, the workspace shows:
 
 - project;
 - active phase;
@@ -113,7 +115,9 @@ Generic states such as "RESTORED" should never replace the real durable task sta
 
 ## Context transparency
 
-The future Context Compiler should expose a summary panel showing what categories of information were included:
+The Context Compiler records exact model inputs and provenance manifests. These remain in the Advanced execution inspector rather than the primary product surface.
+
+The diagnostic view can show what categories of information were included:
 
 - project decisions;
 - current slice;
@@ -145,7 +149,7 @@ A project should retain enough execution history to answer:
 - what findings remain;
 - what was handed to the next slice.
 
-History should be inspectable without turning the main interface into a terminal log viewer.
+History is inspectable without turning the main interface into a terminal log viewer. The primary website surface is Preview / Plan / Changes / Evidence; low-level activity, model-context records, project memory, checkpoints, and process logs are advanced diagnostics.
 
 ## Success criteria
 
