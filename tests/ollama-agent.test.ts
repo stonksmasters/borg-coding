@@ -17,6 +17,25 @@ test("retry context is smaller even when pinned messages are oversized", () => {
   assert.match(retry.at(-1)?.content ?? "", /latest evidence/);
 });
 
+test("context trimming prioritizes pinned system contracts over old tool history", () => {
+  const system = [
+    "GLOBAL PRODUCT CONTRACT",
+    "x".repeat(24_000),
+    "CURRENT SLICE ACCEPTANCE: mobile navigation works and product hierarchy remains coherent",
+  ].join("\n");
+  const messages = [
+    { role: "system" as const, content: system },
+    { role: "user" as const, content: "Build the approved slice " + "u".repeat(12_000) },
+    ...Array.from({ length: 6 }, (_, index) => ({ role: "tool" as const, content: `old tool ${index} ${"t".repeat(8_000)}` })),
+    { role: "tool" as const, content: "LATEST VERIFICATION EVIDENCE" },
+  ];
+  const bounded = modelMessages(messages, 40_000);
+  assert.ok(JSON.stringify(bounded).length <= 40_000);
+  assert.match(bounded[0].content, /GLOBAL PRODUCT CONTRACT/);
+  assert.match(bounded[0].content, /CURRENT SLICE ACCEPTANCE/);
+  assert.match(bounded.at(-1)?.content ?? "", /LATEST VERIFICATION EVIDENCE/);
+});
+
 test("tool budget forces a final synthesis instead of failing the task", async () => {
   const originalFetch = globalThis.fetch;
   let requests = 0;
