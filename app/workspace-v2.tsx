@@ -102,6 +102,7 @@ type StreamEvent = {
   refinement?: number;
   maximum?: number;
   planRevision?: boolean;
+  planRevisionReason?: string;
   planDelta?: {
     fromRevision?: number;
     toRevision?: number;
@@ -144,6 +145,7 @@ export function BorgWorkspaceV2() {
   const [planApproval, setPlanApproval] = useState(false);
   const [planRevisionApproval, setPlanRevisionApproval] = useState(false);
   const [planRevisionDelta, setPlanRevisionDelta] = useState<StreamEvent["planDelta"] | null>(null);
+  const [planRevisionReason, setPlanRevisionReason] = useState("");
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [deliveryReady, setDeliveryReady] = useState(false);
   const [deliveryBusy, setDeliveryBusy] = useState(false);
@@ -486,6 +488,11 @@ export function BorgWorkspaceV2() {
       escalation: Escalation | null;
       projectPlanApproval?: boolean;
       projectPlanRevisionApproval?: boolean;
+      planRevision?: {
+        delta?: StreamEvent["planDelta"] | null;
+        reason?: string;
+        repairScope?: string;
+      } | null;
       runtimeAvailable: boolean;
       runtimeActive?: boolean;
     };
@@ -522,8 +529,10 @@ export function BorgWorkspaceV2() {
     setApproval(pendingApproval);
     setEscalation(pendingEscalation);
     setPlanApproval(Boolean(pendingApproval && result.projectPlanApproval));
-    setPlanRevisionApproval(Boolean(pendingApproval && result.projectPlanRevisionApproval));
-    if (!pendingApproval) setPlanRevisionDelta(null);
+    const restoredRevisionApproval = Boolean(pendingApproval && result.projectPlanRevisionApproval);
+    setPlanRevisionApproval(restoredRevisionApproval);
+    setPlanRevisionDelta(restoredRevisionApproval ? result.planRevision?.delta ?? null : null);
+    setPlanRevisionReason(restoredRevisionApproval ? result.planRevision?.reason?.trim() ?? "" : "");
     setDeliveryReady(result.task?.state === "DELIVERY_READY");
     setTaskState(result.task?.state ?? (result.latestTaskId && !result.runtimeAvailable ? "RUNTIME UNAVAILABLE" : "READY"));
     setRuntimeActive(Boolean(result.runtimeActive));
@@ -848,6 +857,7 @@ export function BorgWorkspaceV2() {
       setPlanApproval(true);
       setPlanRevisionApproval(event.planRevision === true);
       setPlanRevisionDelta(event.planDelta ?? null);
+      setPlanRevisionReason(event.planRevision ? event.planRevisionReason?.trim() ?? "" : "");
       if (event.planRevision) {
         const delta = event.planDelta;
         const changed = [
@@ -921,6 +931,7 @@ export function BorgWorkspaceV2() {
     setPlanApproval(false);
     setPlanRevisionApproval(false);
     setPlanRevisionDelta(null);
+    setPlanRevisionReason("");
     setDeliveryReady(false);
     setTaskState("STARTING");
     setMessages((current) => [...current, transientMessage("user", clean)]);
@@ -1082,6 +1093,7 @@ export function BorgWorkspaceV2() {
         setPlanApproval(false);
         setPlanRevisionApproval(false);
         setPlanRevisionDelta(null);
+        setPlanRevisionReason("");
         setTaskState("COMPLETE");
         setRightPanel("preview");
         await refreshDocs(activeTaskId);
@@ -1097,6 +1109,7 @@ export function BorgWorkspaceV2() {
         setPlanApproval(false);
         setPlanRevisionApproval(false);
         setPlanRevisionDelta(null);
+        setPlanRevisionReason("");
         setTaskState(result.task?.state ?? "IMPLEMENTING");
         setStreaming(true);
         changeFingerprintRef.current = "clean";
@@ -1112,6 +1125,7 @@ export function BorgWorkspaceV2() {
         setPlanApproval(false);
         setPlanRevisionApproval(false);
         setPlanRevisionDelta(null);
+        setPlanRevisionReason("");
         setTaskState("PLAN COMPLETE");
         setRightPanel("plan");
         await loadSession(activeSession.id, { restorePreview: false, resetWorkspace: false });
@@ -1598,7 +1612,7 @@ export function BorgWorkspaceV2() {
         </div>}</div>
 
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
-          {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planRevisionApproval ? "Approve plan revision & continue" : planApproval ? "Approve frontend phase plan" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planRevisionApproval ? `The current slice could not legally satisfy the product-quality review. Revision ${planRevisionDelta?.fromRevision ?? "?"} → ${planRevisionDelta?.toRevision ?? "?"} repairs that authority boundary and will resume the same isolated worktree.` : planApproval ? "Approval freezes the tailored slice roadmap and starts the frontend build. BORG will execute each slice in a bounded mini-loop inside isolated worktrees." : "This mini-plan is limited to the current approved slice. Approved frontend slices execute automatically inside the frozen phase plan."}</p></div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planRevisionApproval ? "Reject revision" : planApproval ? "Revise plan" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planRevisionApproval ? "Approve & resume" : planApproval ? "Approve plan" : "Build slice"}</Button></div></div>}
+          {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planRevisionApproval ? "Approve plan revision & continue" : planApproval ? "Approve frontend phase plan" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planRevisionApproval ? `The current slice could not legally satisfy the product-quality review. Revision ${planRevisionDelta?.fromRevision ?? "?"} → ${planRevisionDelta?.toRevision ?? "?"} repairs that authority boundary and will resume the same isolated worktree.` : planApproval ? "Approval freezes the tailored slice roadmap and starts the frontend build. BORG will execute each slice in a bounded mini-loop inside isolated worktrees." : "This mini-plan is limited to the current approved slice. Approved frontend slices execute automatically inside the frozen phase plan."}</p>{planRevisionApproval && planRevisionReason && <p className="mt-2 text-[11px] leading-5 text-amber-100/80"><span className="font-medium">Why BORG replanned:</span> {planRevisionReason}</p>}</div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planRevisionApproval ? "Reject revision" : planApproval ? "Revise plan" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planRevisionApproval ? "Approve & resume" : planApproval ? "Approve plan" : "Build slice"}</Button></div></div>}
           {deliveryReady && (!isWebsite || !sliceState) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Verified changes ready</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}Review the diff before saving this non-workflow change set.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
           {taskState === "COMPLETE" && sliceState?.status === "frontend_complete" && <div className="mx-auto mb-3 max-w-3xl rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
             <p className="text-sm font-medium text-[#d9ffb5]">Frontend complete</p>
