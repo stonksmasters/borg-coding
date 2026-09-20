@@ -148,13 +148,14 @@ function safeWorktreeFile(root: string, path: string) {
 
 function sourceMutationSnapshot(root: string) {
   const status = gitRead(root, ["status", "--porcelain", "--untracked-files=all"]) ?? "";
-  const diff = gitRead(root, ["diff", "--no-ext-diff", "--binary"]) ?? "";
+  const diff = gitRead(root, ["diff", "--no-ext-diff", "--binary", "--", ".", ":(exclude).localcode/build/**"]) ?? "";
   const paths = changedSourcePaths(status);
+  const sourceStatus = status.split(/\r?\n/).filter((line) => line && !line.includes(".localcode/build/"));
   const fileHashes = paths.map((path) => {
     const content = safeWorktreeFile(root, path);
     return [path, content === null ? null : createHash("sha256").update(content).digest("hex")];
   });
-  const fingerprint = createHash("sha256").update(JSON.stringify({ status: status.split(/\r?\n/).filter((line) => !line.includes(".localcode/build/")), diff, fileHashes })).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify({ status: sourceStatus, diff, fileHashes })).digest("hex");
   return { status, diff, paths, fingerprint };
 }
 
