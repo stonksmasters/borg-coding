@@ -367,3 +367,35 @@ test("workflow status after restart follows durable failure and verification evi
     reopened.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("workflow status prefers authoritative design terminal causes over stale tool failures", () => {
+  const now = new Date().toISOString();
+  const base = createTask({ id: "status-terminal", projectId: "status-project", request: "Build ForgeOps" });
+  const blocked = { ...base, state: "BLOCKED" as const, updatedAt: now };
+  const events = [
+    { id: "tool-failed", taskId: blocked.id, type: "TOOL_FAILED", payload: { message: "ENOENT public/index.html" }, occurredAt: "2026-09-20T12:00:00.000Z" },
+    { id: "design-limit", taskId: blocked.id, type: "DESIGN_REFINEMENT_LIMIT_REACHED", payload: { refinements: 3, maximum: 3, review: { status: "repair", summary: "The operational dashboard still lacks meaningful data density." } }, occurredAt: "2026-09-20T12:05:00.000Z" },
+  ];
+  const status = deriveWorkflowStatus(blocked, events as never[], null, null);
+  assert.equal(status.run.blocker?.title, "Design refinement limit reached");
+  assert.match(status.run.blocker?.detail ?? "", /data density/i);
+  assert.doesNotMatch(status.run.blocker?.detail ?? "", /ENOENT/);
+  assert.equal(status.run.verification.visualStatus, "refinement_limit");
+});
+
+test("workflow status exposes plan repair as the recovery action", () => {
+  const base = createTask({ id: "status-plan-repair", projectId: "status-plan-project", request: "Build ForgeOps" });
+  const recovered = { ...base, state: "RECOVERY_REQUIRED" as const };
+  const events = [{
+    id: "plan-repair",
+    taskId: recovered.id,
+    type: "PLAN_REPAIR_REQUIRED",
+    payload: { reason: "Visual review requires application structure outside the current hero slice." },
+    occurredAt: new Date().toISOString(),
+  }];
+  const status = deriveWorkflowStatus(recovered, events as never[], null, null);
+  assert.equal(status.run.blocker?.title, "Plan repair required");
+  assert.match(status.run.blocker?.action ?? "", /Replan/i);
+  assert.equal(status.run.verification.visualStatus, "plan_repair_required");
+});
