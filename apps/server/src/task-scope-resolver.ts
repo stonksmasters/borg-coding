@@ -1,6 +1,6 @@
 import type { PermissionMode } from "../../../packages/core/src/chat-session.ts";
 import type { WorkflowCommand } from "../../../packages/core/src/contracts.ts";
-import type { SliceAction, SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import type { ProjectPlan, SliceAction, SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import type { WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 
 export type PlanningTaskKind =
@@ -38,7 +38,7 @@ export type PlanningTaskScopeInput = {
   rawSliceAction: string;
   scopeId?: string | null;
   hasWebsite: boolean;
-  projectPlanStatus?: "proposed" | "approved" | null;
+  projectPlanStatus?: ProjectPlan["status"] | null;
   previousSliceStatus?: SliceState["status"] | null;
   hasPreviousSlice: boolean;
   durableHasProjectPlan: boolean;
