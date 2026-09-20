@@ -68,7 +68,7 @@ import { ensurePreviewDependencies } from "../../../packages/web-builder/src/pre
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext, type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanDelta, projectPlanRepairPrompt, projectPlanRevisionPrompt, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, validateProjectPlanCoverage, type ProjectPlan, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanDelta, projectPlanRepairPrompt, projectPlanRevisionPrompt, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
