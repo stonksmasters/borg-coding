@@ -236,7 +236,7 @@ function toolStatus() {
 async function loadSessionRuntime(session: ChatSession) {
   const latestTaskId = chats.latestTaskId(session.id);
   const runtimeActive = activeStreams.has(session.id);
-  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, projectPlanApproval: false, projectPlanRevisionApproval: false, runtimeAvailable: true, runtimeActive };
+  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, projectPlanApproval: false, projectPlanRevisionApproval: false, planRevision: null, runtimeAvailable: true, runtimeActive };
   try {
     const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(latestTaskId)}/approval`, { signal: AbortSignal.timeout(5_000) });
     if (!upstream.ok) throw new Error(`Core task state returned ${upstream.status}.`);
@@ -245,6 +245,20 @@ async function loadSessionRuntime(session: ChatSession) {
       approval?: { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null } | null;
       projectPlanApproval?: boolean;
       projectPlanRevisionApproval?: boolean;
+      planRevision?: {
+        delta?: {
+          fromRevision?: number;
+          toRevision?: number;
+          addedPages?: string[];
+          removedPages?: string[];
+          changedPages?: string[];
+          addedSlices?: string[];
+          removedSlices?: string[];
+          changedSlices?: string[];
+        } | null;
+        reason?: string;
+        repairScope?: string;
+      } | null;
     };
     let restoredSession = session;
     let escalation = chats.findModeEscalation(latestTaskId);
@@ -264,11 +278,12 @@ async function loadSessionRuntime(session: ChatSession) {
       escalation: pending ? escalation : null,
       projectPlanApproval: pending && body.projectPlanApproval === true,
       projectPlanRevisionApproval: pending && body.projectPlanRevisionApproval === true,
+      planRevision: pending && body.projectPlanRevisionApproval === true ? body.planRevision ?? null : null,
       runtimeAvailable: true,
       runtimeActive,
     };
   } catch {
-    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), projectPlanApproval: false, projectPlanRevisionApproval: false, runtimeAvailable: false, runtimeActive };
+    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), projectPlanApproval: false, projectPlanRevisionApproval: false, planRevision: null, runtimeAvailable: false, runtimeActive };
   }
 }
 
