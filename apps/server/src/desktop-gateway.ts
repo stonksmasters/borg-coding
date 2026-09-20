@@ -774,6 +774,25 @@ const server = createServer((request, response) => {
     return;
   }
 
+  const stopSessionRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)\/stop$/);
+  if (stopSessionRoute && request.method === "POST") {
+    const sessionId = decodeURIComponent(stopSessionRoute[1]);
+    const session = chats.findSession(sessionId);
+    if (!session) return send(response, 404, { error: "Session not found." });
+    const controller = activeStreams.get(sessionId);
+    if (!controller) return send(response, 200, { stopped: false, sessionId });
+    controller.abort();
+    activeStreams.delete(sessionId);
+    appendMessage({
+      sessionId,
+      taskId: chats.latestTaskId(sessionId),
+      role: "system",
+      kind: "status",
+      text: "Runtime stop requested from remote control.",
+    });
+    return send(response, 200, { stopped: true, sessionId });
+  }
+
   const sessionRoute = request.url?.match(/^\/api\/sessions\/([^/?]+)$/);
   if (sessionRoute) {
     const sessionId = decodeURIComponent(sessionRoute[1]);
