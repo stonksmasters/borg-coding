@@ -2,7 +2,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 const remotePort = Number(process.env.BORG_REMOTE_PORT ?? 4313);
 const gatewayUrl = process.env.BORG_GATEWAY_URL ?? "http://127.0.0.1:4312";
@@ -10,7 +9,6 @@ const configuredPairingCode = process.env.BORG_REMOTE_PAIRING_CODE?.trim();
 const pairingCode = configuredPairingCode && /^\d{6}$/.test(configuredPairingCode)
   ? configuredPairingCode
   : String(randomInt(100000, 1000000));
-const remoteRoot = fileURLToPath(new URL("../../remote/", import.meta.url));
 
 const sessions = new Map<string, number>();
 const attempts = new Map<string, { count: number; resetAt: number }>();
