@@ -48,6 +48,23 @@ export function validateBrowserEvidence(evidence: BrowserEvidenceReport | null, 
   if (evidence.dom.some((node) => node.text?.includes("BORG is preparing the approved design."))) {
     issues.push("Preview still shows the BORG starter placeholder; implemented UI is not connected to the application entrypoint.");
   }
+  const placeholderPattern = /\b(?:lorem ipsum|coming soon|placeholder(?: text)?|todo:|dashboard content will be displayed here|content will be displayed here|replace me|sample content)\b/i;
+  const placeholderNode = evidence.dom.find((node) => node.visible && placeholderPattern.test(node.text ?? ""));
+  if (placeholderNode) {
+    issues.push(`Visible placeholder or filler content remains in the rendered product: "${placeholderNode.text.slice(0, 160)}".`);
+  }
+  const deadButtons = evidence.dom.filter((node) =>
+    node.visible && node.tag === "button" && !node.disabled && node.actionable === false);
+  if (deadButtons.length) {
+    const labels = deadButtons.slice(0, 5).map((node) => node.name || node.text || node.selector);
+    issues.push(`Visible enabled controls appear to have no action: ${labels.join(", ")}.`);
+  }
+  const inertLinks = evidence.dom.filter((node) =>
+    node.visible && node.tag === "a" && !node.disabled && node.actionable === false);
+  if (inertLinks.length) {
+    const labels = inertLinks.slice(0, 5).map((node) => node.name || node.text || node.selector);
+    issues.push(`Visible links have no meaningful destination: ${labels.join(", ")}.`);
+  }
   return issues.length === evidence.issues.length ? evidence : { ...evidence, passed: false, issues };
 }
 
