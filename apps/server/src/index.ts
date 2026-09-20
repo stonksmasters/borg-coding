@@ -2713,8 +2713,15 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           const planWorkflow = workflow.setProjectPlan(task, parsedPlan);
           syncWorkflowProjection(task, planWorkflow);
           proposedProjectPlan = planWorkflow.projectPlan as ProjectPlan;
-          persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, proposedProjectPlan, task.id);
-          appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan, workflowVersion: planWorkflow.version });
+          const coverage = validateProjectPlanCoverage(proposedProjectPlan, planningBrief);
+          if (!coverage.valid) throw new Error(`Project plan cannot enter approval with invalid semantic coverage: ${coverage.issues.join(" ")}`);
+          persistProposedProjectPlan(websiteProject.path, planningBrief, proposedProjectPlan, task.id, { coverage });
+          appendTaskEvent(task.id, "PROJECT_PLAN_COVERAGE_VALIDATED", {
+            revision: proposedProjectPlan.revision,
+            coverage,
+            planRevision: false,
+          });
+          appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan, coverage, workflowVersion: planWorkflow.version });
           emit({ type: "project.plan.proposed", plan: proposedProjectPlan });
         }
         if (mode === "plan" || mode === "edit" || mode === "agent") {
