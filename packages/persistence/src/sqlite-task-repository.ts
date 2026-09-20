@@ -27,6 +27,7 @@ import {
   type TaskEvent,
   type WorkflowState,
 } from "../../core/src/contracts.ts";
+import { ContextPackRecordSchema, type ContextPackRecord } from "../../core/src/context-domain.ts";
 
 export class SqliteTaskRepository {
   private readonly database: DatabaseSync;
@@ -59,6 +60,13 @@ export class SqliteTaskRepository {
         input_sha256 TEXT NOT NULL, created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_model_contexts_task_created ON model_contexts(task_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS context_packs (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL, profile_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        data TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_context_packs_task_created ON context_packs(task_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_context_packs_project_profile ON context_packs(project_id, profile_id, created_at DESC);
       CREATE TABLE IF NOT EXISTS approvals (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
         status TEXT NOT NULL, requested_at TEXT NOT NULL, decided_at TEXT,
@@ -210,6 +218,37 @@ export class SqliteTaskRepository {
   findModelContext(taskId: string, id: string) {
     const row = this.database.prepare("SELECT id, task_id, role, model, slice_id, input_text, manifest_json, input_sha256, created_at FROM model_contexts WHERE task_id = ? AND id = ?").get(taskId, id) as Record<string, string | null> | undefined;
     return row ? { id: row.id, taskId: row.task_id, role: row.role, model: row.model, sliceId: row.slice_id, inputText: row.input_text, manifest: JSON.parse(row.manifest_json ?? "[]") as unknown[], inputSha256: row.input_sha256, createdAt: row.created_at } : null;
+  }
+
+  saveContextPack(record: ContextPackRecord): void {
+    const value = ContextPackRecordSchema.parse(record);
+    this.database.prepare(`
+      INSERT INTO context_packs (id, task_id, project_id, profile_id, fingerprint, data, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      value.id,
+      value.taskId,
+      value.projectId,
+      value.pack.profile.id,
+      value.pack.fingerprint,
+      JSON.stringify(value),
+      value.createdAt,
+    );
+  }
+
+  listContextPacks(taskId: string): ContextPackRecord[] {
+    const rows = this.database.prepare("SELECT data FROM context_packs WHERE task_id = ? ORDER BY created_at DESC").all(taskId) as { data: string }[];
+    return rows.map((row) => ContextPackRecordSchema.parse(JSON.parse(row.data)));
+  }
+
+  findContextPack(taskId: string, id: string): ContextPackRecord | null {
+    const row = this.database.prepare("SELECT data FROM context_packs WHERE task_id = ? AND id = ?").get(taskId, id) as { data: string } | undefined;
+    return row ? ContextPackRecordSchema.parse(JSON.parse(row.data)) : null;
+  }
+
+  findLatestContextPack(projectId: string, profileId: string): ContextPackRecord | null {
+    const row = this.database.prepare("SELECT data FROM context_packs WHERE project_id = ? AND profile_id = ? ORDER BY created_at DESC LIMIT 1").get(projectId, profileId) as { data: string } | undefined;
+    return row ? ContextPackRecordSchema.parse(JSON.parse(row.data)) : null;
   }
 
   saveApproval(approval: Approval): void {
