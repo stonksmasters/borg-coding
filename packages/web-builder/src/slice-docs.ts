@@ -613,7 +613,7 @@ export function markSliceReady(
 
 export function projectDeliveredFrontendCheckpoint(root: string, workflow: WorkflowState): SliceState | null {
   const plan = workflow.projectPlan as ProjectPlan | null;
-  if (workflow.phase !== "frontend" || !plan || workflow.sliceIndex === null) return null;
+  if (workflow.loop !== "slice" || workflow.phase !== "frontend" || !plan || workflow.sliceIndex === null) return null;
   const slice = plan.slices[workflow.sliceIndex];
   if (!slice) return null;
 
