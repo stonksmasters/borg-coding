@@ -2541,7 +2541,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const planningScope = resolvePlanningTaskScope({
         mode,
         rawSliceAction: String(input.sliceAction ?? "initial"),
-        scopeId: typeof input.scopeId === "string" ? input.scopeId : null,
+        scopeId: input.scopeId == null ? null : String(input.scopeId),
         hasWebsite: Boolean(selectedWebsite),
         projectPlanStatus: projectPlan?.status ?? null,
         previousSliceStatus: previousSlice?.status ?? null,
