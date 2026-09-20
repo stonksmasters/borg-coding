@@ -157,6 +157,31 @@ export type TaskEventLike = {
   payload?: Record<string, unknown>;
 };
 
+export type ExecutionScopeMarkers = {
+  focus: FocusedScope | null;
+  styleWorkspace: boolean;
+  frontendSliceSelected: boolean;
+  backendPhase: boolean;
+};
+
+export function resolveExecutionScopeMarkers(events: readonly TaskEventLike[], hasWebsite: boolean): ExecutionScopeMarkers {
+  const focusedEvent = [...events].reverse().find((event) => event.type === "FOCUSED_WORKSPACE_SELECTED");
+  const scopeType = focusedEvent?.payload?.scopeType;
+  const scopeId = normalizeId(typeof focusedEvent?.payload?.scopeId === "string" ? focusedEvent.payload.scopeId : "");
+  const focus = hasWebsite
+    && (scopeType === "page" || scopeType === "component")
+    && scopeId
+    ? { type: scopeType, id: scopeId } as FocusedScope
+    : null;
+
+  return {
+    focus,
+    styleWorkspace: hasWebsite && events.some((event) => event.type === "STYLE_WORKSPACE_SELECTED"),
+    frontendSliceSelected: hasWebsite && events.some((event) => event.type === "FRONTEND_SLICE_SELECTED"),
+    backendPhase: hasWebsite && events.some((event) => event.type === "BACKEND_PHASE_SELECTED"),
+  };
+}
+
 export type ExecutionTaskScope = {
   kind: "frontend_slice" | "focused_page" | "focused_component" | "global_styles" | "backend" | "general";
   focus: FocusedScope | null;
@@ -173,21 +198,11 @@ export function resolveExecutionTaskScope(input: {
   hasSliceState: boolean;
   priorDeliveredWebsiteTask: boolean;
 }): ExecutionTaskScope {
-  const focusedEvent = [...input.events].reverse().find((event) => event.type === "FOCUSED_WORKSPACE_SELECTED");
-  const scopeType = focusedEvent?.payload?.scopeType;
-  const scopeId = normalizeId(typeof focusedEvent?.payload?.scopeId === "string" ? focusedEvent.payload.scopeId : "");
-  const focus = input.hasWebsite
-    && (scopeType === "page" || scopeType === "component")
-    && scopeId
-    ? { type: scopeType, id: scopeId } as FocusedScope
-    : null;
-
-  const styleWorkspace = input.hasWebsite && input.events.some((event) => event.type === "STYLE_WORKSPACE_SELECTED");
-  const frontendSlice = input.hasWebsite
-    && input.hasProjectPlan
-    && input.hasSliceState
-    && input.events.some((event) => event.type === "FRONTEND_SLICE_SELECTED");
-  const backendPhase = input.hasWebsite && input.events.some((event) => event.type === "BACKEND_PHASE_SELECTED");
+  const markers = resolveExecutionScopeMarkers(input.events, input.hasWebsite);
+  const focus = markers.focus;
+  const styleWorkspace = markers.styleWorkspace;
+  const frontendSlice = markers.frontendSliceSelected && input.hasProjectPlan && input.hasSliceState;
+  const backendPhase = markers.backendPhase;
 
   const websiteWorkflow: WebsiteWorkflowKind = styleWorkspace || focus
     ? "iterative_edit"
