@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PlanningOrchestrator, type PlanningOrchestratorDependencies } from "../apps/server/src/planning-orchestrator.ts";
-import type { Approval, RoleAssignment, Task, TaskCheckpoint, WorkflowState } from "../packages/core/src/contracts.ts";
+import { createRoleAssignment, type Approval, type RoleAssignment, type Task, type TaskCheckpoint, type WorkflowState } from "../packages/core/src/contracts.ts";
 import { DisciplineRouter, TeamPolicyService } from "../packages/orchestration/src/index.ts";
 
-function baseWorkflowState(taskId: string, projectId: string) {
+function baseWorkflowState(taskId: string, projectId: string): WorkflowState {
   const now = new Date().toISOString();
   return {
     projectId,
@@ -131,19 +131,16 @@ function harness() {
     contextSourceHints: () => [],
     recordContextPack: () => undefined,
     recordModelInput: () => undefined,
-    beginRole: (task: Task, role: RoleAssignment["role"], discipline: RoleAssignment["discipline"], selectedModel: string | null) => ({
+    beginRole: (task: Task, role: RoleAssignment["role"], discipline: RoleAssignment["discipline"], selectedModel: string | null) => createRoleAssignment({
       id: "role-1",
       taskId: task.id,
       role,
       discipline,
       model: selectedModel,
       attempt: task.attempts,
-      capabilities: [],
+      capabilities: ["planning"],
       specialistPacks: [],
-      status: "active",
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-    } as RoleAssignment),
+    }),
     finishRole: (assignment: RoleAssignment, status: "completed" | "failed") => ({ ...assignment, status, completedAt: new Date().toISOString() }),
     recordHandoff: () => undefined,
     createCheckpointSnapshot: (task: Task, kind: TaskCheckpoint["kind"]) => ({
