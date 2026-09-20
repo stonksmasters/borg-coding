@@ -63,7 +63,7 @@ import { preflightFailureMessage, runWorkspacePreflight } from "../../../package
 import { projectWorkflowState } from "../../../packages/web-builder/src/workflow-projection.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
-import { compileFocusedFrontendContext, compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
+import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext, type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
@@ -151,6 +151,30 @@ function recordModelInput(taskId: string, role: string, selectedModel: string, s
   const id = randomUUID();
   tasks.saveModelContext({ id, taskId, role, model: selectedModel, sliceId, inputText: body, manifest, inputSha256: createHash("sha256").update(body).digest("hex"), createdAt: new Date().toISOString() });
   appendTaskEvent(taskId, "MODEL_CONTEXT_RECORDED", { id, role, model: selectedModel, sliceId, included: manifest.length, characters: body.length });
+}
+
+function contextSourceHints(root: string, query: string): string[] {
+  try {
+    return memory.relatedPaths(root, query, 12, (path) => access.allowsRepositoryFile(path));
+  } catch {
+    return [];
+  }
+}
+
+function recordContextPack(taskId: string, projectId: string, pack: CompiledContext) {
+  const id = randomUUID();
+  const createdAt = new Date().toISOString();
+  tasks.saveContextPack({ id, taskId, projectId, pack, createdAt });
+  appendTaskEvent(taskId, "CONTEXT_PACK_COMPILED", {
+    id,
+    profile: pack.profile,
+    authority: pack.authority,
+    fingerprint: pack.fingerprint,
+    included: pack.manifest.length,
+    characters: pack.characters,
+    budgetCharacters: pack.budgetCharacters,
+  });
+  return id;
 }
 
 function commitBuildDocs(repositoryPath: string, message: string) {
