@@ -38,7 +38,12 @@ function plan(): WorkflowProjectPlan {
 
 function reachPlanning(engine: WorkflowEngine, id: string, projectId: string, request: string, commandId?: string) {
   let task = createTask({ id, projectId, request });
-  engine.start(task, commandId ? "frontend_slice" : "project_plan", commandId ? "Start durable slice command" : "Plan project", { commandId });
+  if (commandId) {
+    const pendingAction = engine.get(projectId)?.pendingCommand?.action;
+    engine.startFrontendSlice(task, pendingAction === "advance_slice" ? "advance" : "initial", "Start durable slice command", { commandId });
+  } else {
+    engine.start(task, "project_plan", "Plan project");
+  }
   task = engine.transition(task, "CLASSIFYING").task;
   task = engine.transition(task, "DISCOVERING").task;
   task = engine.transition(task, "PLANNING").task;
@@ -56,7 +61,10 @@ function approveExecution(engine: WorkflowEngine, task: ReturnType<typeof create
     baseCommit: `base-${task.id}`,
   };
   task = engine.decideApproval(task, approved, "execution").task;
-  engine.slice(task, { index, total, title, status: "running" });
+  const active = engine.activateSlice(task);
+  assert.equal(active.sliceIndex, index);
+  assert.equal(active.sliceTotal, total);
+  assert.equal(active.sliceTitle, title);
   return task;
 }
 
