@@ -1,6 +1,6 @@
 # BORG Code Roadmap
 
-Last updated: 2026-09-19
+Last updated: 2026-09-20
 
 This roadmap is product-oriented. Historical alpha documents describe implementation milestones; this file describes where BORG is going and what major capabilities are complete, active, or later.
 
@@ -101,12 +101,16 @@ Current foundation:
 - pinned website product and design contracts;
 - bounded inclusion budgets;
 - source provenance manifests;
+- deterministic persisted ContextPacks;
+- separate exact model-input audit records;
+- slice/page/component/styles profiles;
 - page/component registry context;
+- repository-memory symbol/import source hints;
 - handoff and decision compression;
 - recorded model inputs for diagnostics;
-- tests for bounded relevance and exclusion.
+- tests for bounded relevance, deterministic replay, restart persistence, and exclusion.
 
-Hardening remains focused on dependency-aware source selection, richer entity-scoped profiles, and keeping critical contracts pinned under local-model context pressure.
+Hardening remains focused on improving source-map freshness, evidence/repair overlays, and keeping critical contracts pinned under local-model context pressure.
 
 ## 6. Execution observability - Built / consolidation
 
