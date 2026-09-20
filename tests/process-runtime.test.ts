@@ -145,7 +145,8 @@ test("concurrent preview starts for one task/worktree converge on a single manag
   try {
     const runtime = new ProcessRuntime({ onEvent: (event) => events.push(event) });
     const firstPort = await findAvailableLoopbackPort();
-    const secondPort = await findAvailableLoopbackPort();
+    let secondPort = await findAvailableLoopbackPort();
+    while (secondPort === firstPort) secondPort = await findAvailableLoopbackPort();
     const firstUrl = `http://127.0.0.1:${firstPort}`;
     const secondUrl = `http://127.0.0.1:${secondPort}`;
 
