@@ -7,8 +7,11 @@ import { WorkflowStateSchema } from "../packages/core/src/contracts.ts";
 import {
   approveProjectPlan,
   fallbackProjectPlan,
+  extractExplicitPageRequirements,
   markSliceReady,
   parseProjectPlan,
+  parseProjectPlanResult,
+  validateProjectPlanCoverage,
   persistDesignBrief,
   persistProposedProjectPlan,
   prepareSlice,
@@ -33,7 +36,8 @@ test("website types receive appropriately sized fallback phase plans", () => {
   assert.match(landing.slices[0].title, /hero/i);
   assert.match(landing.slices[1].title, /homepage/i);
   assert.ok(ecommerce.slices.length >= landing.slices.length);
-  assert.ok(dashboard.slices.length > landing.slices.length);
+  assert.ok(dashboard.slices.length >= 3);
+  assert.doesNotMatch(dashboard.slices.map((slice) => slice.title).join(" | "), /homepage|hero/i);
   assert.equal(landing.backendRequired, false);
   assert.equal(ecommerce.backendRequired, true);
   assert.equal(dashboard.backendRequired, true);
@@ -43,6 +47,29 @@ test("website types receive appropriately sized fallback phase plans", () => {
   assert.ok(landing.styles.typography.length > 0);
   assert.ok(ecommerce.sitemap.some((page) => page.route === "/checkout"));
   assert.ok(ecommerce.components.some((component) => component.usedBy.length > 0));
+});
+
+test("operations fallback preserves explicit ForgeOps page coverage and application slices", () => {
+  const brief = "Build ForgeOps, an internal operations dashboard. At minimum: Overview, Schedule, Jobs, Job Detail, Customers, Customer Detail, Technicians, Technician Detail, Vehicles, Inventory, Reports, and Settings.";
+  const required = extractExplicitPageRequirements(brief);
+  assert.deepEqual(required, ["Overview", "Schedule", "Jobs", "Job Detail", "Customers", "Customer Detail", "Technicians", "Technician Detail", "Vehicles", "Inventory", "Reports", "Settings"]);
+
+  const plan = fallbackProjectPlan(brief, "dashboard");
+  assert.equal(plan.sitemap.length, 12);
+  for (const page of required) assert.ok(plan.sitemap.some((item) => item.name === page), `missing ${page}`);
+  assert.doesNotMatch(plan.slices.map((slice) => [slice.title, ...slice.scope].join(" ")).join(" | "), /homepage|hero|marketing/i);
+  assert.equal(validateProjectPlanCoverage(plan, brief).valid, true);
+});
+
+test("complex application plans that omit required screens request a bounded planning retry", () => {
+  const brief = "Build ForgeOps. Required pages: Overview, Schedule, Jobs, Customers, Technicians, Vehicles, Inventory, Reports, Settings.";
+  const answer = `<borg-project-plan>{"siteGoal":"ForgeOps","audience":"Dispatchers","sitemap":[{"id":"overview","name":"Overview","route":"/","purpose":"Overview","sections":[],"componentIds":[],"acceptanceCriteria":[]},{"id":"schedule","name":"Schedule","route":"/schedule","purpose":"Schedule","sections":[],"componentIds":[],"acceptanceCriteria":[]}],"components":[],"styles":{},"visualDirection":"Dense operations UI","backendRequired":true,"slices":[{"id":"shell","title":"Overview","outcome":"Overview","scope":["Overview"],"acceptanceCriteria":[]},{"id":"schedule","title":"Schedule","outcome":"Schedule","scope":["Schedule"],"acceptanceCriteria":[]}],"acceptanceCriteria":[]}</borg-project-plan>`;
+  const result = parseProjectPlanResult(answer, brief, "dashboard");
+  assert.equal(result.source, "fallback");
+  assert.equal(result.retryRecommended, true);
+  assert.ok(result.validation.missingPages.includes("Jobs"));
+  assert.match(result.fallbackReason ?? "", /Missing required sitemap pages/i);
+  assert.equal(validateProjectPlanCoverage(result.plan, brief).valid, true);
 });
 
 test("software product and consumer experience briefs do not become commerce plans", () => {
