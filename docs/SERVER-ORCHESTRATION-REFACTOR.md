@@ -15,7 +15,7 @@ This refactor is intentionally split into five mergeable slices. Each slice must
 
 ## Slice 1 — Characterize behavior and extract task scope resolution
 
-**Status:** in progress
+**Status:** complete
 
 ### Purpose
 
@@ -49,6 +49,8 @@ Create a stable seam around the repeated scope-classification logic currently em
 - `index.ts` begins shrinking without moving workflow authority out of Core.
 
 ## Slice 2 — Extract PlanningOrchestrator
+
+**Status:** in progress
 
 ### Purpose
 
