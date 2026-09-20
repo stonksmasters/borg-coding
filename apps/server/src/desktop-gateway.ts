@@ -270,6 +270,39 @@ async function loadSessionRuntime(session: ChatSession) {
   }
 }
 
+async function proxySse(request: IncomingMessage, response: ServerResponse) {
+  const controller = new AbortController();
+  request.once("aborted", () => controller.abort());
+  response.once("close", () => { if (!response.writableEnded) controller.abort(); });
+  try {
+    const upstream = await fetch(`${coreUrl}${request.url ?? "/"}`, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!upstream.ok || !upstream.body) {
+      const body = await upstream.text().catch(() => "");
+      return send(response, upstream.status, { error: body || `Control-plane stream failed (${upstream.status}).` });
+    }
+    response.writeHead(200, {
+      ...headers("text/event-stream"),
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    const reader = upstream.body.getReader();
+    while (!controller.signal.aborted) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) response.write(value);
+    }
+  } catch (error) {
+    if (!controller.signal.aborted && !response.headersSent) {
+      send(response, 502, { error: error instanceof Error ? error.message : "Core control-plane stream unavailable" });
+    }
+  } finally {
+    if (!response.writableEnded) response.end();
+  }
+}
+
 async function proxyJson(request: IncomingMessage, response: ServerResponse) {
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : await readText(request);
   try {
@@ -970,6 +1003,11 @@ const server = createServer((request, response) => {
   const executeRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/execute$/);
   if (request.method === "POST" && executeRoute) {
     void streamExecutionRoute(decodeURIComponent(executeRoute[1]), response);
+    return;
+  }
+
+  if (request.method === "GET" && /^\/api\/control\/tasks\/[^/?]+\/stream$/.test(request.url ?? "")) {
+    void proxySse(request, response);
     return;
   }
 
