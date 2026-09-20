@@ -207,7 +207,7 @@ export class WorkflowEngine {
     if (current.loop !== "project" || current.phase !== "planning") throw new Error("Only the outer project planning loop may replace the project plan.");
     const proposedPlan = {
       ...plan,
-      revision: current.projectPlan ? current.projectPlan.revision + 1 : Math.max(1, plan.revision),
+      revision: current.projectPlan ? current.projectPlan.revision + 1 : 1,
       status: "proposed" as const,
       approvedAt: null,
     };
