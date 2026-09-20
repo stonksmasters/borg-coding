@@ -233,7 +233,7 @@ export function validateProjectPlanCoverage(plan: ProjectPlan, brief: string): P
   const requiredCapabilities = extractRequiredCapabilities(brief);
   const capabilityPatterns: Record<PlanCapability, RegExp> = {
     authentication: /\b(?:auth|authentication|login|log in|sign in|signin|session|identity|credentials?|authenticated|unauthenticated|access control|role-based access|rbac|protected (?:route|routes|page|pages|area|areas))\b/i,
-    record_mutation: /\b(?:create|add|edit|update|delete|remove|manage|management|form|actions?)\b/i,
+    record_mutation: /\b(?:create|add|edit|update|delete|remove|manage|management|adjust|transfer|archive|publish|save changes)\b/i,
     search_filtering: /\b(?:search|filter|filtering|sort|sorting)\b/i,
     reporting: /\b(?:report|reports|reporting|analytics|insights|metrics|export|charts?)\b/i,
     realtime_updates: /\b(?:real time|realtime|live updates|websocket|stream|streaming)\b/i,
