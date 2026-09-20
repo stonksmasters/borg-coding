@@ -215,6 +215,9 @@ export const TaskCheckpointSchema = z.object({
   lastEventId: z.string().nullable(),
   activeRole: z.enum(engineeringRoles).nullable(),
   specialistPacks: z.array(SpecialistPackRefSchema).default([]),
+  workflowVersion: z.number().int().positive().nullable().default(null),
+  verification: VerificationGateSchema.default(inactiveVerificationGate),
+  recovery: WorkflowRecoverySchema.default(inactiveWorkflowRecovery),
   createdAt: z.string().datetime(),
 });
 export type TaskCheckpoint = z.infer<typeof TaskCheckpointSchema>;
@@ -307,7 +310,10 @@ export function createApproval(input: Pick<Approval, "id" | "taskId">): Approval
 }
 
 
-export function createTaskCheckpoint(input: Omit<TaskCheckpoint, "createdAt">): TaskCheckpoint {
+export function createTaskCheckpoint(
+  input: Omit<TaskCheckpoint, "createdAt" | "workflowVersion" | "verification" | "recovery">
+    & Partial<Pick<TaskCheckpoint, "workflowVersion" | "verification" | "recovery">>,
+): TaskCheckpoint {
   return TaskCheckpointSchema.parse({ ...input, createdAt: new Date().toISOString() });
 }
 
