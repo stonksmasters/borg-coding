@@ -70,14 +70,15 @@ function selectFrontendSlice(
   }
   if (pending.claimedByTaskId) throw new Error(`Workflow command ${commandId} is already claimed by task ${pending.claimedByTaskId}.`);
 
-  const index = action === "initial" ? (existing.sliceIndex ?? 0) : (existing.sliceIndex ?? -1) + 1;
+  const fallbackIndex = action === "initial" ? (existing.sliceIndex ?? 0) : (existing.sliceIndex ?? -1) + 1;
+  const index = pending.targetSliceIndex ?? fallbackIndex;
   const slice = existing.projectPlan.slices[index];
   if (!slice) throw new Error(`Frontend slice ${index + 1} is outside the approved plan.`);
   return {
     index,
     total: existing.projectPlan.slices.length,
     title: slice.title,
-    command: pending,
+    command: { ...pending, targetSliceIndex: index },
     supersededCommandId: null,
   };
 }
@@ -103,12 +104,19 @@ function taskEvent(taskId: string, type: string, payload: Record<string, unknown
   return { id: randomUUID(), taskId, type, payload, occurredAt };
 }
 
-function command(projectId: string, workflowVersion: number, action: WorkflowState["nextAction"], now: string) {
+function command(
+  projectId: string,
+  workflowVersion: number,
+  action: WorkflowState["nextAction"],
+  now: string,
+  targetSliceIndex: number | null = null,
+) {
   return {
     id: `${projectId}:${workflowVersion}:${action}`,
     action,
     workflowVersion,
     createdAt: now,
+    targetSliceIndex,
     claimedByTaskId: null,
     claimedAt: null,
   };
@@ -313,7 +321,7 @@ export class WorkflowEngine {
       sliceTitle: projectPlanApproved ? firstSlice?.title ?? null : current.sliceTitle,
       status: approval.status === "REJECTED" ? "cancelled" : projectPlanApproved ? "idle" : "running",
       nextAction: approval.status === "REJECTED" ? "none" : projectPlanApproved ? "start_slice" : "implement",
-      pendingCommand: projectPlanApproved ? command(task.projectId, nextVersion, "start_slice", now) : null,
+      pendingCommand: projectPlanApproved ? command(task.projectId, nextVersion, "start_slice", now, 0) : null,
       detail: approval.status === "REJECTED"
         ? "Approval was rejected."
         : projectPlanApproved
@@ -529,7 +537,7 @@ export class WorkflowEngine {
       projectPlan,
       status: frontend ? "awaiting_feedback" : "complete",
       nextAction,
-      pendingCommand: frontend && !last ? command(task.projectId, nextVersion, "advance_slice", now) : null,
+      pendingCommand: frontend && !last ? command(task.projectId, nextVersion, "advance_slice", now, current.sliceIndex! + 1) : null,
       detail: frontend
         ? (last ? "Final frontend slice delivered; operator feedback is requested." : `Slice ${current.sliceIndex! + 1} delivered; Core durably scheduled the next slice.`)
         : "Delivery completed.",
