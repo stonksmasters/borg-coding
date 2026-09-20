@@ -55,6 +55,13 @@ export const DebugContextPackSummarySchema = z.object({
   characters: z.number().int().nonnegative(),
   budgetCharacters: z.number().int().positive(),
   manifestCount: z.number().int().nonnegative(),
+  manifest: z.array(z.object({
+    kind: z.string().min(1),
+    path: z.string().min(1),
+    reason: z.string().min(1),
+    characters: z.number().int().nonnegative(),
+    required: z.boolean(),
+  })),
   createdAt: z.string().datetime(),
 });
 export type DebugContextPackSummary = z.infer<typeof DebugContextPackSummarySchema>;
