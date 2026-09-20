@@ -3,6 +3,7 @@ import test from "node:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WorkflowStateSchema } from "../packages/core/src/contracts.ts";
 import {
   approveProjectPlan,
   fallbackProjectPlan,
@@ -11,6 +12,7 @@ import {
   persistDesignBrief,
   persistProposedProjectPlan,
   prepareSlice,
+  projectDeliveredFrontendCheckpoint,
   readFrontendWorkflowState,
   readPersistedDesignBrief,
   readProjectDocs,
@@ -132,7 +134,7 @@ test("project plan approval is separate from slice execution", () => {
   }
 });
 
-test("final slice reaches frontend_complete without inventing backend work", () => {
+test("final slice becomes frontend_complete only after Core checkpoints delivery", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-project-complete-"));
   try {
     const plan = fallbackProjectPlan("A static portfolio with projects and contact links.", "portfolio");
@@ -144,8 +146,41 @@ test("final slice reaches frontend_complete without inventing backend work", () 
       assert.ok(ready);
       state = ready!;
     }
-    assert.equal(state.status, "frontend_complete");
-    assert.equal(state.backendRequired, false);
+
+    assert.equal(state.status, "awaiting_feedback");
+    assert.notEqual(readProjectPlan(root)?.status, "frontend_complete");
+    assert.match(readProjectDocs(root).find((doc) => doc.path.endsWith("/handoff.md"))?.content ?? "", /not complete until Core checkpoints delivery/i);
+
+    const now = new Date().toISOString();
+    const deliveredPlan = { ...readProjectPlan(root)!, status: "frontend_complete" as const };
+    const delivered = WorkflowStateSchema.parse({
+      projectId: "site",
+      taskId: `slice-${plan.slices.length - 1}`,
+      loop: "slice",
+      phase: "frontend",
+      status: "awaiting_feedback",
+      nextAction: "request_feedback",
+      planApprovalId: "plan-approval",
+      planApproved: true,
+      projectPlan: deliveredPlan,
+      sliceIndex: plan.slices.length - 1,
+      sliceTotal: plan.slices.length,
+      sliceTitle: plan.slices.at(-1)!.title,
+      feedback: [],
+      handoff: null,
+      pendingCommand: null,
+      lastConsumedCommandId: "final-command",
+      repairAttempt: 0,
+      recoveryCategory: null,
+      detail: "Final frontend slice delivered.",
+      version: 10,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const projected = projectDeliveredFrontendCheckpoint(root, delivered);
+    assert.equal(projected?.status, "frontend_complete");
+    assert.equal(projected?.backendRequired, false);
+    assert.equal(readProjectPlan(root)?.status, "frontend_complete");
     assert.equal(readFrontendWorkflowState(root)?.stage, "frontend_complete");
     assert.match(readProjectDocs(root).find((doc) => doc.path.endsWith("/handoff.md"))?.content ?? "", /No backend phase is required/i);
     assert.throws(() => prepareSlice(root, "", "advance", "Approved", "extra"), /Frontend is complete/);
