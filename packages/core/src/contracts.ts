@@ -30,6 +30,7 @@ export const reviewDecisionActions = ["accept", "mark_fixed", "waive", "false_po
 export const reviewDecisionActors = ["operator", "reviewer", "system"] as const;
 export const reviewRunStatuses = ["running", "completed", "failed"] as const;
 export const workflowPhases = projectPhases;
+export const workflowLoops = ["project", "slice", "backend", "general"] as const;
 export const workflowStatuses = ["idle", "planning", "awaiting_approval", "running", "verifying", "reviewing", "awaiting_feedback", "recovery_required", "complete", "blocked", "failed", "cancelled"] as const;
 export const workflowActions = ["plan", "await_approval", "start_slice", "implement", "verify", "repair", "checkpoint", "advance_slice", "request_feedback", "plan_backend", "deliver", "recover", "none"] as const;
 
@@ -53,6 +54,7 @@ export const WorkflowCommandSchema = z.object({
   action: z.enum(workflowActions),
   workflowVersion: z.number().int().positive(),
   createdAt: z.string().datetime(),
+  targetSliceIndex: z.number().int().nonnegative().nullable().default(null),
   claimedByTaskId: z.string().min(1).nullable().default(null),
   claimedAt: z.string().datetime().nullable().default(null),
 });
@@ -120,6 +122,7 @@ export type TaskEvent = z.infer<typeof TaskEventSchema>;
 
 export const WorkflowStateSchema = z.object({
   projectId: z.string().min(1), taskId: z.string().min(1).nullable(),
+  loop: z.enum(workflowLoops).default("general"),
   phase: z.enum(workflowPhases), status: z.enum(workflowStatuses), nextAction: z.enum(workflowActions),
   planApprovalId: z.string().min(1).nullable(), planApproved: z.boolean(),
   projectPlan: WorkflowProjectPlanSchema.nullable().default(null),

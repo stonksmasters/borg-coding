@@ -151,7 +151,7 @@ export class SqliteTaskRepository {
     return rows.map((row) => TaskSchema.parse(JSON.parse(row.data)));
   }
 
-  saveWorkflow(state: WorkflowState): void {
+  private writeWorkflow(state: WorkflowState): void {
     const value = WorkflowStateSchema.parse(state);
     this.database.prepare(`
       INSERT INTO project_workflows (project_id, task_id, phase, status, next_action, version, updated_at, data)
@@ -179,16 +179,12 @@ export class SqliteTaskRepository {
       if (approvalValue) this.saveApproval(approvalValue);
       if (continuationValue) this.saveContinuation(continuationValue);
       for (const event of eventValues) this.appendEvent(event);
-      this.saveWorkflow(workflowValue);
+      this.writeWorkflow(workflowValue);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
     }
-  }
-
-  commitWorkflowTransition(task: Task, event: TaskEvent, state: WorkflowState): void {
-    this.commitWorkflowMutation({ task, events: [event], state });
   }
 
   appendEvent(event: TaskEvent): void {

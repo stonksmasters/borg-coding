@@ -18,10 +18,13 @@
 4. PLAN remains read-only and stops at `AWAITING_APPROVAL`.
 5. Approved mutation occurs only in the recorded worktree.
 6. Verification and review precede delivery readiness.
-7. A verified non-final slice yields `advance_slice`; a final slice yields `request_feedback`.
-8. Recovery is bounded and classified by `RecoveryService`; unknown and exhausted failures stop.
-9. Restart recovery reads SQLite. Generated build documents may be recreated from it.
-10. Internal slices reuse the primary chat session; they are workflow steps, not child conversations.
+7. Verification/review may make a slice checkpoint-ready, but they do not advance the project. Only successful delivery/checkpoint completion may yield `advance_slice` or `request_feedback`.
+8. Core selects the slice index for `initial`, `advance`, and `revise`; server, gateway, UI, and build docs never increment or choose it independently.
+9. Project-plan revisions are numbered by Core. An approved project plan is frozen against silent replanning.
+10. The outer project loop and inner slice mini-loop are explicit workflow domains. A slice mini-loop cannot restart project planning.
+11. Recovery is bounded and classified by `RecoveryService`; unknown and exhausted failures stop.
+12. Restart recovery reads SQLite. Generated build documents may be recreated from it.
+13. Internal slices reuse the primary chat session; they are workflow steps, not child conversations.
 
 ## Migration
 
@@ -32,7 +35,8 @@ The migration is compatible with existing task/event consumers:
 3. Publish normalized workflow state alongside legacy activity fields.
 4. Carry workspace contract/preflight forward and delegate classification to Core `RecoveryService`.
 5. Reuse the primary session for slices; gateway automation follows Core `nextAction`.
-6. Retire legacy `.localcode/build` reads from progression decisions after existing projects acquire SQLite state.
+6. Legacy `.localcode/build` reads are permitted only when no SQLite workflow row exists. Once durable state exists, file projections cannot influence progression.
+7. Focused Page, Component, and Styles tasks may own independent task lifecycles, but they bind explicitly to the root project's workflow for approved project-plan context.
 
 ## Recovery boundary
 

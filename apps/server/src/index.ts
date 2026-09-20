@@ -65,7 +65,7 @@ import { ensurePreviewDependencies } from "../../../packages/web-builder/src/pre
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFocusedFrontendContext, compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -387,6 +387,7 @@ async function reconcileInterruptedDelivery(task: Task): Promise<boolean> {
     || !approval.baseCommit
     || !recordedRoot
     || current?.taskId !== task.id
+    || current.loop !== "slice"
     || current.phase !== "frontend"
   ) return false;
 
@@ -405,6 +406,8 @@ async function reconcileInterruptedDelivery(task: Task): Promise<boolean> {
     });
     syncWorkflowProjection(completed.task, completed.workflow);
     syncDeliveredWorkflowProjection(completed.task, completed.workflow, recordedRoot);
+    projectDeliveredFrontendCheckpoint(recordedRoot, completed.workflow);
+    commitBuildDocs(recordedRoot, "Project BORG frontend workflow checkpoint");
     appendTaskEvent(task.id, "DELIVERY_RECONCILED_AFTER_RESTART", {
       commit: reconciled.commit,
       detail: reconciled.detail,
@@ -451,6 +454,12 @@ function taskProjectRepository(taskId: string): string | null {
   return taskRepositoryPath(tasks.listEvents(taskId));
 }
 
+function taskWorkflowAuthorityProjectId(taskId: string): string | null {
+  const event = tasks.listEvents(taskId).findLast((candidate) => candidate.type === "PROJECT_WORKFLOW_AUTHORITY_BOUND");
+  const projectId = event?.payload.projectId;
+  return typeof projectId === "string" && projectId.trim() ? projectId : null;
+}
+
 function taskProjectRoot(taskId: string): string | null {
   const task = tasks.findTask(taskId);
   if (!task) return null;
@@ -488,23 +497,14 @@ function syncDeliveredWorkflowProjection(task: Task, state: WorkflowState, repos
 }
 
 function projectPlanFromWorkflow(state: WorkflowState | null, fallbackRoot: string | null): ProjectPlan | null {
-  const persisted = fallbackRoot ? readProjectPlan(fallbackRoot) : null;
-  if (!state?.projectPlan) return persisted;
-  const durable = state.projectPlan as ProjectPlan;
-  if (Array.isArray(durable.sitemap) && Array.isArray(durable.components) && durable.styles) return durable;
-  if (!persisted) return durable;
-  return {
-    ...durable,
-    sitemap: persisted.sitemap,
-    components: persisted.components,
-    styles: persisted.styles,
-    pages: durable.pages?.length ? durable.pages : persisted.pages,
-    features: durable.features?.length ? durable.features : persisted.features,
-  };
+  // Once SQLite workflow state exists, it is the only progression authority.
+  // Markdown is consulted only for pre-migration projects with no workflow row.
+  if (state) return state.projectPlan as ProjectPlan | null;
+  return fallbackRoot ? readProjectPlan(fallbackRoot) : null;
 }
 
 function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan | null, fallbackRoot: string | null): SliceState | null {
-  if (state?.projectPlan && plan && state.sliceIndex !== null) {
+  if (state?.projectPlan && plan && state.sliceIndex !== null && (state.loop === "project" || state.loop === "slice")) {
     const status: SliceState["status"] = plan.status === "frontend_complete"
       ? "frontend_complete"
       : state.pendingCommand?.action === "start_slice" || state.nextAction === "start_slice"
@@ -525,6 +525,7 @@ function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan |
       backendRequired: plan.backendRequired,
     };
   }
+  if (state) return null;
   return fallbackRoot ? readSliceState(fallbackRoot) : null;
 }
 
@@ -742,7 +743,12 @@ const server = createServer((request, response) => {
     if (!root) return send(response, 200, { docs: [], slice: null });
     const events = tasks.listEvents(taskId);
     const independentWorkspace = events.some((event) => event.type === "STYLE_WORKSPACE_SELECTED" || event.type === "FOCUSED_WORKSPACE_SELECTED");
-    return send(response, 200, { docs: readProjectDocs(root), slice: independentWorkspace ? null : readSliceState(root) });
+    const ownedWorkflow = workflow.get(task.projectId)?.taskId === task.id ? workflow.get(task.projectId) : null;
+    const authorityProjectId = taskWorkflowAuthorityProjectId(task.id) ?? task.projectId;
+    const authorityWorkflow = workflow.get(authorityProjectId);
+    const plan = projectPlanFromWorkflow(authorityWorkflow ?? ownedWorkflow, root);
+    const slice = independentWorkspace ? null : sliceStateFromWorkflow(ownedWorkflow, plan, root);
+    return send(response, 200, { docs: readProjectDocs(root), slice });
   }
   const taskPreviewRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/preview$/);
   if (request.method === "POST" && taskPreviewRoute) {
@@ -894,6 +900,8 @@ const server = createServer((request, response) => {
         syncWorkflowProjection(task, completed.workflow);
         if (isFrontendSlice && repositoryPath && method === "commit") {
           syncDeliveredWorkflowProjection(task, completed.workflow, repositoryPath);
+          projectDeliveredFrontendCheckpoint(repositoryPath, completed.workflow);
+          commitBuildDocs(repositoryPath, "Project BORG frontend workflow checkpoint");
         }
         return send(response, 200, { task, workflow: completed.workflow, delivery: result });
       } catch (error) {
@@ -989,7 +997,9 @@ const server = createServer((request, response) => {
     const designContext = designBrief ? designBriefPrompt(designBrief) : "";
     const taskWorkflow = workflow.get(task.projectId);
     const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
-    const projectPlan = websiteProject ? projectPlanFromWorkflow(ownedTaskWorkflow, approvedWorktreePath) : null;
+    const authorityProjectId = taskWorkflowAuthorityProjectId(task.id) ?? task.projectId;
+    const authorityWorkflow = workflow.get(authorityProjectId);
+    const projectPlan = websiteProject ? projectPlanFromWorkflow(authorityWorkflow ?? ownedTaskWorkflow, approvedWorktreePath) : null;
     const focusedWorkspaceEvent = websiteProject ? tasks.listEvents(taskId).findLast((event) => event.type === "FOCUSED_WORKSPACE_SELECTED") : null;
     const focusedWorkspace = focusedWorkspaceEvent?.payload as { scopeType?: "page" | "component"; scopeId?: string } | undefined;
     const focusedExecutionScope = focusedWorkspace?.scopeType && focusedWorkspace.scopeId
@@ -1067,10 +1077,11 @@ const server = createServer((request, response) => {
         authority: { plan: projectPlan, state: sliceState },
         productContract: websiteContext,
       }) : null;
-      const compiledFocus = focusedExecutionScope ? compileFocusedFrontendContext({
+      const compiledFocus = focusedExecutionScope && projectPlan ? compileFocusedFrontendContext({
         root: approvedWorktreePath,
         scope: focusedExecutionScope,
         productContract: websiteContext,
+        authority: { plan: projectPlan },
       }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       const focusedExecutionPrompt = compiledFocus
@@ -1726,52 +1737,44 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       if (isProjectPlanApproval) {
         const authoritativePlan = projectPlanFromWorkflow(workflow.get(task.projectId), repositoryPath);
         if (!authoritativePlan) return send(response, 409, { error: "The durable project plan is missing from SQLite." });
-        const approvedProject = approveProjectPlan(repositoryPath, task.id, authoritativePlan);
-        commitBuildDocs(repositoryPath, "Approve BORG frontend phase plan");
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
         const decided = workflow.decideApproval(task, approved, "project_plan");
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
+        const approvedPlan = projectPlanFromWorkflow(decided.workflow, null);
+        if (!approvedPlan) return send(response, 500, { error: "Core approved the project plan without a durable plan snapshot." });
+        const approvedProject = approveProjectPlan(repositoryPath, task.id, approvedPlan);
+        commitBuildDocs(repositoryPath, "Approve BORG frontend phase plan");
         return send(response, 200, { task, approval: approved, workflow: decided.workflow, projectPlanApproved: true, projectPlan: approvedProject.plan, slice: approvedProject.state });
       }
       const worktree = await worktrees.create(repositoryPath, task.id);
       const sliceIntent = tasks.listEvents(task.id).findLast((event) => event.type === "FRONTEND_SLICE_SELECTED")?.payload as { action?: SliceAction; feedback?: string } | undefined;
+      const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: worktree.path, baseCommit: worktree.baseCommit };
+      const decided = workflow.decideApproval(task, approved, "execution");
+      task = decided.task;
+      syncWorkflowProjection(task, decided.workflow);
+      let workflowState = decided.workflow;
       let preparedSlice: SliceState | null = null;
       if (sliceIntent) {
+        workflowState = workflow.activateSlice(task);
+        syncWorkflowProjection(task, workflowState);
         const website = websiteInfo(worktree.path);
-        const approvedPlan = tasks.listEvents(task.id).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+        const approvedPlanText = tasks.listEvents(task.id).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
         if (website) {
-          const authoritativeWorkflow = workflow.get(task.projectId);
-          const authoritativePlan = projectPlanFromWorkflow(authoritativeWorkflow, worktree.path);
-          const authoritativeSlice = sliceStateFromWorkflow(authoritativeWorkflow, authoritativePlan, worktree.path);
-          const preparationState = authoritativeSlice
-            ? { ...authoritativeSlice, status: (sliceIntent.action === "initial" ? "ready" : "awaiting_feedback") as SliceState["status"] }
-            : null;
+          const authoritativePlan = projectPlanFromWorkflow(workflowState, null);
+          const authoritativeSlice = sliceStateFromWorkflow(workflowState, authoritativePlan, null);
+          if (!authoritativePlan || !authoritativeSlice) throw new Error("Core did not provide the selected frontend slice after execution approval.");
           preparedSlice = prepareSlice(
             worktree.path,
             website.originalBrief || task.request,
             sliceIntent.action ?? "initial",
             sliceIntent.feedback ?? "",
             task.id,
-            typeof approvedPlan === "string" ? approvedPlan : "",
-            authoritativePlan && preparationState ? { plan: authoritativePlan, state: preparationState } : undefined,
+            typeof approvedPlanText === "string" ? approvedPlanText : "",
+            { plan: authoritativePlan, state: authoritativeSlice },
           );
-          setFrontendWorkflowStage(worktree.path, "slice_implementing", { currentSlice: preparedSlice.current, totalSlices: preparedSlice.total, taskId: task.id, detail: "Slice mini-plan approved automatically from the outer frontend approval. Implementation is starting." });
+          setFrontendWorkflowStage(worktree.path, "slice_implementing", { currentSlice: preparedSlice.current, totalSlices: preparedSlice.total, taskId: task.id, detail: "Core selected the slice and implementation is starting inside its bounded mini-loop." });
         }
-      }
-      const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: worktree.path, baseCommit: worktree.baseCommit };
-      const decided = workflow.decideApproval(task, approved, "execution");
-      task = decided.task;
-      syncWorkflowProjection(task, decided.workflow);
-      let workflowState = decided.workflow;
-      if (preparedSlice) {
-        workflowState = workflow.slice(task, {
-          index: preparedSlice.current,
-          total: preparedSlice.total,
-          title: preparedSlice.currentTitle,
-          status: "running",
-        });
-        syncWorkflowProjection(task, workflowState);
       }
       recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: `Implementation plan approved at base commit ${worktree.baseCommit}.`, taskId: task.id, path: null, line: null, createdAt: approved.decidedAt! });
       createCheckpointSnapshot(task, "pre_edit", { mode: recordedMode(task.id) });
@@ -1830,9 +1833,12 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const mode: PermissionMode = (["ask", "plan", "edit", "agent"] as const).includes(requestedMode as PermissionMode) ? requestedMode as PermissionMode : "ask";
       const requestText = String(input.request ?? "");
       const projectId = String(input.projectId ?? "local");
+      const authorityProjectId = typeof input.authorityProjectId === "string" && input.authorityProjectId.trim()
+        ? input.authorityProjectId.trim()
+        : projectId;
       const selectedPath = access.load().repositoryPath;
       const selectedWebsite = selectedPath ? websiteInfo(selectedPath) : null;
-      const durableWorkflow = workflow.get(projectId);
+      const durableWorkflow = workflow.get(authorityProjectId);
       const projectPlan = selectedWebsite ? projectPlanFromWorkflow(durableWorkflow, selectedWebsite.path) : null;
       const previousSlice = selectedWebsite ? sliceStateFromWorkflow(durableWorkflow, projectPlan, selectedWebsite.path) : null;
       if (mode !== "ask" && selectedWebsite && projectPlan && projectPlan.status !== "proposed" && ensureProjectModel(selectedWebsite.path, projectPlan)) commitProjectRegistries(selectedWebsite.path);
@@ -1850,12 +1856,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       if (focusType && !focusId) throw new Error(`${focusType} workspace is missing its durable scope id.`);
       const slicedApplication = mode !== "ask" && !["backend", "style", "page", "component"].includes(rawSliceAction) && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
       const miniLoop = slicedApplication || styleFocus || objectFocus;
-      if (rawSliceAction === "backend" && (previousSlice?.status !== "frontend_complete" || projectPlan?.backendRequired !== true)) throw new Error("Backend planning is available only after an approved frontend completion gate for a site that requires backend work.");
       const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
-      if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready") throw new Error("Review the finished slice before starting another.");
-      if (slicedApplication && previousSlice?.status === "frontend_complete") throw new Error("Frontend is complete. Start backend planning only if the approved project plan requires it.");
-      if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "advance") throw new Error("The current slice is not ready to advance.");
-      if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "revise") throw new Error("There is no completed slice waiting for revision.");
       const teamPolicy = teamPolicies.load(selectedPath);
       const routed = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
       const websiteFrontend = mode !== "ask" && Boolean(selectedWebsite) && rawSliceAction !== "backend";
@@ -1883,19 +1884,25 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       if (durableWorkflow?.projectPlan && expectedCommandAction && !workflowCommandId) {
         throw new Error(`Core has no pending ${expectedCommandAction} command for this project.`);
       }
-      const startedWorkflow = workflow.start(
-        task,
-        rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : slicedApplication ? "frontend_slice" : "general",
-        slicedApplication
-          ? "Continuing the approved project workflow without repository rediscovery."
-          : objectFocus
-            ? `Planning a focused ${focusType} edit without changing the main frontend slice workflow.`
-            : styleFocus
-              ? "Planning a global style edit without changing the main frontend slice workflow."
-              : "Planning the requested project work.",
-        { commandId: workflowCommandId, feedback: sliceAction === "revise" ? requestText : undefined },
-      );
+      const workflowDetail = slicedApplication
+        ? "Continuing the approved project workflow without repository rediscovery."
+        : objectFocus
+          ? `Planning a focused ${focusType} edit without changing the main frontend slice workflow.`
+          : styleFocus
+            ? "Planning a global style edit without changing the main frontend slice workflow."
+            : "Planning the requested project work.";
+      const startedWorkflow = slicedApplication
+        ? workflow.startFrontendSlice(task, sliceAction, workflowDetail, {
+            commandId: workflowCommandId,
+            feedback: sliceAction === "revise" ? requestText : undefined,
+          })
+        : workflow.start(
+            task,
+            rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : "general",
+            workflowDetail,
+          );
       syncWorkflowProjection(task, startedWorkflow);
+      appendTaskEvent(task.id, "PROJECT_WORKFLOW_AUTHORITY_BOUND", { projectId: authorityProjectId });
       if (selectedPath) appendTaskEvent(task.id, "TASK_REPOSITORY_BOUND", { repositoryPath: selectedPath });
       if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
       if (slicedApplication) appendTaskEvent(task.id, "FRONTEND_SLICE_SELECTED", { action: sliceAction, feedback: previousSlice ? requestText : "", previous: previousSlice?.current ?? null });
@@ -1969,6 +1976,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           root: websiteProject.path,
           scope: { type: focusType, id: focusId },
           productContract: websiteContext,
+          authority: { plan: projectPlan },
         });
         repositoryContext = compiledArchitectContext.text;
         const scopedRegistry = focusType === "page"
@@ -1984,13 +1992,19 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         sliceDirective = `GLOBAL STYLE WORKSPACE. The approved sitemap, component responsibilities, content hierarchy, routes, behavior, and data contracts are fixed scope boundaries. Work only on the website-wide visual system: shared color tokens, typography, spacing, radii, shadows, layout rhythm, global responsive rules, motion, and accessibility styling. Prefer shared theme/token/style primitives over component-by-component one-off patches. Do not add/remove pages, rewrite product behavior, redesign information architecture, or change component responsibilities unless the operator explicitly says the style request requires it. Verify the result across representative pages and mobile/desktop widths.\n\nApproved global style context:\n${styleContext}`;
         repositoryContext = `STYLE FOCUS: use the approved style/design docs and targeted source reads. Do not rediscover or replan the whole website.\n\n${styleContext}`;
       } else if (slicedApplication && websiteProject && projectPlan && previousSlice) {
-        const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
-        const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
+        const selectedIndex = startedWorkflow.sliceIndex;
+        if (selectedIndex === null) throw new Error("Core did not select a frontend slice for this mini-loop.");
+        const plannedSlice: SliceState = {
+          ...previousSlice,
+          current: selectedIndex,
+          currentTitle: startedWorkflow.sliceTitle ?? projectPlan.slices[selectedIndex]?.title ?? previousSlice.currentTitle,
+          status: "working",
+        };
         sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
         compiledArchitectContext = compileFrontendContext({
           root: websiteProject.path,
           phase: "frontend",
-          sliceIndex: nextIndex,
+          sliceIndex: selectedIndex,
           authority: { plan: projectPlan, state: plannedSlice },
           productContract: websiteContext,
         });
@@ -2080,12 +2094,13 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         writeEvent(response, { type: "message.delta", taskId: task.id, text: answer });
         finishRole(architectAssignment, "completed", emit);
         appendTaskEvent(task.id, "MODEL_RESPONSE_COMPLETED", { runtime: "ollama", model: architectModel, role: "architect", answer, usedTools });
-        const proposedProjectPlan = projectPlanning && websiteProject
-          ? persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template), task.id)
-          : null;
-        if (proposedProjectPlan) {
-          const planWorkflow = workflow.setProjectPlan(task, proposedProjectPlan);
+        let proposedProjectPlan: ProjectPlan | null = null;
+        if (projectPlanning && websiteProject) {
+          const parsedPlan = parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template);
+          const planWorkflow = workflow.setProjectPlan(task, parsedPlan);
           syncWorkflowProjection(task, planWorkflow);
+          proposedProjectPlan = planWorkflow.projectPlan as ProjectPlan;
+          persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, proposedProjectPlan, task.id);
           appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan, workflowVersion: planWorkflow.version });
           emit({ type: "project.plan.proposed", plan: proposedProjectPlan });
         }
