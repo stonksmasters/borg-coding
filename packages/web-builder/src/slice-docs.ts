@@ -592,7 +592,7 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
 export function parseProjectPlanResult(answer: string, brief: string, template = ""): ProjectPlanParseResult {
   const fallback = fallbackProjectPlan(brief, template);
   const fallbackValidation = validateProjectPlanCoverage(fallback, brief);
-  const useFallback = (reason: string, candidateValidation: ProjectPlanValidation = fallbackValidation): ProjectPlanParseResult => ({
+  const selectFallback = (reason: string, candidateValidation: ProjectPlanValidation = fallbackValidation): ProjectPlanParseResult => ({
     plan: fallback,
     source: "fallback",
     fallbackReason: reason,
@@ -600,7 +600,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
     retryRecommended: complexApplicationBrief(brief),
   });
   const match = answer.match(planMarker);
-  if (!match) return useFallback("Planner response did not contain a <borg-project-plan> block.");
+  if (!match) return selectFallback("Planner response did not contain a <borg-project-plan> block.");
   try {
     const raw = JSON.parse(match[1]) as Record<string, unknown>;
     const rawSlices = Array.isArray(raw.slices) ? raw.slices.slice(0, 12) : [];
@@ -615,7 +615,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
         acceptanceCriteria: list(value.acceptanceCriteria, ["Working preview", "Relevant verification passes"]),
       };
     }).filter((slice) => slice.title && slice.outcome);
-    if (slices.length < 2) return useFallback("Planner returned fewer than two usable implementation slices.");
+    if (slices.length < 2) return selectFallback("Planner returned fewer than two usable implementation slices.");
 
     const rawSitemap = Array.isArray(raw.sitemap) ? raw.sitemap.slice(0, 30) : [];
     const sitemap = rawSitemap.length ? rawSitemap.map((item, index) => {
@@ -695,10 +695,10 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
     const validation = validateProjectPlanCoverage(candidate, brief);
-    if (!validation.valid) return useFallback(validation.issues.join(" "), validation);
+    if (!validation.valid) return selectFallback(validation.issues.join(" "), validation);
     return { plan: candidate, source: "model", fallbackReason: null, validation, retryRecommended: false };
   } catch (error) {
-    return useFallback(`Planner project-plan JSON could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
+    return selectFallback(`Planner project-plan JSON could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
