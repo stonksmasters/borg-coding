@@ -1987,13 +1987,19 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         sliceDirective = `GLOBAL STYLE WORKSPACE. The approved sitemap, component responsibilities, content hierarchy, routes, behavior, and data contracts are fixed scope boundaries. Work only on the website-wide visual system: shared color tokens, typography, spacing, radii, shadows, layout rhythm, global responsive rules, motion, and accessibility styling. Prefer shared theme/token/style primitives over component-by-component one-off patches. Do not add/remove pages, rewrite product behavior, redesign information architecture, or change component responsibilities unless the operator explicitly says the style request requires it. Verify the result across representative pages and mobile/desktop widths.\n\nApproved global style context:\n${styleContext}`;
         repositoryContext = `STYLE FOCUS: use the approved style/design docs and targeted source reads. Do not rediscover or replan the whole website.\n\n${styleContext}`;
       } else if (slicedApplication && websiteProject && projectPlan && previousSlice) {
-        const nextIndex = sliceAction === "advance" ? Math.min(previousSlice.current + 1, projectPlan.slices.length - 1) : previousSlice.current;
-        const plannedSlice: SliceState = { ...previousSlice, current: nextIndex, currentTitle: projectPlan.slices[nextIndex]?.title ?? previousSlice.currentTitle, status: "working" };
+        const selectedIndex = startedWorkflow.sliceIndex;
+        if (selectedIndex === null) throw new Error("Core did not select a frontend slice for this mini-loop.");
+        const plannedSlice: SliceState = {
+          ...previousSlice,
+          current: selectedIndex,
+          currentTitle: startedWorkflow.sliceTitle ?? projectPlan.slices[selectedIndex]?.title ?? previousSlice.currentTitle,
+          status: "working",
+        };
         sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
         compiledArchitectContext = compileFrontendContext({
           root: websiteProject.path,
           phase: "frontend",
-          sliceIndex: nextIndex,
+          sliceIndex: selectedIndex,
           authority: { plan: projectPlan, state: plannedSlice },
           productContract: websiteContext,
         });
