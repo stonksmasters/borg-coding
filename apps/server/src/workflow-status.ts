@@ -104,7 +104,11 @@ function latestBlocker(task: Task, events: TaskEvent[], nextAction: string, work
   const event = authoritative ?? reversed.find((candidate) => candidate.type === "TOOL_FAILED");
   const payload = event?.payload as Record<string, unknown> | undefined;
   const durableRecovery = workflow?.recovery.status !== "inactive" ? workflow?.recovery : null;
+  const refinementSummary = event?.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
+    ? (payload?.review as { summary?: string } | undefined)?.summary
+    : null;
   const detail = durableRecovery?.reason
+    || refinementSummary
     || String(payload?.message ?? payload?.reason ?? payload?.detail ?? (event ? activityDetail(event) : "The current run cannot continue automatically."));
   const planRepair = event?.type === "PLAN_REPAIR_REQUIRED" || durableRecovery?.category === "plan_repair_required";
   const refinementLimit = event?.type === "DESIGN_REFINEMENT_LIMIT_REACHED";
