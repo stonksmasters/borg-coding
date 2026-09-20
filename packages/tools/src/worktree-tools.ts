@@ -41,12 +41,65 @@ const MAX_OUTPUT_BYTES = 120_000;
 const MAX_COMMAND_SECONDS = 900;
 const allowedCommands = new Set(["node", "npm", "python", "python3", "dotnet", "cargo", "go"]);
 
-export function validateBrowserEvidence(evidence: BrowserEvidenceReport | null, commandPassed: boolean): BrowserEvidenceReport | null {
+function plannedRoutes(root: string): string[] {
+  const pagesPath = join(root, ".localcode", "build", "pages.json");
+  if (!existsSync(pagesPath) || !lstatSync(pagesPath).isFile()) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(pagesPath, "utf8")) as { pages?: Array<{ route?: string | null }> };
+    return (parsed.pages ?? []).map((page) => String(page.route ?? "")).filter((route) => route.startsWith("/"));
+  } catch {
+    return [];
+  }
+}
+
+function routeMatches(pathname: string, planned: string) {
+  const segments = (value: string) => value.split("/").filter(Boolean);
+  const actual = segments(pathname);
+  const expected = segments(planned);
+  if (actual.length !== expected.length) return false;
+  return expected.every((segment, index) =>
+    segment.startsWith(":") || /^\[[^\]]+\]$/.test(segment) || segment === actual[index]);
+}
+
+export function validateBrowserEvidence(evidence: BrowserEvidenceReport | null, commandPassed: boolean, routes: string[] = []): BrowserEvidenceReport | null {
   if (!evidence) return null;
   const issues = [...evidence.issues];
   if (!commandPassed) issues.push("Browser evidence was not accepted because deterministic verification commands failed.");
   if (evidence.dom.some((node) => node.text?.includes("BORG is preparing the approved design."))) {
     issues.push("Preview still shows the BORG starter placeholder; implemented UI is not connected to the application entrypoint.");
+  }
+  const placeholderPattern = /\b(?:lorem ipsum|coming soon|placeholder(?: text)?|todo:|dashboard content will be displayed here|content will be displayed here|replace me|sample content)\b/i;
+  const placeholderNode = evidence.dom.find((node) => node.visible && placeholderPattern.test(node.text ?? ""));
+  if (placeholderNode) {
+    issues.push(`Visible placeholder or filler content remains in the rendered product: "${placeholderNode.text.slice(0, 160)}".`);
+  }
+  const deadButtons = evidence.dom.filter((node) =>
+    node.visible && node.tag === "button" && !node.disabled && node.actionable === false);
+  if (deadButtons.length) {
+    const labels = deadButtons.slice(0, 5).map((node) => node.name || node.text || node.selector);
+    issues.push(`Visible enabled controls appear to have no action: ${labels.join(", ")}.`);
+  }
+  const inertLinks = evidence.dom.filter((node) =>
+    node.visible && node.tag === "a" && !node.disabled && node.actionable === false);
+  if (inertLinks.length) {
+    const labels = inertLinks.slice(0, 5).map((node) => node.name || node.text || node.selector);
+    issues.push(`Visible links have no meaningful destination: ${labels.join(", ")}.`);
+  }
+  if (routes.length && evidence.url) {
+    const current = new URL(evidence.url);
+    const invalidRoutes = evidence.dom.flatMap((node) => {
+      if (!node.visible || node.tag !== "a" || !node.href) return [];
+      let href: URL;
+      try { href = new URL(node.href); } catch { return []; }
+      if (href.origin !== current.origin) return [];
+      if (href.hash && href.pathname === current.pathname) return [];
+      return routes.some((route) => routeMatches(href.pathname, route))
+        ? []
+        : [`${node.name || node.text || node.selector} -> ${href.pathname}`];
+    });
+    if (invalidRoutes.length) {
+      issues.push(`Visible internal links point outside the approved page registry: ${[...new Set(invalidRoutes)].slice(0, 8).join(", ")}.`);
+    }
   }
   return issues.length === evidence.issues.length ? evidence : { ...evidence, passed: false, issues };
 }
@@ -457,7 +510,7 @@ export class WorktreeTools {
       if (commandPassed) await this.browser.ensureEvidenceForVerification({ taskId: context.taskId, worktreePath: root }).catch(() => null);
       browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
-    browserEvidence = validateBrowserEvidence(browserEvidence, commandPassed);
+    browserEvidence = validateBrowserEvidence(browserEvidence, commandPassed, plannedRoutes(root));
     const visualRegression = this.visualRegression.compare(root, browserEvidence, profileId);
     return {
       profile: profileId,

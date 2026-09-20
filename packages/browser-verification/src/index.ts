@@ -39,6 +39,7 @@ export interface BrowserDomElement {
   href: string | null;
   disabled: boolean;
   visible: boolean;
+  actionable?: boolean | null;
   rect: { x: number; y: number; width: number; height: number };
 }
 
@@ -453,7 +454,7 @@ export class BrowserVerification {
     });
     await session.page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await session.page.waitForTimeout(250);
-    session.dom = await this.inspectDom(session.page, "body", 80);
+    session.dom = await this.inspectDom(session.page, "body, body *", 120);
     this.updateReport(context.taskId);
     return { url: session.page.url(), title: await session.page.title(), viewport, dom: session.dom, console: session.console, network: session.network };
   }
@@ -483,7 +484,7 @@ export class BrowserVerification {
     else throw new Error("Unknown browser interaction.");
     const waitMs = numberInRange(input.wait_ms, 250, 0, 5_000);
     if (waitMs) await session.page.waitForTimeout(waitMs);
-    session.dom = await this.inspectDom(session.page, "body", 80);
+    session.dom = await this.inspectDom(session.page, "body, body *", 120);
     this.updateReport(context.taskId);
     return {
       action, selector, url: session.page.url(), dom: session.dom,
@@ -537,7 +538,7 @@ export class BrowserVerification {
         accessibility,
       });
     }
-    session.dom = await this.inspectDom(session.page, "body", 120);
+    session.dom = await this.inspectDom(session.page, "body, body *", 160);
     session.accessibility = session.responsive.at(-1)?.accessibility ?? null;
     this.updateReport(context.taskId);
     return { url, viewports: session.responsive, console: session.console, network: session.network };
@@ -609,6 +610,23 @@ export class BrowserVerification {
           href: html instanceof HTMLAnchorElement ? html.href : null,
           disabled: "disabled" in html && Boolean((html as HTMLButtonElement).disabled),
           visible: Boolean(rect.width || rect.height) && getComputedStyle(html).visibility !== "hidden",
+          actionable: (() => {
+            if (html instanceof HTMLAnchorElement) return Boolean(html.href && html.getAttribute("href") && html.getAttribute("href") !== "#");
+            if (!(html instanceof HTMLButtonElement)) return null;
+            if (html.disabled) return true;
+            if (typeof html.onclick === "function" || html.hasAttribute("onclick")) return true;
+            const reactPropsKey = Object.keys(html).find((key) => key.startsWith("__reactProps$"));
+            const props = reactPropsKey ? (html as unknown as Record<string, unknown>)[reactPropsKey] as Record<string, unknown> | undefined : undefined;
+            if (typeof props?.onClick === "function") return true;
+            if ((html.type || "submit") === "submit" && html.form) {
+              if (html.form.action) return true;
+              if (typeof html.form.onsubmit === "function" || html.form.hasAttribute("onsubmit")) return true;
+              const formKey = Object.keys(html.form).find((key) => key.startsWith("__reactProps$"));
+              const formProps = formKey ? (html.form as unknown as Record<string, unknown>)[formKey] as Record<string, unknown> | undefined : undefined;
+              if (typeof formProps?.onSubmit === "function") return true;
+            }
+            return false;
+          })(),
           rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
         };
       });

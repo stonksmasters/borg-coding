@@ -30,6 +30,36 @@ test("browser evidence cannot pass for a broken build or the starter placeholder
   assert.match(result?.issues.join(" ") ?? "", /starter placeholder/i);
 });
 
+test("browser evidence rejects filler, dead controls, and routes outside the approved registry", () => {
+  const evidence = {
+    taskId: "task-quality",
+    passed: true,
+    issues: [],
+    url: "http://127.0.0.1:5173/",
+    viewport: { width: 1440, height: 900 },
+    capturedAt: new Date().toISOString(),
+    dom: [
+      { selector: "main", tag: "main", role: null, name: null, text: "ForgeOps dashboard content will be displayed here", href: null, disabled: false, visible: true, rect: { x: 0, y: 0, width: 900, height: 600 } },
+      { selector: "#notifications", tag: "button", role: null, name: "Notifications", text: "Notifications", href: null, disabled: false, visible: true, actionable: false, rect: { x: 10, y: 10, width: 100, height: 40 } },
+      { selector: "#dashboard", tag: "a", role: null, name: null, text: "View Dashboard", href: "http://127.0.0.1:5173/dashboard", disabled: false, visible: true, actionable: true, rect: { x: 10, y: 60, width: 120, height: 40 } },
+    ],
+    console: [],
+    network: [],
+    accessibility: null,
+    screenshots: [],
+    responsive: [],
+    server: null,
+  };
+
+  const result = validateBrowserEvidence(evidence, true, ["/", "/schedule", "/jobs", "/jobs/:id"]);
+  assert.equal(result?.passed, false);
+  const issues = result?.issues.join(" ") ?? "";
+  assert.match(issues, /placeholder|filler/i);
+  assert.match(issues, /no action/i);
+  assert.match(issues, /approved page registry/i);
+  assert.match(issues, /\/dashboard/);
+});
+
 test("worktree mutation requires approval and remains inside the recorded task worktree", async () => {
   const root = mkdtempSync(join(tmpdir(), "borg-mutation-"));
   const repository = join(root, "repo");

@@ -12,6 +12,20 @@ export interface RunView {
   verification: { status: "pending" | "passed" | "failed"; visualStatus: string | null };
   recovery: { status: string; category: string | null; previousTaskState: string | null; checkpointId: string | null; resumeAction: string; reason: string } | null;
   repair: { attempt: number; maximum: number | null } | null;
+  planRevision: {
+    from: number;
+    to: number;
+    repairScope: string;
+    reason: string;
+    delta: {
+      addedPages: string[];
+      removedPages: string[];
+      changedPages: string[];
+      addedSlices: string[];
+      removedSlices: string[];
+      changedSlices: string[];
+    };
+  } | null;
   blocker: { title: string; detail: string; action: string } | null;
   nextAction: string;
   updatedAt: string;
@@ -42,6 +56,14 @@ export function RunStatusCard({ run, active }: { run: RunView; active: boolean }
         </div>
         <p className="mt-1 text-xs leading-5 text-slate-400">{run.blocker?.detail ?? run.detail}</p>
         {run.slice?.outcome && <p className="mt-2 text-[11px] leading-5 text-slate-500"><span className="text-slate-300">Outcome:</span> {run.slice.outcome}</p>}
+        {run.planRevision && <div className="mt-3 rounded-md border border-amber-200/10 bg-amber-200/[0.025] px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-100/70">Plan revision {run.planRevision.from} → {run.planRevision.to} · {run.planRevision.repairScope.replaceAll("_", " ")}</p>
+          <p className="mt-1 text-[11px] leading-5 text-slate-400">{run.planRevision.reason}</p>
+          <p className="mt-1 text-[10px] leading-5 text-slate-500">
+            Pages +{run.planRevision.delta.addedPages.length} / −{run.planRevision.delta.removedPages.length} / Δ{run.planRevision.delta.changedPages.length}
+            {" · "}Slices +{run.planRevision.delta.addedSlices.length} / −{run.planRevision.delta.removedSlices.length} / Δ{run.planRevision.delta.changedSlices.length}
+          </p>
+        </div>}
       </div>
     </div>
 
@@ -58,9 +80,10 @@ export function RunStatusCard({ run, active }: { run: RunView; active: boolean }
 
     <div className="mt-3 grid gap-2 text-[11px] text-slate-500 sm:grid-cols-2">
       <p className="truncate"><span className="text-slate-300">Now:</span> {run.currentAction.replaceAll("_", " ")}</p>
-      <p className="truncate"><span className="text-slate-300">Next:</span> {run.recovery?.resumeAction ?? run.blocker?.action ?? run.nextAction}</p>
-      <p><span className="text-slate-300">Verification:</span> {run.verification.status}{run.verification.visualStatus ? ` · visual ${run.verification.visualStatus}` : ""}</p>
-      <p className="flex items-center gap-1.5"><span className="text-slate-300">State:</span>{blocked ? <TriangleAlert className="size-3 text-red-300" /> : run.stage === "ready" ? <Check className="size-3 text-[#a7ff4f]" /> : <Circle className="size-3 text-slate-500" />}{run.stage.replaceAll("_", " ")}</p>
+      <p className="truncate"><span className="text-slate-300">Next:</span> {run.blocker?.action ?? run.recovery?.resumeAction ?? run.nextAction}</p>
+      <p><span className="text-slate-300">Technical verification:</span> {run.verification.status}</p>
+      <p><span className="text-slate-300">Visual / product quality:</span> {run.verification.visualStatus ?? "pending"}</p>
+      <p className="flex items-center gap-1.5 sm:col-span-2"><span className="text-slate-300">State:</span>{blocked ? <TriangleAlert className="size-3 text-red-300" /> : run.stage === "ready" ? <Check className="size-3 text-[#a7ff4f]" /> : <Circle className="size-3 text-slate-500" />}{run.stage.replaceAll("_", " ")}</p>
     </div>
   </section>;
 }

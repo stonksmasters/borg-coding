@@ -503,3 +503,97 @@ test("blocked task continuation preserves task identity and resets only repair a
   assert.equal(resumed.workflow.nextAction, "implement");
   assert.ok(store.events.some((event) => event.type === "TASK_CONTINUED" && event.payload.continuationId === continuation.id));
 });
+
+
+test("plan repair revises the durable plan and resumes the same slice in the existing worktree", () => {
+  const store = new MemoryWorkflowStore();
+  const engine = new WorkflowEngine(store);
+
+  let planning = createTask({ id: "repair-plan", projectId: "repair-project", request: "Plan ForgeOps" });
+  engine.start(planning, "project_plan");
+  planning = engine.transition(planning, "CLASSIFYING").task;
+  planning = engine.transition(planning, "DISCOVERING").task;
+  planning = engine.transition(planning, "PLANNING").task;
+  engine.setProjectPlan(planning, projectPlan());
+  const planApproval = createApproval({ id: "repair-plan-approval", taskId: planning.id });
+  planning = engine.requestApproval(planning, planApproval, "project_plan").task;
+  const planned = engine.decideApproval(planning, {
+    ...planApproval,
+    status: "APPROVED",
+    decidedAt: new Date().toISOString(),
+  }, "project_plan");
+
+  let slice = createTask({ id: "repair-slice", projectId: planning.projectId, request: "Build the first slice" });
+  engine.startFrontendSlice(slice, "initial", "Start slice one", { commandId: planned.workflow.pendingCommand!.id });
+  slice = engine.transition(slice, "CLASSIFYING").task;
+  slice = engine.transition(slice, "DISCOVERING").task;
+  slice = engine.transition(slice, "PLANNING").task;
+  const executionApproval = createApproval({ id: "repair-slice-approval", taskId: slice.id });
+  slice = engine.requestApproval(slice, executionApproval, "execution").task;
+  slice = engine.decideApproval(slice, {
+    ...executionApproval,
+    status: "APPROVED",
+    decidedAt: new Date().toISOString(),
+    worktreePath: "/tmp/repair-existing-worktree",
+    baseCommit: "base-commit",
+  }, "execution").task;
+  engine.activateSlice(slice);
+
+  const recovery = engine.markRecoveryRequired(slice, {
+    category: "plan_repair_required",
+    reason: "The current slice is too narrow for the product-quality review.",
+    checkpointId: "checkpoint-plan-repair",
+    resumeAction: "replan",
+  });
+  slice = recovery.task;
+  assert.equal(slice.state, "RECOVERY_REQUIRED");
+  assert.equal(recovery.workflow.sliceIndex, 0);
+
+  const revising = engine.beginPlanRevision(slice, "Expand operational scope before continuing.");
+  slice = revising.task;
+  assert.equal(slice.state, "PLANNING");
+  assert.equal(revising.workflow.loop, "project");
+  assert.equal(revising.workflow.planRevisionResumeIndex, 0);
+
+  const revisedPlan = {
+    ...projectPlan(),
+    slices: [
+      {
+        ...projectPlan().slices[0],
+        outcome: "Hero plus operational overview works",
+        scope: [...projectPlan().slices[0].scope, "Operational overview"],
+      },
+      projectPlan().slices[1],
+    ],
+  };
+  const proposed = engine.setProjectPlan(slice, revisedPlan);
+  assert.equal(proposed.projectPlan?.revision, 2);
+  assert.equal(proposed.projectPlan?.status, "proposed");
+  assert.equal(proposed.sliceIndex, 0);
+
+  const revisionApproval = {
+    ...createApproval({ id: "repair-plan-revision-approval", taskId: slice.id }),
+    worktreePath: "/tmp/repair-existing-worktree",
+    baseCommit: "base-commit",
+  };
+  slice = engine.requestApproval(slice, revisionApproval, "project_plan_revision").task;
+  const resumed = engine.decideApproval(slice, {
+    ...revisionApproval,
+    status: "APPROVED",
+    decidedAt: new Date().toISOString(),
+  }, "project_plan_revision");
+
+  assert.equal(resumed.task.state, "IMPLEMENTING");
+  assert.equal(resumed.workflow.loop, "slice");
+  assert.equal(resumed.workflow.phase, "frontend");
+  assert.equal(resumed.workflow.sliceIndex, 0);
+  assert.equal(resumed.workflow.projectPlan?.revision, 2);
+  assert.equal(resumed.workflow.projectPlan?.status, "approved");
+  assert.equal(resumed.workflow.planRevisionResumeIndex, null);
+  assert.equal(resumed.workflow.recovery.status, "inactive");
+  assert.equal(resumed.workflow.pendingCommand, null);
+  assert.equal(store.approvals.get(slice.id)?.worktreePath, "/tmp/repair-existing-worktree");
+  assert.equal(store.approvals.get(slice.id)?.baseCommit, "base-commit");
+  assert.ok(store.events.some((event) => event.type === "PLAN_REVISION_STARTED"));
+  assert.ok(store.events.some((event) => event.type === "PROJECT_PLAN_REVISION_APPROVED"));
+});

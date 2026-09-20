@@ -2,7 +2,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import {
   createApproval,
   createHandoff,
@@ -67,7 +67,7 @@ import { ensurePreviewDependencies } from "../../../packages/web-builder/src/pre
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext, type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanDelta, projectPlanRepairPrompt, projectPlanRevisionPrompt, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -125,6 +125,92 @@ const disciplineRouter = new DisciplineRouter();
 const teamPolicies = new TeamPolicyService();
 const maxRepairAttempts = 2;
 const maxDesignRefinements = 3;
+
+function changedSourcePaths(status: string) {
+  return status.split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.slice(3).trim())
+    .map((value) => value.includes(" -> ") ? value.split(" -> ").at(-1)!.trim() : value)
+    .filter((value) => value && !value.startsWith(".localcode/build/"));
+}
+
+function safeWorktreeFile(root: string, path: string) {
+  const candidate = resolve(root, path);
+  const rel = relative(resolve(root), candidate);
+  if (rel === ".." || rel.startsWith(".." + sep)) return null;
+  try {
+    if (!existsSync(candidate) || !statSync(candidate).isFile() || statSync(candidate).size > 256_000) return null;
+    return readFileSync(candidate, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function sourceMutationSnapshot(root: string) {
+  const status = gitRead(root, ["status", "--porcelain", "--untracked-files=all"]) ?? "";
+  const diff = gitRead(root, ["diff", "--no-ext-diff", "--binary", "--", ".", ":(exclude).localcode/build/**"]) ?? "";
+  const paths = changedSourcePaths(status);
+  const sourceStatus = status.split(/\r?\n/).filter((line) => line && !line.includes(".localcode/build/"));
+  const fileHashes = paths.map((path) => {
+    const content = safeWorktreeFile(root, path);
+    return [path, content === null ? null : createHash("sha256").update(content).digest("hex")];
+  });
+  const fingerprint = createHash("sha256").update(JSON.stringify({ status: sourceStatus, diff, fileHashes })).digest("hex");
+  return { status, diff, paths, fingerprint };
+}
+
+function directRepairDependencies(root: string, paths: string[]) {
+  const dependencies = new Set<string>();
+  const extensions = ["", ".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".json"];
+  for (const path of paths.slice(0, 20)) {
+    const content = safeWorktreeFile(root, path);
+    if (!content) continue;
+    const imports = [
+      ...content.matchAll(/(?:from\s*|import\s*\(|require\s*\(|@import\s*)["'](\.[^"']+)["']/g),
+    ].map((match) => match[1]);
+    for (const specifier of imports.slice(0, 40)) {
+      const absoluteBase = resolve(dirname(resolve(root, path)), specifier);
+      const candidates = [
+        ...extensions.map((extension) => absoluteBase + extension),
+        ...extensions.filter(Boolean).map((extension) => resolve(absoluteBase, "index" + extension)),
+      ];
+      const match = candidates.find((candidate) => {
+        const rel = relative(resolve(root), candidate);
+        return rel !== ".."
+          && !rel.startsWith(".." + sep)
+          && existsSync(candidate)
+          && statSync(candidate).isFile()
+          && statSync(candidate).size <= 256_000;
+      });
+      if (!match) continue;
+      const rel = relative(resolve(root), match).replaceAll("\\", "/");
+      if (!rel.startsWith(".localcode/") && !rel.includes("/node_modules/")) dependencies.add(rel);
+    }
+  }
+  return [...dependencies].filter((path) => !paths.includes(path)).slice(0, 20);
+}
+
+function repairGroundingSnapshot(root: string) {
+  const snapshot = sourceMutationSnapshot(root);
+  const dependencyPaths = directRepairDependencies(root, snapshot.paths);
+  const changedFiles = snapshot.paths.slice(0, 12).map((path) => {
+    const content = safeWorktreeFile(root, path);
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 12_000)}`;
+  });
+  const dependencies = dependencyPaths.slice(0, 12).map((path) => {
+    const content = safeWorktreeFile(root, path);
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 8_000)}`;
+  });
+  return [
+    "CURRENT WORKTREE GROUNDING. This snapshot is authoritative for the repair pass; do not rediscover or guess paths.",
+    `Changed source files:\n${snapshot.paths.length ? snapshot.paths.map((path) => `- ${path}`).join("\n") : "- none"}`,
+    dependencyPaths.length ? `Direct relative dependencies automatically resolved from changed files:\n${dependencyPaths.map((path) => `- ${path}`).join("\n")}` : "",
+    `Current source diff:\n${snapshot.diff.slice(0, 40_000) || "[no tracked diff]"}`,
+    changedFiles.length ? `Current changed-file contents:\n${changedFiles.join("\n\n")}` : "",
+    dependencies.length ? `Current direct-dependency contents:\n${dependencies.join("\n\n")}` : "",
+    "Use this bounded neighborhood first. Read beyond it only when a direct dependency proves another file is required for the evidenced repair.",
+  ].filter(Boolean).join("\n\n");
+}
 
 async function visionRuntimeStatus() {
   const policy = vision.status();
@@ -390,7 +476,9 @@ function latestDesignBrief(taskId: string): DesignBrief | null {
 }
 
 function designRefinementCount(taskId: string): number {
-  return tasks.listEvents(taskId).filter((event) => event.type === "DESIGN_REFINEMENT_SCHEDULED").length;
+  const events = tasks.listEvents(taskId);
+  const latestRevision = events.findLastIndex((event) => event.type === "PROJECT_PLAN_REVISION_APPROVED");
+  return events.slice(latestRevision + 1).filter((event) => event.type === "DESIGN_REFINEMENT_SCHEDULED").length;
 }
 
 function recordMemoryNote(root: string, note: MemoryNote) {
@@ -469,7 +557,9 @@ function createCheckpointSnapshot(
   const approval = tasks.findApproval(task.id);
   const assignments = tasks.listRoleAssignments(task.id);
   const activeAssignment = assignments.findLast((value) => value.status === "active") ?? assignments.at(-1) ?? null;
-  const plan = events.findLast((value) => value.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+  const plan = events.findLast((value) =>
+    value.type === "PLAN_REVISION_MODEL_RESPONSE_COMPLETED" || value.type === "MODEL_RESPONSE_COMPLETED"
+  )?.payload.answer;
   const stateIndex = checkpointStateOrder.indexOf(task.state);
   const steps = checkpointStateOrder.filter((value) => !["PAUSED", "RECOVERY_REQUIRED"].includes(value));
   const durableWorkflow = workflow.get(task.projectId);
@@ -951,7 +1041,8 @@ const server = createServer((request, response) => {
         env: { HOST: "127.0.0.1", BROWSER: "none" },
         startupTimeoutMs: 60_000,
       });
-      return send(response, 200, { preview: { url, status: "running", processId: process.id, pid: process.pid }, process });
+      const previewUrl = process.url ?? url;
+      return send(response, 200, { preview: { url: previewUrl, status: "running", processId: process.id, pid: process.pid }, process });
     })().catch((error) => send(response, 502, { error: error instanceof Error ? error.message : "Unable to start task preview." }));
     return;
   }
@@ -1256,7 +1347,9 @@ const server = createServer((request, response) => {
       }
       return report;
     };
-    const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+    const savedPlan = tasks.listEvents(taskId).findLast((event) =>
+      event.type === "PLAN_REVISION_MODEL_RESPONSE_COMPLETED" || event.type === "MODEL_RESPONSE_COMPLETED"
+    )?.payload.answer;
     const websiteProject = websiteInfo(approvedWorktreePath);
     const persistedDesignBrief = websiteProject ? readPersistedDesignBrief(approvedWorktreePath) : null;
     const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
@@ -1319,7 +1412,11 @@ const server = createServer((request, response) => {
       const taskEvents = tasks.listEvents(taskId);
       const blockedRetry = taskEvents.findLast((event) => event.type === "BLOCKED_RETRY_REQUESTED");
       const blockedFailure = blockedRetry
-        ? taskEvents.findLast((event) => event.type === "REPAIR_LIMIT_REACHED" || event.type === "DESIGN_REVIEW_BLOCKED")
+        ? taskEvents.findLast((event) =>
+            event.type === "REPAIR_LIMIT_REACHED"
+            || event.type === "DESIGN_REVIEW_BLOCKED"
+            || event.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
+            || event.type === "PLAN_REPAIR_REQUIRED")
         : null;
       let repairEvidence = blockedRetry
         ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
@@ -1383,10 +1480,13 @@ const server = createServer((request, response) => {
         : styleExecutionContext;
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
+        const attemptStartedInRepair = taskContext.executionState === "REPAIR";
+        const preAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
+        const repairGrounding = attemptStartedInRepair ? repairGroundingSnapshot(approvedWorktreePath) : "";
         const repairPrompt = repairEvidence
-          ? repairEvidence
+          ? [repairEvidence, repairGrounding].filter(Boolean).join("\n\n")
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
         let implementationResult: Awaited<ReturnType<typeof runOllamaAgent>>;
         try {
@@ -1418,7 +1518,14 @@ const server = createServer((request, response) => {
         implementationBudgetExhausted = Boolean(budgetExhausted);
         if (sliceState || focusedExecutionScope || styleWorkspace) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
-          const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
+          const postAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
+          const initialSourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
+          const repairDelta = preAttemptSnapshot.fingerprint !== postAttemptSnapshot.fingerprint;
+          const explainedNoMutation = /\b(?:no (?:source )?(?:change|mutation) (?:is )?required because|no mutation needed because|already resolved and no (?:source )?change is required)\b/i.test(answer);
+          const sourceProgress = attemptStartedInRepair ? repairDelta || explainedNoMutation : initialSourceProgress;
+          if (attemptStartedInRepair && !repairDelta && explainedNoMutation) {
+            appendTaskEvent(taskId, "REPAIR_NO_MUTATION_EXPLAINED", { attempt: task.attempts, answer: answer.slice(0, 4_000) });
+          }
           if (!sourceProgress) {
             if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
             activeRoleAssignment = null;
@@ -1429,9 +1536,17 @@ const server = createServer((request, response) => {
                 const payload = event.payload as Record<string, unknown>;
                 return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
               });
-            const failure = toolFailures.at(-1) ?? "The implementation attempt completed without any source-file progress.";
+            const failure = toolFailures.at(-1) ?? (attemptStartedInRepair
+              ? "The repair attempt completed without changing the source diff relative to the start of this repair pass."
+              : "The implementation attempt completed without any source-file progress.");
             const decision = classifyImplementationFailure(failure, task.attempts, maxRepairAttempts, { noProgress: true });
-            appendTaskEvent(taskId, "IMPLEMENTATION_NO_PROGRESS", { attempt: task.attempts, toolFailures, decision });
+            appendTaskEvent(taskId, attemptStartedInRepair ? "REPAIR_NO_PROGRESS" : "IMPLEMENTATION_NO_PROGRESS", {
+              attempt: task.attempts,
+              toolFailures,
+              decision,
+              preAttemptFingerprint: preAttemptSnapshot.fingerprint,
+              postAttemptFingerprint: postAttemptSnapshot.fingerprint,
+            });
             appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
             if (decision.disposition === "fatal") {
               syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
@@ -1676,6 +1791,7 @@ const server = createServer((request, response) => {
           emit({ type: "stage.updated", stage: "Visual Direction", status: "active" });
           appendTaskEvent(taskId, "DESIGN_REVIEW_STARTED", { provider: policy.provider, model: policy.model, attempt: task.attempts });
           emit({ type: "design.review.started", provider: policy.provider, model: policy.model });
+          const visualReviewSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
           designReview = await visualDirector.review({
             taskId,
             request: [task.request, activeSlicePrompt].filter(Boolean).join("\n\n"),
@@ -1683,6 +1799,15 @@ const server = createServer((request, response) => {
             browserEvidence: verification.browserEvidence,
             brief: designBrief,
             policy,
+            scope: {
+              currentSlice: visualReviewSlice ? {
+                id: visualReviewSlice.id,
+                title: visualReviewSlice.title,
+                outcome: visualReviewSlice.outcome,
+                scope: visualReviewSlice.scope,
+              } : null,
+              projectPages: projectPlan?.sitemap.map((page) => ({ id: page.id, name: page.name, route: page.route })) ?? [],
+            },
             onRequestBody: (body) => recordModelInput(taskId, "visual_director", policy.model, compiledSlice?.sliceId ?? null, [], body),
           });
           appendTaskEvent(taskId, designReview.status === "pass" || designReview.status === "repair" ? "DESIGN_REVIEW_COMPLETED" : "DESIGN_REVIEW_BLOCKED", {
@@ -1695,22 +1820,203 @@ const server = createServer((request, response) => {
             finishRole(activeRoleAssignment, "completed", emit);
             activeRoleAssignment = null;
             emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
+
+            const requiresPlanRevision = designReview.repairScope === "cross_slice" || designReview.repairScope === "project_plan";
+            if (requiresPlanRevision) {
+              if (!projectPlan || !sliceState || !websiteProject) {
+                setExecutionState("BLOCKED");
+                task = transitionTask(task, "BLOCKED", emit);
+                appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
+                  reason: designReview.scopeReason || designReview.summary,
+                  review: designReview,
+                  error: "Durable project plan or active slice was unavailable for automatic plan revision.",
+                });
+                emit({ type: "stream.blocked", message: "The Visual Director requires a plan-level repair, but BORG could not resolve the durable active plan/slice needed to revise it safely." });
+                response.end();
+                return;
+              }
+
+              const revisionReason = designReview.scopeReason || designReview.summary;
+              const checkpoint = createCheckpointSnapshot(task, "pre_repair");
+              const recovered = workflow.markRecoveryRequired(task, {
+                category: "plan_repair_required",
+                checkpointId: checkpoint.id,
+                resumeAction: "replan",
+                reason: revisionReason,
+              });
+              task = recovered.task;
+              syncWorkflowProjection(task, recovered.workflow);
+              appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", {
+                review: designReview,
+                repairScope: designReview.repairScope,
+                reason: revisionReason,
+                currentSliceIndex: sliceState.current,
+                currentSliceId: projectPlan.slices[sliceState.current]?.id ?? null,
+              });
+              appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
+                reason: revisionReason,
+                repairScope: designReview.repairScope,
+                review: designReview,
+                checkpointId: checkpoint.id,
+              });
+
+              const revising = workflow.beginPlanRevision(task, revisionReason);
+              task = revising.task;
+              syncWorkflowProjection(task, revising.workflow);
+              setExecutionState("BLOCKED");
+              emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The current slice cannot satisfy the product-quality review. Revising the project plan without discarding the existing worktree." });
+
+              const revisionModel = teamPolicies.modelFor(teamPolicy, "architect", model, primaryDiscipline);
+              const revisionAssignment = beginRole(task, "architect", primaryDiscipline, revisionModel, packs, emit);
+              const revisionBrief = websiteProject.originalBrief || task.request;
+              const revisionRequest = {
+                ollamaUrl,
+                model: revisionModel,
+                tools,
+                mode: "plan" as const,
+                role: "architect" as const,
+                disciplines: activeDisciplines,
+                phase: "plan" as const,
+                emit,
+                limits: { toolRounds: 3, toolCalls: 4 },
+                onRequestBody: (body: string) => recordModelInput(taskId, "architect", revisionModel, `plan-revision:${projectPlan.revision + 1}`, [], body),
+                messages: [
+                  {
+                    role: "system" as const,
+                    content: "You are BORG's bounded project-plan repair architect. Revise planning authority only. Do not mutate source, run commands, restart repository discovery, or discard already-completed work. The original brief, durable current plan, active slice, and independent review evidence below are authoritative.",
+                  },
+                  {
+                    role: "user" as const,
+                    content: projectPlanRevisionPrompt({
+                      brief: revisionBrief,
+                      currentPlan: projectPlan,
+                      currentSliceIndex: sliceState.current,
+                      conflictReason: revisionReason,
+                      review: designReview,
+                    }),
+                  },
+                ],
+              };
+
+              let revisionResult = await runOllamaAgent(revisionRequest);
+              let parsedRevision = parseProjectPlanResult(revisionResult.answer, revisionBrief, websiteProject.template);
+              if (parsedRevision.source === "fallback") {
+                appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_SEMANTIC_RETRY", {
+                  reason: parsedRevision.fallbackReason,
+                  validation: parsedRevision.validation,
+                });
+                revisionResult = await runOllamaAgent({
+                  ...revisionRequest,
+                  messages: [
+                    ...revisionRequest.messages,
+                    { role: "assistant" as const, content: revisionResult.answer },
+                    { role: "user" as const, content: projectPlanRepairPrompt(parsedRevision) },
+                  ],
+                  limits: { toolRounds: 2, toolCalls: 2 },
+                });
+                parsedRevision = parseProjectPlanResult(revisionResult.answer, revisionBrief, websiteProject.template);
+              }
+
+              if (parsedRevision.source === "fallback" || !parsedRevision.validation.valid) {
+                finishRole(revisionAssignment, "failed", emit);
+                const failureReason = `Plan revision failed semantic validation: ${parsedRevision.fallbackReason ?? parsedRevision.validation.issues.join(" ")}`;
+                const failedRevision = workflow.markRecoveryRequired(task, {
+                  category: "plan_repair_required",
+                  checkpointId: checkpoint.id,
+                  resumeAction: "replan",
+                  reason: failureReason,
+                });
+                task = failedRevision.task;
+                syncWorkflowProjection(task, failedRevision.workflow);
+                appendTaskEvent(taskId, "PLAN_REVISION_FAILED", {
+                  reason: failureReason,
+                  validation: parsedRevision.validation,
+                });
+                emit({ type: "stream.blocked", message: failureReason });
+                response.end();
+                return;
+              }
+
+              const planWorkflow = workflow.setProjectPlan(task, parsedRevision.plan);
+              syncWorkflowProjection(task, planWorkflow);
+              const proposedPlan = planWorkflow.projectPlan as ProjectPlan;
+              const coverage = validateProjectPlanCoverage(proposedPlan, revisionBrief);
+              if (!coverage.valid) throw new Error(`Core plan revision failed coverage after parse validation: ${coverage.issues.join(" ")}`);
+              const delta = projectPlanDelta(projectPlan, proposedPlan);
+              persistProposedProjectPlan(approvedWorktreePath, revisionBrief, proposedPlan, taskId, {
+                coverage,
+                currentSlice: planWorkflow.planRevisionResumeIndex ?? sliceState.current,
+                revisionReason,
+              });
+              appendTaskEvent(taskId, "PROJECT_PLAN_COVERAGE_VALIDATED", {
+                revision: proposedPlan.revision,
+                coverage,
+                planRevision: true,
+              });
+              appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_PROPOSED", {
+                plan: proposedPlan,
+                delta,
+                repairScope: designReview.repairScope,
+                reason: revisionReason,
+                workflowVersion: planWorkflow.version,
+              });
+              appendTaskEvent(taskId, "PLAN_REVISION_MODEL_RESPONSE_COMPLETED", {
+                runtime: "ollama",
+                model: revisionModel,
+                role: "architect",
+                answer: revisionResult.answer,
+                usedTools: revisionResult.usedTools,
+              });
+              finishRole(revisionAssignment, "completed", emit);
+              writeEvent(response, { type: "message.delta", taskId, text: revisionResult.answer });
+
+              const revisionApproval = {
+                ...createApproval({ id: randomUUID(), taskId }),
+                worktreePath: approval.worktreePath,
+                baseCommit: approval.baseCommit,
+              };
+              const requestedRevision = workflow.requestApproval(task, revisionApproval, "project_plan_revision");
+              task = requestedRevision.task;
+              syncWorkflowProjection(task, requestedRevision.workflow);
+              emit({ type: "task.state", taskId, state: task.state, workflow: requestedRevision.workflow });
+              writeEvent(response, {
+                type: "project.plan.approval.requested",
+                taskId,
+                approval: revisionApproval,
+                planText: revisionResult.answer,
+                projectPlan: proposedPlan,
+                planRevision: true,
+                planDelta: delta,
+                planRevisionReason: revisionReason,
+                message: `Plan revision ${proposedPlan.revision} resolves a ${designReview.repairScope.replaceAll("_", " ")} quality conflict. Approve it to resume the current worktree at the repaired slice boundary.`,
+              });
+              writeEvent(response, { type: "stream.completed", taskId });
+              response.end();
+              return;
+            }
+
             const refinements = designRefinementCount(taskId);
             if (refinements >= maxDesignRefinements) {
               setExecutionState("BLOCKED");
               task = transitionTask(task, "BLOCKED", emit);
               appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", { refinements, maximum: maxDesignRefinements, review: designReview });
-              emit({ type: "stream.blocked", message: `Visual Director still requires refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
+              emit({ type: "stream.blocked", message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
               response.end();
               return;
             }
-            repairEvidence = `VISUAL DIRECTOR REFINEMENT REQUIRED. This is not a functional bug repair. Rework the visual design against the persisted Design Brief and the screenshot evidence below. Preserve working behavior, then recapture responsive browser evidence.
 
-Work from the actual repository and rendered page:
-- Use worktree_list first, then read the real files before editing. Do not guess paths, components, or CSS selectors.
-- Trace every style change to markup that actually uses it. Remove or avoid selectors that are not present in the rendered DOM.
+            repairEvidence = `VISUAL DIRECTOR CURRENT-SLICE REFINEMENT REQUIRED. The Visual Director explicitly classified this repair as legal inside the current approved slice. Rework the design against the persisted Design Brief and screenshot evidence while preserving working behavior, then recapture responsive browser evidence.
+
+Structured scope decision:
+- repairScope: ${designReview.repairScope}
+- scopeReason: ${designReview.scopeReason}
+
+Work from the authoritative repair grounding that BORG injects automatically:
+- Start from the supplied changed-file list, current source diff, changed-file contents, and direct dependencies. Do not guess paths, components, or CSS selectors.
+- Read only further direct dependencies when necessary to repair an implicated file.
+- Trace every style change to markup that actually uses it.
 - Address the highest-severity visible findings with a material composition change, not small token or spacing adjustments.
-- Stay within the current approved slice. Do not add future sections solely to satisfy a full-site critique.
+- Do not broaden beyond the current slice; a wider change requires a new plan-revision classification.
 - Capture mobile, tablet, and desktop evidence after editing and inspect whether the cited visual problem visibly changed before finishing.
 
 ${JSON.stringify(designReview).slice(0, 70000)}`;
@@ -2005,13 +2311,22 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
     const task = tasks.findTask(taskId);
     if (!task) return send(response, 404, { error: "Task not found" });
     const currentApproval = tasks.findApproval(taskId);
+    const taskEvents = tasks.listEvents(taskId);
+    const revisionEvent = taskEvents.findLast((event) => event.type === "PROJECT_PLAN_REVISION_PROPOSED");
+    const pendingRevisionApproval = task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && Boolean(revisionEvent);
     return send(response, 200, {
       task,
       workflow: workflow.get(task.projectId)?.taskId === task.id ? workflow.get(task.projectId) : null,
       approval: currentApproval,
-      projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_PROPOSED"),
+      projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && taskEvents.some((event) => event.type === "PROJECT_PLAN_PROPOSED" || event.type === "PROJECT_PLAN_REVISION_PROPOSED"),
+      projectPlanRevisionApproval: pendingRevisionApproval,
+      planRevision: pendingRevisionApproval ? {
+        delta: revisionEvent?.payload.delta ?? null,
+        reason: String(revisionEvent?.payload.reason ?? ""),
+        repairScope: String(revisionEvent?.payload.repairScope ?? ""),
+      } : null,
       findings: tasks.listFindings(taskId),
-      events: tasks.listEvents(taskId),
+      events: taskEvents,
       roleAssignments: tasks.listRoleAssignments(taskId),
       handoffs: tasks.listHandoffs(taskId),
     });
@@ -2028,22 +2343,90 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         return send(response, 409, { error: `Approval was already ${approval.status.toLowerCase()}.` });
       }
       if (task.state !== "AWAITING_APPROVAL") return send(response, 409, { error: "Task is not awaiting approval." });
-      const isProjectPlanApproval = tasks.listEvents(task.id).some((event) => event.type === "PROJECT_PLAN_PROPOSED");
+      const approvalEvents = tasks.listEvents(task.id);
+      const isProjectPlanRevisionApproval = approvalEvents.some((event) => event.type === "PROJECT_PLAN_REVISION_PROPOSED");
+      const isProjectPlanApproval = !isProjectPlanRevisionApproval && approvalEvents.some((event) => event.type === "PROJECT_PLAN_PROPOSED");
+      const approvalKind = isProjectPlanRevisionApproval ? "project_plan_revision" as const : isProjectPlanApproval ? "project_plan" as const : "execution" as const;
       if (decision === "reject") {
         const rejected = { ...approval, status: "REJECTED" as const, decidedAt: new Date().toISOString() };
-        const decided = workflow.decideApproval(task, rejected, isProjectPlanApproval ? "project_plan" : "execution");
+        const decided = workflow.decideApproval(task, rejected, approvalKind);
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
         const repositoryPath = taskProjectRepository(task.id);
-        if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: isProjectPlanApproval ? "Frontend phase plan requires revision." : "Implementation mini-plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
-        return send(response, 200, { task, approval: rejected, workflow: decided.workflow, projectPlanApproval: isProjectPlanApproval });
+        if (repositoryPath) recordMemoryNote(repositoryPath, {
+          id: `approval:${approval.id}`,
+          kind: "decision",
+          text: isProjectPlanRevisionApproval
+            ? "Automatic project-plan revision was rejected; existing worktree remains isolated for inspection."
+            : isProjectPlanApproval
+              ? "Frontend phase plan requires revision."
+              : "Implementation mini-plan rejected by operator.",
+          taskId: task.id,
+          path: null,
+          line: null,
+          createdAt: rejected.decidedAt!,
+        });
+        return send(response, 200, {
+          task,
+          approval: rejected,
+          workflow: decided.workflow,
+          projectPlanApproval: isProjectPlanApproval,
+          projectPlanRevisionApproval: isProjectPlanRevisionApproval,
+        });
       }
       if (decision !== "approve") return send(response, 400, { error: "Decision must be approve or reject." });
       const repositoryPath = taskProjectRepository(task.id);
       if (!repositoryPath) return send(response, 409, { error: "This task has no durable repository binding." });
+      if (isProjectPlanRevisionApproval) {
+        if (!approval.worktreePath || !approval.baseCommit || !existsSync(approval.worktreePath)) {
+          return send(response, 409, { error: "Plan revision approval requires the existing approved worktree and base commit." });
+        }
+        const authoritativePlan = projectPlanFromWorkflow(workflow.get(task.projectId), approval.worktreePath);
+        if (!authoritativePlan) return send(response, 409, { error: "The durable revised project plan is missing from SQLite." });
+        const website = websiteInfo(approval.worktreePath);
+        const revisionBrief = website?.originalBrief || task.request;
+        const coverage = validateProjectPlanCoverage(authoritativePlan, revisionBrief);
+        if (!coverage.valid) return send(response, 409, { error: "The revised project plan no longer passes semantic coverage.", coverage });
+
+        const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString() };
+        const decided = workflow.decideApproval(task, approved, "project_plan_revision");
+        task = decided.task;
+        syncWorkflowProjection(task, decided.workflow);
+        const approvedPlan = projectPlanFromWorkflow(decided.workflow, null);
+        if (!approvedPlan) return send(response, 500, { error: "Core approved the plan revision without a durable plan snapshot." });
+        const approvedProject = approveProjectPlan(approval.worktreePath, task.id, approvedPlan);
+        setFrontendWorkflowStage(approval.worktreePath, "slice_implementing", {
+          currentSlice: decided.workflow.sliceIndex ?? approvedProject.state.current,
+          totalSlices: approvedPlan.slices.length,
+          taskId: task.id,
+          detail: `Plan revision ${approvedPlan.revision} approved. Resuming the existing worktree at the repaired slice boundary.`,
+        });
+        appendTaskEvent(task.id, "PROJECT_PLAN_REVISION_RESUMED", {
+          revision: approvedPlan.revision,
+          sliceIndex: decided.workflow.sliceIndex,
+          worktreePath: approval.worktreePath,
+          baseCommit: approval.baseCommit,
+          coverage,
+          workflowVersion: decided.workflow.version,
+        });
+        return send(response, 200, {
+          task,
+          approval: approved,
+          workflow: decided.workflow,
+          projectPlanApproved: false,
+          projectPlanRevisionApproved: true,
+          projectPlan: approvedProject.plan,
+          slice: approvedProject.state,
+          worktree: { path: approval.worktreePath, baseCommit: approval.baseCommit },
+        });
+      }
       if (isProjectPlanApproval) {
         const authoritativePlan = projectPlanFromWorkflow(workflow.get(task.projectId), repositoryPath);
         if (!authoritativePlan) return send(response, 409, { error: "The durable project plan is missing from SQLite." });
+        const website = websiteInfo(repositoryPath);
+        const planningBrief = website?.originalBrief || task.request;
+        const coverage = validateProjectPlanCoverage(authoritativePlan, planningBrief);
+        if (!coverage.valid) return send(response, 409, { error: "The project plan no longer passes semantic coverage and cannot be approved.", coverage });
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
         const decided = workflow.decideApproval(task, approved, "project_plan");
         task = decided.task;
@@ -2416,12 +2799,52 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         appendTaskEvent(task.id, "MODEL_RESPONSE_COMPLETED", { runtime: "ollama", model: architectModel, role: "architect", answer, usedTools });
         let proposedProjectPlan: ProjectPlan | null = null;
         if (projectPlanning && websiteProject) {
-          const parsedPlan = parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template);
+          const planningBrief = websiteProject.originalBrief || requestText;
+          let parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+          if (parseResult.source === "fallback" && parseResult.retryRecommended) {
+            appendTaskEvent(task.id, "PROJECT_PLAN_SEMANTIC_RETRY", {
+              reason: parseResult.fallbackReason,
+              validation: parseResult.validation,
+            });
+            emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The first project plan missed required product scope. Regenerating it from the explicit brief requirements." });
+            const repaired = await runOllamaAgent({
+              ...architectRequest,
+              messages: [
+                architectRequest.messages[0],
+                architectRequest.messages[1],
+                { role: "assistant", content: answer },
+                { role: "user", content: projectPlanRepairPrompt(parseResult) },
+              ],
+              limits: { toolRounds: 3, toolCalls: 2 },
+            });
+            answer = repaired.answer;
+            usedTools ||= repaired.usedTools;
+            parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+            appendTaskEvent(task.id, "PROJECT_PLAN_SEMANTIC_RETRY_COMPLETED", {
+              source: parseResult.source,
+              fallbackReason: parseResult.fallbackReason,
+              validation: parseResult.validation,
+            });
+          }
+          if (parseResult.source === "fallback") {
+            appendTaskEvent(task.id, "PROJECT_PLAN_FALLBACK_USED", {
+              reason: parseResult.fallbackReason,
+              validation: parseResult.validation,
+            });
+          }
+          const parsedPlan = parseResult.plan;
           const planWorkflow = workflow.setProjectPlan(task, parsedPlan);
           syncWorkflowProjection(task, planWorkflow);
           proposedProjectPlan = planWorkflow.projectPlan as ProjectPlan;
-          persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, proposedProjectPlan, task.id);
-          appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan, workflowVersion: planWorkflow.version });
+          const coverage = validateProjectPlanCoverage(proposedProjectPlan, planningBrief);
+          if (!coverage.valid) throw new Error(`Project plan cannot enter approval with invalid semantic coverage: ${coverage.issues.join(" ")}`);
+          persistProposedProjectPlan(websiteProject.path, planningBrief, proposedProjectPlan, task.id, { coverage });
+          appendTaskEvent(task.id, "PROJECT_PLAN_COVERAGE_VALIDATED", {
+            revision: proposedProjectPlan.revision,
+            coverage,
+            planRevision: false,
+          });
+          appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan, coverage, workflowVersion: planWorkflow.version });
           emit({ type: "project.plan.proposed", plan: proposedProjectPlan });
         }
         if (mode === "plan" || mode === "edit" || mode === "agent") {

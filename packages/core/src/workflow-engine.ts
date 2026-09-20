@@ -194,6 +194,7 @@ export class WorkflowEngine {
       planApprovalId: existing?.planApprovalId ?? null,
       planApproved: existing?.planApproved ?? false,
       projectPlan: existing?.projectPlan ?? null,
+      planRevisionResumeIndex: existing?.planRevisionResumeIndex ?? null,
       sliceIndex: intent === "frontend_slice" ? sliceSelection!.index : intent === "backend" || intent === "general" ? null : existing?.sliceIndex ?? null,
       sliceTotal: intent === "frontend_slice" ? sliceSelection!.total : intent === "backend" || intent === "general" ? null : existing?.sliceTotal ?? null,
       sliceTitle: intent === "frontend_slice" ? sliceSelection!.title : intent === "backend" || intent === "general" ? null : existing?.sliceTitle ?? null,
@@ -241,6 +242,52 @@ export class WorkflowEngine {
     return this.start(task, "frontend_slice", detail, { ...options, sliceAction: action });
   }
 
+  beginPlanRevision(task: Task, reason: string): { task: Task; workflow: WorkflowState } {
+    if (task.state !== "RECOVERY_REQUIRED") throw new Error("Plan revision requires a recovery-required task.");
+    assertTransition(task.state, "PLANNING");
+    const current = this.requireTask(task);
+    if (current.recovery.category !== "plan_repair_required") throw new Error("Plan revision requires a plan_repair_required recovery.");
+    if (!current.projectPlan || current.projectPlan.status !== "approved") throw new Error("Plan revision requires an approved project plan.");
+    if (current.sliceIndex === null) throw new Error("Plan revision requires an active frontend slice.");
+    const now = new Date().toISOString();
+    const updatedTask = { ...task, state: "PLANNING" as const, updatedAt: now };
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      taskId: task.id,
+      loop: "project",
+      phase: "planning",
+      status: "planning",
+      nextAction: "plan",
+      planApproved: false,
+      planRevisionResumeIndex: current.sliceIndex,
+      pendingCommand: null,
+      recovery: {
+        ...current.recovery,
+        status: "repairing",
+        resumeAction: "replan",
+        reason: reason.trim().slice(0, 4_000),
+        updatedAt: now,
+      },
+      detail: reason.trim().slice(0, 4_000),
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    this.store.commitWorkflowMutation({
+      task: updatedTask,
+      state: workflow,
+      events: [
+        taskEvent(task.id, "PLAN_REVISION_STARTED", {
+          baseRevision: current.projectPlan.revision,
+          resumeSliceIndex: current.sliceIndex,
+          reason: workflow.detail,
+          workflowVersion: workflow.version,
+        }, now),
+        taskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: "PLANNING", workflowVersion: workflow.version }, now),
+      ],
+    });
+    return { task: updatedTask, workflow };
+  }
+
   setProjectPlan(task: Task, plan: WorkflowProjectPlan): WorkflowState {
     const current = this.requireTask(task);
     if (current.loop !== "project" || current.phase !== "planning") throw new Error("Only the outer project planning loop may replace the project plan.");
@@ -250,14 +297,29 @@ export class WorkflowEngine {
       status: "proposed" as const,
       approvedAt: null,
     };
+    const previousResumeIndex = current.planRevisionResumeIndex;
+    const previousSliceId = previousResumeIndex !== null ? current.projectPlan?.slices[previousResumeIndex]?.id ?? null : null;
+    const matchedResumeIndex = previousSliceId ? proposedPlan.slices.findIndex((slice) => slice.id === previousSliceId) : -1;
+    const resumeIndex = previousResumeIndex === null
+      ? null
+      : matchedResumeIndex >= 0
+        ? matchedResumeIndex
+        : Math.min(previousResumeIndex, Math.max(0, proposedPlan.slices.length - 1));
     return this.update(task, current, {
       projectPlan: proposedPlan,
-      sliceIndex: null,
+      planRevisionResumeIndex: resumeIndex,
+      sliceIndex: resumeIndex,
       sliceTotal: proposedPlan.slices.length,
-      sliceTitle: null,
+      sliceTitle: resumeIndex === null ? null : proposedPlan.slices[resumeIndex]?.title ?? null,
       planApproved: false,
+      pendingCommand: null,
       detail: `Frontend phase plan revision ${proposedPlan.revision} is persisted in SQLite.`,
-    }, "PROJECT_PLAN_SNAPSHOT_UPDATED", { revision: proposedPlan.revision, status: proposedPlan.status, sliceTotal: proposedPlan.slices.length });
+    }, "PROJECT_PLAN_SNAPSHOT_UPDATED", {
+      revision: proposedPlan.revision,
+      status: proposedPlan.status,
+      sliceTotal: proposedPlan.slices.length,
+      resumeSliceIndex: resumeIndex,
+    });
   }
 
   setHandoff(task: Task, handoff: string): WorkflowState {
@@ -307,7 +369,7 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow, event };
   }
 
-  requestApproval(task: Task, approval: Approval, kind: "project_plan" | "execution"): { task: Task; workflow: WorkflowState } {
+  requestApproval(task: Task, approval: Approval, kind: "project_plan" | "project_plan_revision" | "execution"): { task: Task; workflow: WorkflowState } {
     assertTransition(task.state, "AWAITING_APPROVAL");
     const current = this.requireTask(task);
     const now = new Date().toISOString();
@@ -315,12 +377,16 @@ export class WorkflowEngine {
     const claimedCommand = current.pendingCommand?.claimedByTaskId === task.id ? current.pendingCommand : null;
     const workflow = WorkflowStateSchema.parse({
       ...current,
-      planApprovalId: kind === "project_plan" ? approval.id : current.planApprovalId,
+      planApprovalId: kind === "project_plan" || kind === "project_plan_revision" ? approval.id : current.planApprovalId,
       status: "awaiting_approval",
       nextAction: "await_approval",
       pendingCommand: claimedCommand ? null : current.pendingCommand,
       lastConsumedCommandId: claimedCommand?.id ?? current.lastConsumedCommandId,
-      detail: kind === "project_plan" ? "Project plan is awaiting operator approval." : "Execution is awaiting operator approval.",
+      detail: kind === "project_plan"
+        ? "Project plan is awaiting operator approval."
+        : kind === "project_plan_revision"
+          ? "Project plan revision is awaiting operator approval before the current worktree can resume."
+          : "Execution is awaiting operator approval.",
       version: current.version + 1,
       updatedAt: now,
     });
@@ -336,41 +402,58 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow };
   }
 
-  decideApproval(task: Task, approval: Approval, kind: "project_plan" | "execution"): { task: Task; workflow: WorkflowState } {
+  decideApproval(task: Task, approval: Approval, kind: "project_plan" | "project_plan_revision" | "execution"): { task: Task; workflow: WorkflowState } {
     if (approval.status === "REQUESTED") throw new Error("Approval decision must be APPROVED or REJECTED.");
-    const target: TaskState = approval.status === "REJECTED" ? "CANCELLED" : kind === "project_plan" ? "COMPLETE" : "IMPLEMENTING";
+    const planRevision = kind === "project_plan_revision";
+    const projectPlanDecision = kind === "project_plan" || planRevision;
+    const target: TaskState = approval.status === "REJECTED"
+      ? "CANCELLED"
+      : kind === "project_plan"
+        ? "COMPLETE"
+        : "IMPLEMENTING";
     assertTransition(task.state, target);
     const current = this.requireTask(task);
     const now = new Date().toISOString();
     const updatedTask = { ...task, state: target, updatedAt: now };
     const nextVersion = current.version + 1;
-    const approvedPlan = kind === "project_plan" && approval.status === "APPROVED" && current.projectPlan
+    const approvedPlan = projectPlanDecision && approval.status === "APPROVED" && current.projectPlan
       ? { ...current.projectPlan, status: "approved" as const, approvedAt: approval.decidedAt ?? now }
       : current.projectPlan;
-    const firstSlice = approvedPlan?.slices[0] ?? null;
+    const resumeIndex = planRevision
+      ? Math.max(0, Math.min(current.planRevisionResumeIndex ?? current.sliceIndex ?? 0, Math.max(0, (approvedPlan?.slices.length ?? 1) - 1)))
+      : 0;
+    const activeSlice = approvedPlan?.slices[resumeIndex] ?? null;
     const projectPlanApproved = kind === "project_plan" && approval.status === "APPROVED";
+    const planRevisionApproved = planRevision && approval.status === "APPROVED";
     const workflow = WorkflowStateSchema.parse({
       ...current,
-      planApproved: projectPlanApproved ? true : current.planApproved,
+      loop: planRevisionApproved ? "slice" : current.loop,
+      planApproved: projectPlanDecision && approval.status === "APPROVED" ? true : current.planApproved,
       projectPlan: approvedPlan,
-      phase: projectPlanApproved ? "frontend" : current.phase,
-      sliceIndex: projectPlanApproved ? 0 : current.sliceIndex,
-      sliceTotal: projectPlanApproved ? approvedPlan?.slices.length ?? current.sliceTotal : current.sliceTotal,
-      sliceTitle: projectPlanApproved ? firstSlice?.title ?? null : current.sliceTitle,
+      planRevisionResumeIndex: planRevisionApproved ? null : current.planRevisionResumeIndex,
+      phase: projectPlanApproved || planRevisionApproved ? "frontend" : current.phase,
+      sliceIndex: projectPlanApproved || planRevisionApproved ? resumeIndex : current.sliceIndex,
+      sliceTotal: projectPlanApproved || planRevisionApproved ? approvedPlan?.slices.length ?? current.sliceTotal : current.sliceTotal,
+      sliceTitle: projectPlanApproved || planRevisionApproved ? activeSlice?.title ?? null : current.sliceTitle,
       status: approval.status === "REJECTED" ? "cancelled" : projectPlanApproved ? "idle" : "running",
       nextAction: approval.status === "REJECTED" ? "none" : projectPlanApproved ? "start_slice" : "implement",
       pendingCommand: projectPlanApproved ? command(task.projectId, nextVersion, "start_slice", now, 0) : null,
+      verification: planRevisionApproved ? pendingVerification(updatedTask.attempts) : current.verification,
+      recovery: planRevisionApproved ? inactiveWorkflowRecovery : current.recovery,
+      recoveryCategory: planRevisionApproved ? null : current.recoveryCategory,
       detail: approval.status === "REJECTED"
         ? "Approval was rejected."
         : projectPlanApproved
           ? "Project plan approved; Core durably scheduled the first slice."
-          : "Execution approved in the isolated worktree.",
+          : planRevisionApproved
+            ? `Project plan revision approved; resuming slice ${resumeIndex + 1} in the existing worktree.`
+            : "Execution approved in the isolated worktree.",
       version: nextVersion,
       updatedAt: now,
     });
     const decisionEvent = approval.status === "REJECTED"
-      ? (kind === "project_plan" ? "PROJECT_PLAN_REVISION_REQUESTED" : "APPROVAL_REJECTED")
-      : (kind === "project_plan" ? "PROJECT_PLAN_APPROVED" : "APPROVAL_APPROVED");
+      ? (kind === "project_plan" ? "PROJECT_PLAN_REVISION_REQUESTED" : planRevision ? "PROJECT_PLAN_REVISION_REJECTED" : "APPROVAL_REJECTED")
+      : (kind === "project_plan" ? "PROJECT_PLAN_APPROVED" : planRevision ? "PROJECT_PLAN_REVISION_APPROVED" : "APPROVAL_APPROVED");
     this.store.commitWorkflowMutation({
       task: updatedTask,
       approval,
@@ -381,6 +464,7 @@ export class WorkflowEngine {
           worktreePath: approval.worktreePath,
           baseCommit: approval.baseCommit,
           revision: approvedPlan?.revision ?? null,
+          resumeSliceIndex: planRevision ? resumeIndex : null,
           workflowVersion: workflow.version,
           pendingCommandId: workflow.pendingCommand?.id ?? null,
         }, now),

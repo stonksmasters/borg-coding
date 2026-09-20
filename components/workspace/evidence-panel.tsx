@@ -69,6 +69,10 @@ export function EvidencePanel({
           <div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Visual quality review</p><p className="mt-2 text-sm leading-6 text-slate-300">{designReview.summary}</p></div>
           {refinementCount > 0 && <span className="rounded-full border border-amber-200/10 bg-amber-200/5 px-2.5 py-1 text-[10px] text-amber-100">Refinement {refinementCount}/{maxRefinements}</span>}
         </div>
+        {designReview.status === "repair" && <div className="mt-3 rounded-md border border-amber-200/10 bg-amber-200/[0.025] px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-100/70">Repair authority · {designReview.repairScope.replaceAll("_", " ")}</p>
+          <p className="mt-1 text-[11px] leading-5 text-slate-400">{designReview.scopeReason}</p>
+        </div>}
         {designReview.dimensions.length > 0 && <div className="mt-4 space-y-2">
           {designReview.dimensions.map((item) => <div key={item.dimension} className="grid gap-1 border-t border-white/6 pt-3 first:border-0 first:pt-0 sm:grid-cols-[11rem_1fr]">
             <div className="flex items-center gap-2">{item.verdict === "pass" ? <Check className="size-3 text-[#a7ff4f]" /> : <CircleAlert className="size-3 text-amber-200" />}<span className="text-[11px] font-medium capitalize text-slate-300">{item.dimension.replaceAll("-", " ")}</span></div>

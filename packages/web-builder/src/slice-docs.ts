@@ -73,6 +73,218 @@ function route(value: unknown, fallback: string) {
   const next = clean(value, fallback).replace(/\s+/g, "-").toLowerCase();
   return next.startsWith("/") ? next : `/${next.replace(/^\/+/, "")}`;
 }
+
+function normalizedRequirement(value: string) {
+  return value.toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\b(?:page|screen|view|route)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const commonApplicationPages = [
+  "Overview", "Schedule", "Jobs", "Job Detail", "Customers", "Customer Detail",
+  "Technicians", "Technician Detail", "Vehicles", "Inventory", "Reports", "Settings",
+  "Dashboard", "Activity", "Users", "User Detail", "Teams", "Team Detail",
+  "Projects", "Project Detail", "Tasks", "Task Detail", "Orders", "Order Detail",
+  "Analytics", "Billing", "Notifications", "Profile",
+];
+
+export function extractExplicitPageRequirements(brief: string): string[] {
+  const found: string[] = [];
+  const add = (value: string) => {
+    const cleaned = value
+      .replace(/^[\s\-*\d.)]+/, "")
+      .replace(/^(?:and|or)\s+/i, "")
+      .replace(/\b(?:pages?|screens?|routes?|views?)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[,:;]+$/, "");
+    if (!cleaned || cleaned.length > 80) return;
+    const key = normalizedRequirement(cleaned);
+    if (!key || found.some((item) => normalizedRequirement(item) === key)) return;
+    found.push(cleaned);
+  };
+
+  const cues = /(?:at\s+minimum|required\s+(?:pages?|screens?|routes?)|must\s+(?:include|contain|provide)|(?:pages?|screens?|routes?)\s*(?:include|are|:))\s*:?[ \t]*([^\n.]+)/gi;
+  for (const match of brief.matchAll(cues)) {
+    for (const item of String(match[1] ?? "").split(/\s*,\s*|\s*;\s*|\s+and\s+/i)) add(item);
+  }
+
+  if (found.length < 3) {
+    const lower = brief.toLowerCase();
+    const lexicalMatches = commonApplicationPages.filter((name) => {
+      const phrase = normalizedRequirement(name).replace(/\s+/g, "\\s+");
+      return new RegExp(`\\b${phrase}\\b`, "i").test(lower);
+    });
+    if (lexicalMatches.length >= 4) for (const item of lexicalMatches) add(item);
+  }
+
+  return found.slice(0, 30);
+}
+
+function applicationRoute(name: string, index: number) {
+  const normalized = normalizedRequirement(name);
+  if (normalized === "overview" || normalized === "dashboard") return "/";
+  const detail = normalized.match(/^(.+?) detail$/);
+  if (detail) {
+    const base = detail[1].replace(/\s+/g, "-");
+    const plural = base.endsWith("s") ? base : base.endsWith("y") ? `${base.slice(0, -1)}ies` : `${base}s`;
+    return `/${plural}/:id`;
+  }
+  return index === 0 ? "/" : `/${slug(name, index)}`;
+}
+
+function applicationSections(name: string): string[] {
+  const value = normalizedRequirement(name);
+  if (/overview|dashboard/.test(value)) return ["Application navigation", "Operational KPIs", "Alerts and exceptions", "Active work queue", "Team availability", "Upcoming schedule"];
+  if (/schedule/.test(value)) return ["Schedule controls", "Calendar / timeline", "Assignment state", "Conflicts and exceptions", "Loading / empty states"];
+  if (/job detail/.test(value)) return ["Job summary", "Status and timeline", "Assignment", "Customer / site", "Materials and notes", "Activity and actions"];
+  if (/jobs?/.test(value)) return ["Search / filters", "Jobs table / board", "Status and priority", "Assignment controls", "Bulk / row actions", "Loading / empty states"];
+  if (/customer detail/.test(value)) return ["Customer summary", "Contacts and locations", "Jobs / history", "Notes", "Actions"];
+  if (/customers?/.test(value)) return ["Search / filters", "Customer list / table", "Status / value summary", "Primary actions", "Loading / empty states"];
+  if (/technician detail/.test(value)) return ["Technician summary", "Availability", "Assigned work", "Skills / coverage", "Performance context", "Actions"];
+  if (/technicians?/.test(value)) return ["Availability summary", "Technician roster", "Skills / territory filters", "Assignment state", "Loading / empty states"];
+  if (/vehicles?/.test(value)) return ["Fleet summary", "Vehicle list / table", "Status / maintenance", "Assignments", "Exceptions"];
+  if (/inventory/.test(value)) return ["Inventory summary", "Search / filters", "Stock table", "Low-stock / exception states", "Adjust / transfer actions"];
+  if (/reports?|analytics/.test(value)) return ["Report navigation", "Date / segment controls", "Operational metrics", "Charts / tables", "Export / drill-down actions"];
+  if (/settings|billing|profile/.test(value)) return ["Settings navigation", "Configuration form", "Validation / save states", "Permission / error states"];
+  return ["Search / filters", "Primary workspace", "Detail / inspection state", "Primary actions", "Loading / empty / error states"];
+}
+
+function applicationSlices(sitemap: ProjectSitemapPage[]): ProjectSlice[] {
+  if (!sitemap.length) return [];
+  const slices: ProjectSlice[] = [{
+    id: "application-foundation",
+    title: "Application shell and operational overview",
+    outcome: `The shared application shell and ${sitemap[0].name} screen work as a dense, credible operational workspace on desktop and mobile.`,
+    scope: ["application navigation", "shared layout and design tokens", sitemap[0].name, ...sitemap[0].sections],
+    acceptanceCriteria: ["application navigation is functional", `${sitemap[0].name} contains representative operational data and meaningful states`, "desktop and mobile compositions are intentional", "no placeholder or dead visible controls remain"],
+  }];
+
+  const remaining = sitemap.slice(1);
+  for (let index = 0; index < remaining.length; index += 3) {
+    const pages = remaining.slice(index, index + 3);
+    const names = pages.map((page) => page.name);
+    slices.push({
+      id: `application-${index / 3 + 1}-${slug(names.join("-"), index)}`,
+      title: names.join(", "),
+      outcome: `${names.join(", ")} are implemented as complete, navigable application screens with realistic data, interactions, and edge states.`,
+      scope: pages.flatMap((page) => [page.name, ...page.sections]).slice(0, 30),
+      acceptanceCriteria: [
+        ...names.map((name) => `${name} is reachable and materially implemented`),
+        "visible controls have real local behavior or explicit disabled states",
+        "loading, empty, and error states are represented where relevant",
+      ],
+    });
+  }
+  return slices;
+}
+
+export type PlanCapability =
+  | "authentication"
+  | "record_mutation"
+  | "search_filtering"
+  | "reporting"
+  | "realtime_updates";
+
+export type PlanCoverageReport = {
+  valid: boolean;
+  explicitRequiredPages: string[];
+  missingPages: string[];
+  missingSliceCoverage: string[];
+  requiredCapabilities: PlanCapability[];
+  missingCapabilities: PlanCapability[];
+  contradictions: string[];
+  issues: string[];
+};
+
+export type ProjectPlanValidation = PlanCoverageReport;
+
+export function extractRequiredCapabilities(brief: string): PlanCapability[] {
+  const required = new Set<PlanCapability>();
+  if (/\b(?:auth(?:entication)?|authenticated|unauthenticated|log\s?in|login|sign\s?in|signin|roles?|permissions?|protected\s+(?:routes?|pages?|areas?))\b/i.test(brief)) required.add("authentication");
+  if (/\b(?:crud|(?:create|add)\s*(?:\/|,|and)?\s*(?:edit|update)(?:\s*(?:\/|,|and)?\s*(?:delete|remove))?|edit\s*(?:\/|,|and)?\s*(?:delete|remove)|manage\s+(?:jobs?|customers?|users?|records?|inventory|orders?))\b/i.test(brief)) required.add("record_mutation");
+  if (/\b(?:search|filter(?:ing)?|sort(?:ing)?)\b/i.test(brief)) required.add("search_filtering");
+  if (/\b(?:reports?|reporting|analytics|insights|metrics dashboard)\b/i.test(brief)) required.add("reporting");
+  if (/\b(?:real[- ]?time|live\s+updates?|websocket|streaming updates?)\b/i.test(brief)) required.add("realtime_updates");
+  return [...required];
+}
+
+export function validateProjectPlanCoverage(plan: ProjectPlan, brief: string): PlanCoverageReport {
+  const explicitRequiredPages = extractExplicitPageRequirements(brief);
+  const pageCorpus = plan.sitemap.map((page) => [page.name, page.route, page.purpose].join(" ")).map(normalizedRequirement);
+  const sliceCorpus = plan.slices.map((slice) => [slice.title, slice.outcome, ...slice.scope, ...slice.acceptanceCriteria].join(" ")).map(normalizedRequirement);
+  const fullCorpus = normalizedRequirement([
+    ...plan.pages,
+    ...plan.features,
+    ...plan.sitemap.flatMap((page) => [page.name, page.route, page.purpose, ...page.sections, ...page.acceptanceCriteria]),
+    ...plan.components.flatMap((component) => [component.name, component.purpose, ...component.variants, ...component.acceptanceCriteria]),
+    ...plan.slices.flatMap((slice) => [slice.title, slice.outcome, ...slice.scope, ...slice.acceptanceCriteria]),
+    ...plan.acceptanceCriteria,
+  ].join(" "));
+  const covered = (corpus: string[], requirement: string) => {
+    const required = normalizedRequirement(requirement);
+    const tokens = required.split(" ").filter((token) => token.length > 1);
+    return corpus.some((value) => value.includes(required) || tokens.every((token) => value.split(" ").includes(token)));
+  };
+  const missingPages = explicitRequiredPages.filter((item) => !covered(pageCorpus, item));
+  const missingSliceCoverage = explicitRequiredPages.filter((item) => !covered(sliceCorpus, item));
+  const requiredCapabilities = extractRequiredCapabilities(brief);
+  const capabilityPatterns: Record<PlanCapability, RegExp> = {
+    authentication: /\b(?:auth|authentication|login|log in|sign in|signin|session|identity|credentials?|authenticated|unauthenticated|access control|role-based access|rbac|protected (?:route|routes|page|pages|area|areas))\b/i,
+    record_mutation: /\b(?:create|add|edit|update|delete|remove|manage|management|adjust|transfer|archive|publish|save changes)\b/i,
+    search_filtering: /\b(?:search|filter|filtering|sort|sorting)\b/i,
+    reporting: /\b(?:report|reports|reporting|analytics|insights|metrics|export|charts?)\b/i,
+    realtime_updates: /\b(?:real time|realtime|live updates|websocket|stream|streaming)\b/i,
+  };
+  const missingCapabilities = requiredCapabilities.filter((capability) => !capabilityPatterns[capability].test(fullCorpus));
+
+  const dashboard = /dashboard|portal|admin|operations|internal\s+(?:app|tool)|control\s+center|dispatcher/i.test(brief);
+  const explicitlyNotMarketing = /do\s+not\s+(?:build|make|create).{0,30}(?:marketing|landing)|not\s+a\s+(?:marketing|landing)\s+(?:site|page)|do\s+not\s+create\s+a\s+landing[- ]page/i.test(brief);
+  const marketingSlices = dashboard
+    ? plan.slices.filter((slice) => /homepage|hero|marketing|calls? to action|testimonials?|pricing section/i.test([slice.title, slice.outcome, ...slice.scope].join(" "))).map((slice) => slice.title)
+    : [];
+  const marketingPlanText = [
+    ...plan.sitemap.flatMap((page) => [page.name, ...page.sections]),
+    ...plan.slices.flatMap((slice) => [slice.title, slice.outcome, ...slice.scope]),
+  ].join(" ");
+  const contradictions = [
+    ...(marketingSlices.length ? [`Internal application brief received marketing-site slices: ${marketingSlices.join(", ")}.`] : []),
+    ...(explicitlyNotMarketing && /\b(?:hero|testimonial|marketing|landing page|call to action|cta)\b/i.test(marketingPlanText)
+      ? ["The brief explicitly rejects a marketing/landing-site composition, but the plan still contains marketing-site structure."]
+      : []),
+  ];
+  const issues = [
+    ...(missingPages.length ? [`Missing required sitemap pages: ${missingPages.join(", ")}.`] : []),
+    ...(missingSliceCoverage.length ? [`Required pages are not explicitly assigned to an implementation slice: ${missingSliceCoverage.join(", ")}.`] : []),
+    ...(missingCapabilities.length ? [`Missing required product capabilities: ${missingCapabilities.join(", ")}.`] : []),
+    ...contradictions,
+  ];
+  return {
+    valid: issues.length === 0,
+    explicitRequiredPages,
+    missingPages,
+    missingSliceCoverage,
+    requiredCapabilities,
+    missingCapabilities,
+    contradictions,
+    issues,
+  };
+}
+
+export type ProjectPlanParseResult = {
+  plan: ProjectPlan;
+  source: "model" | "fallback";
+  fallbackReason: string | null;
+  validation: ProjectPlanValidation;
+  retryRecommended: boolean;
+};
+
+function complexApplicationBrief(brief: string) {
+  const required = extractExplicitPageRequirements(brief);
+  return required.length >= 4 || (/\b(?:full[- ]stack|dashboard|portal|operations|internal app|admin)\b/i.test(brief) && brief.length >= 500);
+}
 function fallbackStyles(commerce: boolean): ProjectStyleSystem {
   return {
     direction: commerce
@@ -113,9 +325,11 @@ function fallbackSitemap(brief: string, commerce: boolean, dashboard: boolean, c
     }
     if (admin) add("Admin", "/admin", "Operate marketplace-wide administration.", ["Admin navigation", "Overview", "Users", "Sellers", "Products", "Orders", "Reviews", "Categories", "Promotions"]);
   } else if (dashboard) {
-    add("Dashboard", "/", "Provide the primary operational overview and navigation.", ["Application navigation", "Overview / KPI summary", "Primary work queue", "Recent activity", "Empty / loading states"]);
-    add("Activity", "/activity", "Inspect recent operational events and records.", ["Filters", "Activity list / table", "Detail state"]);
-    add("Settings", "/settings", "Manage application preferences and configuration.", ["Settings navigation", "Preferences", "Account / workspace settings"]);
+    const requiredPages = extractExplicitPageRequirements(brief);
+    const applicationPages = requiredPages.length >= 3 ? requiredPages : ["Overview", "Activity", "Settings"];
+    for (const [index, name] of applicationPages.entries()) {
+      add(name, applicationRoute(name, index), `${name} operational workspace required by the product brief.`, applicationSections(name));
+    }
   } else {
     add("Home", "/", "Communicate the primary value proposition and direct users into the site's core journey.", ["Navigation", "Hero", "Primary proof / value sections", "Primary CTA", "Footer"]);
     if (/service|offering|solution/.test(text)) add("Services", "/services", "Explain services or solutions in enough detail to support a decision.", ["Services overview", "Service details", "Proof / process", "CTA"]);
@@ -327,13 +541,15 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
       scope: ["admin shell and navigation", "marketplace overview", "users/sellers/products/orders/reviews", "categories and promotions", "at least one legitimate administrative action", "permission-denied states"],
       acceptanceCriteria: ["admin pages are distinct from seller tooling", "role boundaries are explicit in UI and backend contract", "the administrative action updates representative state", "unauthorized states are handled intentionally"],
     });
+  } else if (dashboard) {
+    const applicationSitemap = fallbackSitemap(brief, false, true, contentHeavy, seller, admin, accounts);
+    slices.push(...applicationSlices(applicationSitemap));
   } else {
     slices.push(
       { id: "foundation", title: "Homepage shell and hero", outcome: "The homepage navigation, visual foundation, and hero are polished and usable in the preview.", scope: ["design tokens and layout shell", "header and navigation", "homepage hero", "basic responsive and accessible behavior"], acceptanceCriteria: ["hero communicates the primary offer", "desktop and mobile layouts are usable", "visible navigation controls work"] },
       { id: "homepage-sections", title: contentHeavy ? "Homepage content and discovery sections" : "Homepage sections and calls to action", outcome: "The homepage sections below the hero form a complete, coherent page with working calls to action.", scope: ["approved homepage content sections", "reusable section components", "section imagery and copy", "calls to action and interaction states"], acceptanceCriteria: ["all approved homepage sections are present", "section components work across target viewports", "calls to action have a meaningful destination or state"] },
       { id: "content-flows", title: contentHeavy ? "Content structure and discovery" : "Remaining pages and interactions", outcome: "The remaining core pages, content, and interactions required by the brief work coherently.", scope: ["remaining core screens", "interaction states", "loading, empty, and error states where relevant"], acceptanceCriteria: ["approved pages are reachable", "core interactions work", "relevant states are represented"] },
     );
-    if (dashboard) slices.push({ id: "secondary-flows", title: "Secondary flows and edge states", outcome: "Secondary user journeys and cross-screen behavior are complete enough for end-to-end browser review.", scope: ["secondary journeys", "navigation continuity", "edge and demonstration states"], acceptanceCriteria: ["key journeys can be exercised end to end", "no dead controls in approved scope"] });
   }
 
   slices.push({
@@ -374,10 +590,18 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
   };
 }
 
-export function parseProjectPlan(answer: string, brief: string, template = ""): ProjectPlan {
+export function parseProjectPlanResult(answer: string, brief: string, template = ""): ProjectPlanParseResult {
   const fallback = fallbackProjectPlan(brief, template);
+  const fallbackValidation = validateProjectPlanCoverage(fallback, brief);
+  const selectFallback = (reason: string, candidateValidation: ProjectPlanValidation = fallbackValidation): ProjectPlanParseResult => ({
+    plan: fallback,
+    source: "fallback",
+    fallbackReason: reason,
+    validation: candidateValidation,
+    retryRecommended: complexApplicationBrief(brief),
+  });
   const match = answer.match(planMarker);
-  if (!match) return fallback;
+  if (!match) return selectFallback("Planner response did not contain a <borg-project-plan> block.");
   try {
     const raw = JSON.parse(match[1]) as Record<string, unknown>;
     const rawSlices = Array.isArray(raw.slices) ? raw.slices.slice(0, 12) : [];
@@ -392,7 +616,7 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
         acceptanceCriteria: list(value.acceptanceCriteria, ["Working preview", "Relevant verification passes"]),
       };
     }).filter((slice) => slice.title && slice.outcome);
-    if (slices.length < 2) return fallback;
+    if (slices.length < 2) return selectFallback("Planner returned fewer than two usable implementation slices.");
 
     const rawSitemap = Array.isArray(raw.sitemap) ? raw.sitemap.slice(0, 30) : [];
     const sitemap = rawSitemap.length ? rawSitemap.map((item, index) => {
@@ -457,7 +681,7 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
       avoid: list(rawStyles.avoid, fallback.styles.avoid),
     };
 
-    return {
+    const candidate: ProjectPlan = {
       ...fallback,
       siteGoal: clean(raw.siteGoal, fallback.siteGoal),
       audience: clean(raw.audience, fallback.audience),
@@ -471,7 +695,85 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
       slices,
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
-  } catch { return fallback; }
+    const validation = validateProjectPlanCoverage(candidate, brief);
+    if (!validation.valid) return selectFallback(validation.issues.join(" "), validation);
+    return { plan: candidate, source: "model", fallbackReason: null, validation, retryRecommended: false };
+  } catch (error) {
+    return selectFallback(`Planner project-plan JSON could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export function parseProjectPlan(answer: string, brief: string, template = ""): ProjectPlan {
+  return parseProjectPlanResult(answer, brief, template).plan;
+}
+
+export function projectPlanRepairPrompt(result: ProjectPlanParseResult): string {
+  const required = result.validation.explicitRequiredPages;
+  const capabilities = result.validation.requiredCapabilities;
+  return [
+    "The previous machine-readable project plan failed semantic coverage and must be regenerated.",
+    result.fallbackReason ? `Failure: ${result.fallbackReason}` : "",
+    required.length ? `Explicit required pages/screens: ${required.join(", ")}.` : "",
+    capabilities.length ? `Required product capabilities: ${capabilities.join(", ")}.` : "",
+    result.validation.missingCapabilities.length ? `Capabilities missing from the rejected plan: ${result.validation.missingCapabilities.join(", ")}.` : "",
+    result.validation.contradictions.length ? `Brief/plan contradictions to remove:\n- ${result.validation.contradictions.join("\n- ")}` : "",
+    "Every explicitly required page must appear in the sitemap AND be named in at least one bounded implementation slice. Every required capability must be represented by concrete pages/components/slices and acceptance criteria, not vague feature prose.",
+    "Internal applications must use application-oriented slices; do not use homepage/hero/marketing slices for dashboards or operations tools.",
+    "Return the complete corrected plan and end with exactly one valid <borg-project-plan>...</borg-project-plan> block.",
+  ].filter(Boolean).join("\n\n");
+}
+
+export type ProjectPlanDelta = {
+  fromRevision: number;
+  toRevision: number;
+  addedPages: string[];
+  removedPages: string[];
+  changedPages: string[];
+  addedSlices: string[];
+  removedSlices: string[];
+  changedSlices: string[];
+};
+
+export function projectPlanDelta(previous: ProjectPlan, next: ProjectPlan): ProjectPlanDelta {
+  const previousPages = new Map(previous.sitemap.map((page) => [page.id, page]));
+  const nextPages = new Map(next.sitemap.map((page) => [page.id, page]));
+  const previousSlices = new Map(previous.slices.map((slice) => [slice.id, slice]));
+  const nextSlices = new Map(next.slices.map((slice) => [slice.id, slice]));
+  const changed = <T>(a: T, b: T) => JSON.stringify(a) !== JSON.stringify(b);
+  return {
+    fromRevision: previous.revision,
+    toRevision: next.revision,
+    addedPages: [...nextPages.keys()].filter((id) => !previousPages.has(id)),
+    removedPages: [...previousPages.keys()].filter((id) => !nextPages.has(id)),
+    changedPages: [...nextPages.keys()].filter((id) => previousPages.has(id) && changed(previousPages.get(id), nextPages.get(id))),
+    addedSlices: [...nextSlices.keys()].filter((id) => !previousSlices.has(id)),
+    removedSlices: [...previousSlices.keys()].filter((id) => !nextSlices.has(id)),
+    changedSlices: [...nextSlices.keys()].filter((id) => previousSlices.has(id) && changed(previousSlices.get(id), nextSlices.get(id))),
+  };
+}
+
+export function projectPlanRevisionPrompt(input: {
+  brief: string;
+  currentPlan: ProjectPlan;
+  currentSliceIndex: number;
+  conflictReason: string;
+  review: unknown;
+}): string {
+  const currentSlice = input.currentPlan.slices[input.currentSliceIndex] ?? null;
+  return [
+    "BOUNDED PROJECT PLAN REVISION. The current approved frontend plan cannot legally satisfy the independent product-quality review. Revise the plan; do not implement code.",
+    `Original brief:\n${input.brief.slice(0, 16_000)}`,
+    `Current approved plan revision ${input.currentPlan.revision}:\n${JSON.stringify(input.currentPlan).slice(0, 40_000)}`,
+    currentSlice ? `Current in-progress slice [${currentSlice.id}] ${currentSlice.title}: ${currentSlice.outcome}\nScope: ${currentSlice.scope.join("; ")}` : "",
+    `Scope conflict:\n${input.conflictReason.slice(0, 6_000)}`,
+    `Visual/Product review evidence:\n${JSON.stringify(input.review).slice(0, 24_000)}`,
+    "Preserve already-completed work. Do not renumber, rename, or delete slices that are before the current in-progress slice unless the brief is impossible to satisfy otherwise.",
+    currentSlice ? `Preserve the current slice id "${currentSlice.id}" when possible so Core can resume the existing worktree at the same logical boundary. You may expand its outcome/scope when the review proves that its existing boundary is invalid.` : "",
+    "Revise only the sitemap, component inventory, style system, capabilities, and current/future slices needed to resolve the demonstrated conflict.",
+    "The revised plan must still cover every explicit page and capability in the original brief. Internal applications must not regress into homepage/hero/marketing-site slice structures.",
+    "Return a complete replacement <borg-project-plan> block, not a patch or prose-only delta.",
+    projectPlanningPrompt(input.brief),
+  ].filter(Boolean).join("\n\n");
 }
 
 export function projectPlanningPrompt(brief: string): string {
@@ -490,12 +792,40 @@ End your response with exactly one machine-readable block using this shape:
 The only project files authorized during PLAN are planning documents under .localcode/build/**/*.md, persisted by BORG after your response. Do not create source, component, style, asset, configuration, backend, API, auth, or database files; do not run builds, tests, previews, or verification. Brief: ${brief}`;
 }
 
-export function persistProposedProjectPlan(root: string, brief: string, plan: ProjectPlan, taskId: string) {
+export function persistProposedProjectPlan(
+  root: string,
+  brief: string,
+  plan: ProjectPlan,
+  taskId: string,
+  options: { coverage?: PlanCoverageReport; currentSlice?: number; revisionReason?: string } = {},
+) {
   const dir = docsDirectory(root);
   mkdirSync(dir, { recursive: true });
   const proposed = { ...plan, status: "proposed" as const, approvedAt: null };
-  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Planned components](components.md)\n- [Global style system](styles.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are a generated knowledge projection of the durable SQLite workflow state. SQLite owns progression; these files provide portable, inspectable context for slice sessions and may be rebuilt from the workflow record. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
+  const coverage = options.coverage ?? validateProjectPlanCoverage(proposed, brief);
+  if (!coverage.valid) throw new Error(`Cannot persist an invalid project plan: ${coverage.issues.join(" ")}`);
+  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Plan coverage report](plan-coverage.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Planned components](components.md)\n- [Global style system](styles.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are a generated knowledge projection of the durable SQLite workflow state. SQLite owns progression; these files provide portable, inspectable context for slice sessions and may be rebuilt from the workflow record. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
   writeFileSync(join(dir, "brief.md"), `# Product brief\n\n${brief.trim()}\n`);
+  writeFileSync(join(dir, "plan-coverage.json"), JSON.stringify(coverage, null, 2) + "\n");
+  writeFileSync(join(dir, "plan-coverage.md"), [
+    "# Plan coverage report",
+    "",
+    `Status: **${coverage.valid ? "pass" : "fail"}**`,
+    "",
+    `Explicit required pages: ${coverage.explicitRequiredPages.join(", ") || "None extracted"}`,
+    `Missing pages: ${coverage.missingPages.join(", ") || "None"}`,
+    `Missing slice coverage: ${coverage.missingSliceCoverage.join(", ") || "None"}`,
+    `Required capabilities: ${coverage.requiredCapabilities.join(", ") || "None extracted"}`,
+    `Missing capabilities: ${coverage.missingCapabilities.join(", ") || "None"}`,
+    "",
+    "## Contradictions",
+    ...(coverage.contradictions.length ? coverage.contradictions.map((item) => `- ${item}`) : ["- None"]),
+    "",
+    "## Issues",
+    ...(coverage.issues.length ? coverage.issues.map((item) => `- ${item}`) : ["- None"]),
+    "",
+    ...(options.revisionReason ? ["## Revision reason", "", options.revisionReason.slice(0, 4_000), ""] : []),
+  ].join("\n"));
   writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.sitemap.map((page) => `## ${page.name}\n\n- ID: \`${page.id}\`\n- Route: \`${page.route}\`\n- Purpose: ${page.purpose}\n- Sections: ${page.sections.join("; ") || "To be resolved during implementation"}\n- Components: ${page.componentIds.join(", ") || "None assigned"}\n- Acceptance: ${page.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
   writeFileSync(join(dir, "components.md"), `# Planned components\n\n${proposed.components.map((component) => `## ${component.name}\n\n- ID: \`${component.id}\`\n- Kind: ${component.kind}\n- Purpose: ${component.purpose}\n- Used by: ${component.usedBy.join(", ") || "shared/global"}\n- Variants: ${component.variants.join(", ") || "default"}\n- Acceptance: ${component.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
   writeFileSync(join(dir, "styles.md"), `# Global style system\n\n## Direction\n\n${proposed.styles.direction}\n\n## Colors\n${proposed.styles.colors.map((item) => `- ${item}`).join("\n")}\n\n## Typography\n${proposed.styles.typography.map((item) => `- ${item}`).join("\n")}\n\n## Spacing\n${proposed.styles.spacing.map((item) => `- ${item}`).join("\n")}\n\n## Radii\n${proposed.styles.radii.map((item) => `- ${item}`).join("\n")}\n\n## Shadows\n${proposed.styles.shadows.map((item) => `- ${item}`).join("\n")}\n\n## Layout principles\n${proposed.styles.layoutPrinciples.map((item) => `- ${item}`).join("\n")}\n\n## Motion\n${proposed.styles.motion.map((item) => `- ${item}`).join("\n")}\n\n## Responsive\n${proposed.styles.responsive.map((item) => `- ${item}`).join("\n")}\n\n## Accessibility\n${proposed.styles.accessibility.map((item) => `- ${item}`).join("\n")}\n\n## Avoid\n${proposed.styles.avoid.map((item) => `- ${item}`).join("\n")}\n`);
@@ -509,8 +839,13 @@ export function persistProposedProjectPlan(root: string, brief: string, plan: Pr
   if (!existsSync(join(dir, "data-contract.md"))) writeFileSync(join(dir, "data-contract.md"), "# Data and action contract\n\nRecord frontend entities, fields, state transitions, actions, and persistence needs as screens are built.\n");
   if (!existsSync(join(dir, "history.md"))) writeFileSync(join(dir, "history.md"), "# Completed session history\n");
   writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nPlanning task: ${taskId}\n\nThe frontend phase plan is proposed and waiting for user approval. No implementation is authorized yet.\n`);
-  writeState(root, stateFromPlan(proposed, brief, "plan_pending", taskId));
-  setFrontendWorkflowStage(root, "planning", { currentSlice: 0, totalSlices: proposed.slices.length, taskId, detail: "Frontend phase plan is proposed and waiting for approval." });
+  const projected = stateFromPlan(proposed, brief, "plan_pending", taskId);
+  if (Number.isInteger(options.currentSlice)) {
+    projected.current = Math.max(0, Math.min(options.currentSlice!, Math.max(0, proposed.slices.length - 1)));
+    projected.currentTitle = proposed.slices[projected.current]?.title ?? projected.currentTitle;
+  }
+  writeState(root, projected);
+  setFrontendWorkflowStage(root, "planning", { currentSlice: projected.current, totalSlices: proposed.slices.length, taskId, detail: options.currentSlice === undefined ? "Frontend phase plan is proposed and waiting for approval." : `Plan revision ${proposed.revision} is proposed for the preserved slice ${projected.current + 1} boundary and waiting for approval.` });
   return proposed;
 }
 
@@ -523,10 +858,11 @@ export function approveProjectPlan(root: string, taskId: string, authoritativePl
   writeFileSync(join(docsDirectory(root), "plan.md"), planMarkdown(approved));
   const next = stateFromPlan(approved, state?.brief || approved.siteGoal, "ready", taskId, state);
   writeState(root, next);
-  writeFileSync(join(docsDirectory(root), "current-slice.md"), `# Current slice\n\nReady to start **${approved.slices[0].title}**.\n\nOutcome: ${approved.slices[0].outcome}\n`);
-  writeFileSync(join(docsDirectory(root), "progress.md"), `# Progress\n\nPhase: **Frontend**\n\nPlan revision: ${approved.revision}\n\nStatus: approved; ready for slice 1 of ${approved.slices.length}\n`);
+  const resumeSlice = approved.slices[next.current] ?? approved.slices[0];
+  writeFileSync(join(docsDirectory(root), "current-slice.md"), `# Current slice\n\nReady to ${next.current > 0 || approved.revision > 1 ? "resume" : "start"} **${resumeSlice.title}**.\n\nOutcome: ${resumeSlice.outcome}\n`);
+  writeFileSync(join(docsDirectory(root), "progress.md"), `# Progress\n\nPhase: **Frontend**\n\nPlan revision: ${approved.revision}\n\nStatus: approved; ready for slice ${next.current + 1} of ${approved.slices.length}\n`);
   writeFileSync(join(docsDirectory(root), "decisions.md"), `${safeRead(join(docsDirectory(root), "decisions.md"))}\n## ${new Date().toISOString()} — frontend plan approved\n\nApproved revision ${approved.revision} with ${approved.slices.length} slices.\n`);
-  setFrontendWorkflowStage(root, "plan_approved", { currentSlice: 0, totalSlices: approved.slices.length, taskId, detail: "Plan approved. The server owns the transition into slice 1." });
+  setFrontendWorkflowStage(root, "plan_approved", { currentSlice: next.current, totalSlices: approved.slices.length, taskId, detail: next.current > 0 || approved.revision > 1 ? `Plan revision ${approved.revision} approved. The server will resume slice ${next.current + 1} in the existing workflow boundary.` : "Plan approved. The server owns the transition into slice 1." });
   return { plan: approved, state: next };
 }
 
@@ -657,7 +993,7 @@ export function projectDeliveredFrontendCheckpoint(root: string, workflow: Workf
 export function readProjectDocs(root: string): ProjectDoc[] {
   let dir: string;
   try { dir = docsDirectory(root); } catch { return []; }
-  const names = ["README.md", "brief.md", designBriefFile, "site-map.md", "components.md", "styles.md", "plan.md", "current-slice.md", "current-plan.md", "decisions.md", "progress.md", "verification.md", "known-issues.md", "data-contract.md", "handoff.md", "history.md", stateFile, workflowFile];
+  const names = ["README.md", "brief.md", "plan-coverage.md", designBriefFile, "site-map.md", "components.md", "styles.md", "plan.md", "current-slice.md", "current-plan.md", "decisions.md", "progress.md", "verification.md", "known-issues.md", "data-contract.md", "handoff.md", "history.md", stateFile, workflowFile];
   if (existsSync(join(dir, "plans")) && lstatSync(join(dir, "plans")).isDirectory()) names.push(...readdirSync(join(dir, "plans")).filter((name) => name.endsWith(".md")).sort().map((name) => `plans/${name}`));
   return names.flatMap((name) => {
     const path = join(dir, name);

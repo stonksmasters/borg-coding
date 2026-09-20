@@ -164,6 +164,8 @@ test("visual director can reject a technically valid page on aesthetic dimension
       message: {
         content: JSON.stringify({
           verdict: "repair",
+          repairScope: "current_slice",
+          scopeReason: "The visible composition defect can be repaired entirely inside the currently approved homepage slice.",
           summary: "Functional, but the composition still looks generic.",
           dimensions,
           findings: [{
@@ -215,6 +217,8 @@ test("visual director can reject a technically valid page on aesthetic dimension
       },
     });
     assert.equal(review.status, "repair");
+    assert.equal(review.repairScope, "current_slice");
+    assert.match(review.scopeReason, /currently approved homepage slice/i);
     assert.equal(review.dimensions.length, designDimensions.length);
     assert.equal(review.findings[0]?.category, "design/composition");
     assert.match(review.summary, /generic/);

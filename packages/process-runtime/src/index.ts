@@ -139,6 +139,7 @@ async function waitForUrl(url: string, timeoutMs: number, processSnapshot: () =>
 
 export class ProcessRuntime {
   private readonly processes = new Map<string, ManagedProcess>();
+  private readonly serverStarts = new Map<string, Promise<ProcessSnapshot>>();
   private readonly onEvent?: (event: ProcessRuntimeEvent) => void;
 
   constructor(options: { onEvent?: (event: ProcessRuntimeEvent) => void } = {}) {
@@ -167,6 +168,19 @@ export class ProcessRuntime {
   }
 
   async ensureServer(input: ProcessStartInput & { url: string; startupTimeoutMs?: number }): Promise<ProcessSnapshot> {
+    const key = `${input.taskId}:${resolve(input.cwd)}`;
+    const activeStart = this.serverStarts.get(key);
+    if (activeStart) return activeStart;
+    const start = this.ensureServerUnlocked(input);
+    this.serverStarts.set(key, start);
+    try {
+      return await start;
+    } finally {
+      if (this.serverStarts.get(key) === start) this.serverStarts.delete(key);
+    }
+  }
+
+  private async ensureServerUnlocked(input: ProcessStartInput & { url: string; startupTimeoutMs?: number }): Promise<ProcessSnapshot> {
     const existing = [...this.processes.values()].find((record) =>
       record.snapshot.taskId === input.taskId
       && record.snapshot.kind === "dev_server"
