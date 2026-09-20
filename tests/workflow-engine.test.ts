@@ -196,12 +196,15 @@ test("verified delivered slice schedules one durable advance command", () => {
 
   assert.equal(delivered.workflow.nextAction, "advance_slice");
   assert.equal(delivered.workflow.pendingCommand?.action, "advance_slice");
+  assert.equal(delivered.workflow.pendingCommand?.targetSliceIndex, 1);
   assert.equal(delivered.workflow.status, "awaiting_feedback");
 
   let nextTask = createTask({ id: "slice-2", projectId: "project", request: "Slice 2" });
   const started = engine.startFrontendSlice(nextTask, "advance", "Advance", { commandId: delivered.workflow.pendingCommand!.id });
   assert.equal(started.pendingCommand?.id, delivered.workflow.pendingCommand!.id);
   assert.equal(started.pendingCommand?.claimedByTaskId, nextTask.id);
+  assert.equal(started.pendingCommand?.targetSliceIndex, 1);
+  assert.equal(started.sliceIndex, 1);
   assert.equal(started.lastConsumedCommandId, command!.id);
 
   // A live task owns its durable command exclusively.
@@ -216,8 +219,11 @@ test("verified delivered slice schedules one durable advance command", () => {
   const interrupted = engine.transition(nextTask, "RECOVERY_REQUIRED");
   assert.equal(interrupted.workflow.pendingCommand?.claimedByTaskId, null);
   assert.equal(interrupted.workflow.pendingCommand?.id, delivered.workflow.pendingCommand!.id);
+  assert.equal(interrupted.workflow.pendingCommand?.targetSliceIndex, 1);
   const replayed = engine.startFrontendSlice(replayTask, "advance", "Replay after restart", { commandId: delivered.workflow.pendingCommand!.id });
   assert.equal(replayed.pendingCommand?.claimedByTaskId, replayTask.id);
+  assert.equal(replayed.pendingCommand?.targetSliceIndex, 1);
+  assert.equal(replayed.sliceIndex, 1);
 
   nextTask = replayTask;
   nextTask = engine.transition(nextTask, "CLASSIFYING").task;
