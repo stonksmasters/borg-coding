@@ -1,6 +1,6 @@
 # BORG Code Architecture
 
-Last updated: 2026-09-19
+Last updated: 2026-09-20
 
 ## Overview
 
@@ -84,6 +84,8 @@ A single persistent `WorkflowEngine` owns project progression. SQLite is the dur
 
 Normal website builds reuse the project's primary chat/session. Slice boundaries are durable workflow/task boundaries, not hidden child-chat ownership boundaries.
 
+The workflow records an explicit loop ownership domain: `project`, `slice`, `backend`, or `general`. The outer project loop owns plan creation and revision. The inner slice loop owns only the Core-selected slice and cannot increment the sitemap/slice roadmap, replace the project plan, or begin backend work. Verification makes work eligible for checkpointing; successful delivery/checkpoint completion is the only operation that advances to the next slice or completes the frontend phase.
+
 The UI should render the persisted project/task state rather than infer progress from assistant prose. The server exposes a normalized `RunView` containing phase, slice, stage, current action, verification state, blocker, and next action. Model output can explain work, but it must not be the source of truth for whether a plan is approved, a slice is complete, verification passed, or a phase has advanced.
 
 Durable state includes:
@@ -148,9 +150,9 @@ A recoverable task should be able to reconstruct:
 
 Recovery should continue the current workflow rather than inventing a new project plan.
 
-## Future first-class entities
+## First-class project entities
 
-Pages and components will become explicit architectural entities rather than being inferred only from files.
+Pages, components, the global style system, slices, requirements, and decisions are canonical project-domain entities rather than being inferred only from files.
 
 A page entity will represent a navigable product surface.
 
