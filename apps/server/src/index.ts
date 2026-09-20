@@ -488,19 +488,10 @@ function syncDeliveredWorkflowProjection(task: Task, state: WorkflowState, repos
 }
 
 function projectPlanFromWorkflow(state: WorkflowState | null, fallbackRoot: string | null): ProjectPlan | null {
-  const persisted = fallbackRoot ? readProjectPlan(fallbackRoot) : null;
-  if (!state?.projectPlan) return persisted;
-  const durable = state.projectPlan as ProjectPlan;
-  if (Array.isArray(durable.sitemap) && Array.isArray(durable.components) && durable.styles) return durable;
-  if (!persisted) return durable;
-  return {
-    ...durable,
-    sitemap: persisted.sitemap,
-    components: persisted.components,
-    styles: persisted.styles,
-    pages: durable.pages?.length ? durable.pages : persisted.pages,
-    features: durable.features?.length ? durable.features : persisted.features,
-  };
+  // Once SQLite workflow state exists, it is the only progression authority.
+  // Markdown is consulted only for pre-migration projects with no workflow row.
+  if (state) return state.projectPlan as ProjectPlan | null;
+  return fallbackRoot ? readProjectPlan(fallbackRoot) : null;
 }
 
 function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan | null, fallbackRoot: string | null): SliceState | null {
@@ -525,6 +516,7 @@ function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan |
       backendRequired: plan.backendRequired,
     };
   }
+  if (state) return null;
   return fallbackRoot ? readSliceState(fallbackRoot) : null;
 }
 
@@ -1850,12 +1842,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       if (focusType && !focusId) throw new Error(`${focusType} workspace is missing its durable scope id.`);
       const slicedApplication = mode !== "ask" && !["backend", "style", "page", "component"].includes(rawSliceAction) && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
       const miniLoop = slicedApplication || styleFocus || objectFocus;
-      if (rawSliceAction === "backend" && (previousSlice?.status !== "frontend_complete" || projectPlan?.backendRequired !== true)) throw new Error("Backend planning is available only after an approved frontend completion gate for a site that requires backend work.");
       const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
-      if (slicedApplication && sliceAction === "initial" && previousSlice?.status !== "ready") throw new Error("Review the finished slice before starting another.");
-      if (slicedApplication && previousSlice?.status === "frontend_complete") throw new Error("Frontend is complete. Start backend planning only if the approved project plan requires it.");
-      if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "advance") throw new Error("The current slice is not ready to advance.");
-      if (slicedApplication && previousSlice?.status !== "awaiting_feedback" && sliceAction === "revise") throw new Error("There is no completed slice waiting for revision.");
       const teamPolicy = teamPolicies.load(selectedPath);
       const routed = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
       const websiteFrontend = mode !== "ask" && Boolean(selectedWebsite) && rawSliceAction !== "backend";
@@ -1883,18 +1870,23 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       if (durableWorkflow?.projectPlan && expectedCommandAction && !workflowCommandId) {
         throw new Error(`Core has no pending ${expectedCommandAction} command for this project.`);
       }
-      const startedWorkflow = workflow.start(
-        task,
-        rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : slicedApplication ? "frontend_slice" : "general",
-        slicedApplication
-          ? "Continuing the approved project workflow without repository rediscovery."
-          : objectFocus
-            ? `Planning a focused ${focusType} edit without changing the main frontend slice workflow.`
-            : styleFocus
-              ? "Planning a global style edit without changing the main frontend slice workflow."
-              : "Planning the requested project work.",
-        { commandId: workflowCommandId, feedback: sliceAction === "revise" ? requestText : undefined },
-      );
+      const workflowDetail = slicedApplication
+        ? "Continuing the approved project workflow without repository rediscovery."
+        : objectFocus
+          ? `Planning a focused ${focusType} edit without changing the main frontend slice workflow.`
+          : styleFocus
+            ? "Planning a global style edit without changing the main frontend slice workflow."
+            : "Planning the requested project work.";
+      const startedWorkflow = slicedApplication
+        ? workflow.startFrontendSlice(task, sliceAction, workflowDetail, {
+            commandId: workflowCommandId,
+            feedback: sliceAction === "revise" ? requestText : undefined,
+          })
+        : workflow.start(
+            task,
+            rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : "general",
+            workflowDetail,
+          );
       syncWorkflowProjection(task, startedWorkflow);
       if (selectedPath) appendTaskEvent(task.id, "TASK_REPOSITORY_BOUND", { repositoryPath: selectedPath });
       if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
