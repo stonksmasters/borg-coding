@@ -19,12 +19,11 @@ class MemoryWorkflowStore implements WorkflowStore {
   events: TaskEvent[] = [];
 
   findWorkflow(projectId: string) { return this.workflows.get(projectId) ?? null; }
-  saveWorkflow(state: WorkflowState) { this.workflows.set(state.projectId, state); }
   commitWorkflowMutation(input: WorkflowMutation) {
     if (input.task) this.tasks.set(input.task.id, input.task);
     if (input.approval) this.approvals.set(input.approval.taskId, input.approval);
     if (input.events) this.events.push(...input.events);
-    this.saveWorkflow(input.state);
+    this.workflows.set(input.state.projectId, input.state);
   }
 }
 
@@ -75,6 +74,64 @@ test("WorkflowEngine persists one authoritative project progression", () => {
   assert.equal(decided.workflow.projectPlan?.status, "approved");
   assert.equal(decided.workflow.pendingCommand?.action, "start_slice");
   assert.equal(store.approvals.get(task.id)?.status, "APPROVED");
+});
+
+test("WorkflowEngine owns project-plan revisions instead of trusting caller revision numbers", () => {
+  const store = new MemoryWorkflowStore();
+  const engine = new WorkflowEngine(store);
+  let task = createTask({ id: "plan-v1", projectId: "revision-project", request: "Plan" });
+  engine.start(task, "project_plan");
+  task = engine.transition(task, "CLASSIFYING").task;
+  task = engine.transition(task, "DISCOVERING").task;
+  task = engine.transition(task, "PLANNING").task;
+  const first = engine.setProjectPlan(task, { ...projectPlan(), revision: 77 });
+  assert.equal(first.projectPlan?.revision, 77);
+
+  const approval = createApproval({ id: "revision-reject", taskId: task.id });
+  task = engine.requestApproval(task, approval, "project_plan").task;
+  engine.decideApproval(task, { ...approval, status: "REJECTED", decidedAt: new Date().toISOString() }, "project_plan");
+
+  let revisionTask = createTask({ id: "plan-v2", projectId: "revision-project", request: "Revise plan" });
+  engine.start(revisionTask, "project_plan");
+  revisionTask = engine.transition(revisionTask, "CLASSIFYING").task;
+  revisionTask = engine.transition(revisionTask, "DISCOVERING").task;
+  revisionTask = engine.transition(revisionTask, "PLANNING").task;
+  const second = engine.setProjectPlan(revisionTask, { ...projectPlan(), revision: 999 });
+  assert.equal(second.projectPlan?.revision, 78);
+  assert.equal(second.projectPlan?.status, "proposed");
+});
+
+test("backend planning is gated by the durable completed frontend plan", () => {
+  const store = new MemoryWorkflowStore();
+  const engine = new WorkflowEngine(store);
+  const task = createTask({ id: "backend-too-early", projectId: "backend-project", request: "Build backend" });
+  assert.throws(() => engine.start(task, "backend"), /completed frontend plan/i);
+
+  let planning = createTask({ id: "backend-plan", projectId: "backend-project", request: "Plan site" });
+  engine.start(planning, "project_plan");
+  planning = engine.transition(planning, "CLASSIFYING").task;
+  planning = engine.transition(planning, "DISCOVERING").task;
+  planning = engine.transition(planning, "PLANNING").task;
+  engine.setProjectPlan(planning, { ...projectPlan(), backendRequired: true });
+  const approval = createApproval({ id: "backend-plan-approval", taskId: planning.id });
+  planning = engine.requestApproval(planning, approval, "project_plan").task;
+  const decided = engine.decideApproval(planning, { ...approval, status: "APPROVED", decidedAt: new Date().toISOString() }, "project_plan");
+  assert.throws(
+    () => engine.start(createTask({ id: "backend-before-slices", projectId: "backend-project", request: "Build backend" }), "backend"),
+    /completed frontend plan/i,
+  );
+
+  // The backend gate is based on Core's durable project-plan state.
+  store.workflows.set("backend-project", {
+    ...decided.workflow,
+    taskId: "frontend-complete",
+    projectPlan: { ...decided.workflow.projectPlan!, status: "frontend_complete" },
+    pendingCommand: null,
+    nextAction: "request_feedback",
+  });
+  const backend = engine.start(createTask({ id: "backend-ready", projectId: "backend-project", request: "Build backend" }), "backend");
+  assert.equal(backend.loop, "backend");
+  assert.equal(backend.phase, "backend");
 });
 
 test("WorkflowEngine rejects a stale task from taking project ownership", () => {
