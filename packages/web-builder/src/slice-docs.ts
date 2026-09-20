@@ -95,6 +95,7 @@ export function extractExplicitPageRequirements(brief: string): string[] {
   const add = (value: string) => {
     const cleaned = value
       .replace(/^[\s\-*\d.)]+/, "")
+      .replace(/^(?:and|or)\s+/i, "")
       .replace(/\b(?:pages?|screens?|routes?|views?)\b/gi, "")
       .replace(/\s+/g, " ")
       .trim()
@@ -203,7 +204,7 @@ export type ProjectPlanValidation = PlanCoverageReport;
 export function extractRequiredCapabilities(brief: string): PlanCapability[] {
   const required = new Set<PlanCapability>();
   if (/\b(?:auth(?:entication)?|log\s?in|sign\s?in|roles?|permissions?|protected\s+(?:routes?|pages?|areas?))\b/i.test(brief)) required.add("authentication");
-  if (/\b(?:crud|create\s+(?:and|\/)?\s*(?:edit|update)|edit\s+(?:and|\/)?\s*(?:delete|remove)|add\/edit|create,?\s*edit,?\s*(?:and\s*)?delete|manage\s+(?:jobs?|customers?|users?|records?|inventory|orders?))\b/i.test(brief)) required.add("record_mutation");
+  if (/\b(?:crud|(?:create|add)\s*(?:\/|,|and)?\s*(?:edit|update)(?:\s*(?:\/|,|and)?\s*(?:delete|remove))?|edit\s*(?:\/|,|and)?\s*(?:delete|remove)|manage\s+(?:jobs?|customers?|users?|records?|inventory|orders?))\b/i.test(brief)) required.add("record_mutation");
   if (/\b(?:search|filter(?:ing)?|sort(?:ing)?)\b/i.test(brief)) required.add("search_filtering");
   if (/\b(?:reports?|reporting|analytics|insights|metrics dashboard)\b/i.test(brief)) required.add("reporting");
   if (/\b(?:real[- ]?time|live\s+updates?|websocket|streaming updates?)\b/i.test(brief)) required.add("realtime_updates");
@@ -987,7 +988,7 @@ export function projectDeliveredFrontendCheckpoint(root: string, workflow: Workf
 export function readProjectDocs(root: string): ProjectDoc[] {
   let dir: string;
   try { dir = docsDirectory(root); } catch { return []; }
-  const names = ["README.md", "brief.md", designBriefFile, "site-map.md", "components.md", "styles.md", "plan.md", "current-slice.md", "current-plan.md", "decisions.md", "progress.md", "verification.md", "known-issues.md", "data-contract.md", "handoff.md", "history.md", stateFile, workflowFile];
+  const names = ["README.md", "brief.md", "plan-coverage.md", designBriefFile, "site-map.md", "components.md", "styles.md", "plan.md", "current-slice.md", "current-plan.md", "decisions.md", "progress.md", "verification.md", "known-issues.md", "data-contract.md", "handoff.md", "history.md", stateFile, workflowFile];
   if (existsSync(join(dir, "plans")) && lstatSync(join(dir, "plans")).isDirectory()) names.push(...readdirSync(join(dir, "plans")).filter((name) => name.endsWith(".md")).sort().map((name) => `plans/${name}`));
   return names.flatMap((name) => {
     const path = join(dir, name);
