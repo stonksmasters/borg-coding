@@ -24,6 +24,53 @@ test("workflow state and task transition commit together in SQLite", () => {
   }
 });
 
+test("startup recovery descriptor survives SQLite restart with exact safe action", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-workflow-recovery-descriptor-"));
+  const databasePath = join(root, "borg.db");
+  let repository = new SqliteTaskRepository(databasePath);
+  try {
+    let engine = new WorkflowEngine(repository);
+    let task = createTask({ id: "recover-task", projectId: "recover-project", request: "Build safely" });
+    repository.saveTask(task);
+    engine.start(task, "general");
+    task = engine.transition(task, "CLASSIFYING").task;
+    task = engine.transition(task, "DISCOVERING").task;
+    task = engine.transition(task, "PLANNING").task;
+    const approval = createApproval({ id: "recover-approval", taskId: task.id });
+    task = engine.requestApproval(task, approval, "execution").task;
+    task = engine.decideApproval(task, {
+      ...approval,
+      status: "APPROVED",
+      decidedAt: new Date().toISOString(),
+      worktreePath: "/tmp/recover",
+      baseCommit: "base",
+    }, "execution").task;
+
+    const recovered = engine.markRecoveryRequired(task, {
+      category: "process_interrupted",
+      checkpointId: "checkpoint-interrupted",
+      resumeAction: "inspect_worktree",
+      reason: "Server restarted during implementation.",
+    });
+    assert.equal(recovered.task.state, "RECOVERY_REQUIRED");
+    assert.equal(recovered.workflow.recovery.previousTaskState, "IMPLEMENTING");
+    repository.close();
+
+    repository = new SqliteTaskRepository(databasePath);
+    engine = new WorkflowEngine(repository);
+    const restored = engine.get(task.projectId);
+    assert.equal(restored?.recovery.status, "required");
+    assert.equal(restored?.recovery.category, "process_interrupted");
+    assert.equal(restored?.recovery.checkpointId, "checkpoint-interrupted");
+    assert.equal(restored?.recovery.resumeAction, "inspect_worktree");
+    assert.match(restored?.recovery.reason ?? "", /restarted during implementation/i);
+    assert.equal(restored?.nextAction, "recover");
+  } finally {
+    repository.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("checkpoint continuation keeps task and workflow synchronized across restart", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-workflow-continuation-"));
   const databasePath = join(root, "borg.db");
@@ -87,6 +134,9 @@ test("checkpoint continuation keeps task and workflow synchronized across restar
     assert.equal(restored.workflow.status, "recovery_required");
     assert.equal(restored.workflow.nextAction, "recover");
     assert.equal(restored.workflow.pendingCommand, null);
+    assert.equal(restored.workflow.recovery.status, "required");
+    assert.equal(restored.workflow.recovery.checkpointId, checkpoint.id);
+    assert.equal(restored.workflow.recovery.resumeAction, "replan");
     repository.close();
 
     repository = new SqliteTaskRepository(databasePath);
@@ -94,6 +144,9 @@ test("checkpoint continuation keeps task and workflow synchronized across restar
     assert.equal(repository.findTask(task.id)?.state, "PAUSED");
     assert.equal(engine.get(task.projectId)?.status, "recovery_required");
     assert.equal(engine.get(task.projectId)?.nextAction, "recover");
+    assert.equal(engine.get(task.projectId)?.recovery.status, "required");
+    assert.equal(engine.get(task.projectId)?.recovery.checkpointId, checkpoint.id);
+    assert.equal(engine.get(task.projectId)?.recovery.resumeAction, "replan");
     assert.equal(repository.listContinuations(task.id).at(-1)?.id, continuation.id);
     const event = repository.listEvents(task.id).at(-1);
     assert.equal(event?.type, "TASK_CONTINUED");
