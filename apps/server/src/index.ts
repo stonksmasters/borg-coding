@@ -1718,52 +1718,44 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       if (isProjectPlanApproval) {
         const authoritativePlan = projectPlanFromWorkflow(workflow.get(task.projectId), repositoryPath);
         if (!authoritativePlan) return send(response, 409, { error: "The durable project plan is missing from SQLite." });
-        const approvedProject = approveProjectPlan(repositoryPath, task.id, authoritativePlan);
-        commitBuildDocs(repositoryPath, "Approve BORG frontend phase plan");
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
         const decided = workflow.decideApproval(task, approved, "project_plan");
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
+        const approvedPlan = projectPlanFromWorkflow(decided.workflow, null);
+        if (!approvedPlan) return send(response, 500, { error: "Core approved the project plan without a durable plan snapshot." });
+        const approvedProject = approveProjectPlan(repositoryPath, task.id, approvedPlan);
+        commitBuildDocs(repositoryPath, "Approve BORG frontend phase plan");
         return send(response, 200, { task, approval: approved, workflow: decided.workflow, projectPlanApproved: true, projectPlan: approvedProject.plan, slice: approvedProject.state });
       }
       const worktree = await worktrees.create(repositoryPath, task.id);
       const sliceIntent = tasks.listEvents(task.id).findLast((event) => event.type === "FRONTEND_SLICE_SELECTED")?.payload as { action?: SliceAction; feedback?: string } | undefined;
+      const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: worktree.path, baseCommit: worktree.baseCommit };
+      const decided = workflow.decideApproval(task, approved, "execution");
+      task = decided.task;
+      syncWorkflowProjection(task, decided.workflow);
+      let workflowState = decided.workflow;
       let preparedSlice: SliceState | null = null;
       if (sliceIntent) {
+        workflowState = workflow.activateSlice(task);
+        syncWorkflowProjection(task, workflowState);
         const website = websiteInfo(worktree.path);
-        const approvedPlan = tasks.listEvents(task.id).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+        const approvedPlanText = tasks.listEvents(task.id).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
         if (website) {
-          const authoritativeWorkflow = workflow.get(task.projectId);
-          const authoritativePlan = projectPlanFromWorkflow(authoritativeWorkflow, worktree.path);
-          const authoritativeSlice = sliceStateFromWorkflow(authoritativeWorkflow, authoritativePlan, worktree.path);
-          const preparationState = authoritativeSlice
-            ? { ...authoritativeSlice, status: (sliceIntent.action === "initial" ? "ready" : "awaiting_feedback") as SliceState["status"] }
-            : null;
+          const authoritativePlan = projectPlanFromWorkflow(workflowState, null);
+          const authoritativeSlice = sliceStateFromWorkflow(workflowState, authoritativePlan, null);
+          if (!authoritativePlan || !authoritativeSlice) throw new Error("Core did not provide the selected frontend slice after execution approval.");
           preparedSlice = prepareSlice(
             worktree.path,
             website.originalBrief || task.request,
             sliceIntent.action ?? "initial",
             sliceIntent.feedback ?? "",
             task.id,
-            typeof approvedPlan === "string" ? approvedPlan : "",
-            authoritativePlan && preparationState ? { plan: authoritativePlan, state: preparationState } : undefined,
+            typeof approvedPlanText === "string" ? approvedPlanText : "",
+            { plan: authoritativePlan, state: authoritativeSlice },
           );
-          setFrontendWorkflowStage(worktree.path, "slice_implementing", { currentSlice: preparedSlice.current, totalSlices: preparedSlice.total, taskId: task.id, detail: "Slice mini-plan approved automatically from the outer frontend approval. Implementation is starting." });
+          setFrontendWorkflowStage(worktree.path, "slice_implementing", { currentSlice: preparedSlice.current, totalSlices: preparedSlice.total, taskId: task.id, detail: "Core selected the slice and implementation is starting inside its bounded mini-loop." });
         }
-      }
-      const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: worktree.path, baseCommit: worktree.baseCommit };
-      const decided = workflow.decideApproval(task, approved, "execution");
-      task = decided.task;
-      syncWorkflowProjection(task, decided.workflow);
-      let workflowState = decided.workflow;
-      if (preparedSlice) {
-        workflowState = workflow.slice(task, {
-          index: preparedSlice.current,
-          total: preparedSlice.total,
-          title: preparedSlice.currentTitle,
-          status: "running",
-        });
-        syncWorkflowProjection(task, workflowState);
       }
       recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: `Implementation plan approved at base commit ${worktree.baseCommit}.`, taskId: task.id, path: null, line: null, createdAt: approved.decidedAt! });
       createCheckpointSnapshot(task, "pre_edit", { mode: recordedMode(task.id) });
@@ -2072,12 +2064,13 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         writeEvent(response, { type: "message.delta", taskId: task.id, text: answer });
         finishRole(architectAssignment, "completed", emit);
         appendTaskEvent(task.id, "MODEL_RESPONSE_COMPLETED", { runtime: "ollama", model: architectModel, role: "architect", answer, usedTools });
-        const proposedProjectPlan = projectPlanning && websiteProject
-          ? persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template), task.id)
-          : null;
-        if (proposedProjectPlan) {
-          const planWorkflow = workflow.setProjectPlan(task, proposedProjectPlan);
+        let proposedProjectPlan: ProjectPlan | null = null;
+        if (projectPlanning && websiteProject) {
+          const parsedPlan = parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template);
+          const planWorkflow = workflow.setProjectPlan(task, parsedPlan);
           syncWorkflowProjection(task, planWorkflow);
+          proposedProjectPlan = planWorkflow.projectPlan as ProjectPlan;
+          persistProposedProjectPlan(websiteProject.path, websiteProject.originalBrief || requestText, proposedProjectPlan, task.id);
           appendTaskEvent(task.id, "PROJECT_PLAN_PROPOSED", { plan: proposedProjectPlan, workflowVersion: planWorkflow.version });
           emit({ type: "project.plan.proposed", plan: proposedProjectPlan });
         }
