@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { compileFocusedFrontendContext, compileFrontendContext } from "../packages/web-builder/src/context-compiler.ts";
+import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext } from "../packages/web-builder/src/context-compiler.ts";
 import { readProjectModel, updateVerifiedProjectModel, writeProjectModel } from "../packages/web-builder/src/project-model.ts";
 import { approveProjectPlan, fallbackProjectPlan, persistProposedProjectPlan, persistDesignBrief } from "../packages/web-builder/src/slice-docs.ts";
 import { SqliteTaskRepository } from "../packages/persistence/src/sqlite-task-repository.ts";
@@ -57,6 +57,10 @@ test("approved website state yields scoped, durable context and registries", () 
     assert.match(compiled.text, /ProductCard/);
     assert.doesNotMatch(compiled.text, /UnrelatedChart/);
     assert.ok(compiled.characters <= compiled.budgetCharacters);
+    assert.equal(compiled.authority, "workflow");
+    assert.equal(compiled.profile.kind, "component");
+    assert.match(compiled.fingerprint, /^[a-f0-9]{64}$/);
+    assert.ok(compiled.manifest.some((item) => item.path === "@borg/project-plan" && item.kind === "authority" && item.required));
     assert.ok(compiled.manifest.some((item) => item.path === "src/components/ProductCard.tsx" && item.reason.includes("Registered")));
     updateVerifiedProjectModel(root, ["src/components/ProductCard.tsx"]);
     assert.equal(readProjectModel(root).components.find((item) => item.id === "product-card")?.status, "verified");
@@ -112,6 +116,88 @@ test("focused page and component context includes direct scope without unrelated
     assert.match(componentContext.text, /Hero\.tsx/);
     assert.doesNotMatch(componentContext.text, /UnrelatedChart/);
     assert.equal(componentContext.sliceId, "component:hero");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("context source hints replace broad repository scanning when registry mappings are empty", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-context-hints-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "Catalog.tsx"), "export function Catalog() { return <main>Catalog products</main>; }");
+    writeFileSync(join(root, "src", "UnrelatedCatalogChart.tsx"), "export function UnrelatedCatalogChart() { return <aside>Unrelated catalog analytics</aside>; }");
+
+    const plan = fallbackProjectPlan("Build a product catalog", "ecommerce");
+    persistProposedProjectPlan(root, "Build a product catalog", plan, "plan-task");
+    approveProjectPlan(root, "plan-task");
+    const approvedPlan = { ...plan, status: "approved" as const, approvedAt: new Date().toISOString() };
+    const state = {
+      version: 2 as const,
+      current: 1,
+      total: approvedPlan.slices.length,
+      currentTitle: approvedPlan.slices[1].title,
+      status: "working" as const,
+      brief: approvedPlan.slices[1].outcome,
+      lastTaskId: "slice-task",
+      feedback: [],
+      planRevision: approvedPlan.revision,
+      backendRequired: approvedPlan.backendRequired,
+    };
+
+    const first = compileFrontendContext({
+      root,
+      phase: "frontend",
+      sliceIndex: 1,
+      authority: { plan: approvedPlan, state, workflowVersion: 9 },
+      sourceHints: ["src/Catalog.tsx"],
+      stage: "planning",
+    });
+    const second = compileFrontendContext({
+      root,
+      phase: "frontend",
+      sliceIndex: 1,
+      authority: { plan: approvedPlan, state, workflowVersion: 9 },
+      sourceHints: ["src/Catalog.tsx"],
+      stage: "planning",
+    });
+
+    assert.match(first.text, /Catalog products/);
+    assert.doesNotMatch(first.text, /Unrelated catalog analytics/);
+    assert.equal(first.fingerprint, second.fingerprint);
+    assert.equal(first.profile.workflowVersion, 9);
+    assert.ok(first.manifest.some((item) => item.path === "src/Catalog.tsx" && /dependency|symbol/i.test(item.reason)));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("styles context uses canonical style authority without dragging unrelated component source", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-style-context-"));
+  try {
+    mkdirSync(join(root, "src", "components"), { recursive: true });
+    writeFileSync(join(root, "src", "styles.css"), ":root { --accent: rebeccapurple; }");
+    writeFileSync(join(root, "src", "components", "Hero.tsx"), "export function Hero() { return <section>Hero internals</section>; }");
+
+    const plan = fallbackProjectPlan("Build a premium marketing site", "saas-landing");
+    plan.styles = { ...plan.styles, direction: "Obsidian editorial with lavender accents" };
+    persistProposedProjectPlan(root, "Build a premium marketing site", plan, "plan-task");
+    approveProjectPlan(root, "plan-task");
+    const approvedPlan = { ...plan, status: "approved" as const, approvedAt: new Date().toISOString() };
+
+    const model = readProjectModel(root);
+    if (model.components[0]) model.components[0].files = ["src/components/Hero.tsx"];
+    writeProjectModel(root, model);
+
+    const pack = compileStyleFrontendContext({
+      root,
+      authority: { plan: approvedPlan, workflowVersion: 12 },
+      sourceHints: ["src/styles.css"],
+      stage: "execution",
+    });
+
+    assert.equal(pack.profile.kind, "styles");
+    assert.equal(pack.sliceId, "styles:global");
+    assert.match(pack.text, /Obsidian editorial with lavender accents/);
+    assert.match(pack.text, /rebeccapurple/);
+    assert.doesNotMatch(pack.text, /Hero internals/);
+    assert.ok(pack.manifest.some((item) => item.path === "@borg/style-system" && item.kind === "authority"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -206,6 +292,45 @@ test("exact model input and manifest survive reopening the local task database",
     const reopened = new SqliteTaskRepository(path);
     assert.equal(reopened.listModelContexts("context-task").length, 1);
     assert.equal(reopened.findModelContext("context-task", "context-one")?.inputText, "{\"messages\":[\"exact\"]}");
+    reopened.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("compiled context packs survive reopening SQLite independently of exact model requests", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-context-pack-db-"));
+  const path = join(root, "tasks.sqlite");
+  try {
+    const first = new SqliteTaskRepository(path);
+    first.saveTask(createTask({ id: "pack-task", projectId: "site", request: "Build the hero" }));
+    const pack = {
+      version: 1 as const,
+      profile: {
+        version: 1 as const,
+        kind: "component" as const,
+        stage: "planning" as const,
+        id: "component:hero",
+        phase: "frontend" as const,
+        planRevision: 3,
+        workflowVersion: 14,
+        sliceIndex: null,
+        sliceId: null,
+        scope: { type: "component" as const, id: "hero" },
+      },
+      authority: "workflow" as const,
+      sliceId: "component:hero",
+      text: "scoped context",
+      manifest: [],
+      characters: 14,
+      budgetCharacters: 48000,
+      fingerprint: "a".repeat(64),
+    };
+    first.saveContextPack({ id: "pack-one", taskId: "pack-task", projectId: "site", pack, createdAt: new Date().toISOString() });
+    first.close();
+
+    const reopened = new SqliteTaskRepository(path);
+    assert.equal(reopened.listContextPacks("pack-task").length, 1);
+    assert.equal(reopened.findContextPack("pack-task", "pack-one")?.pack.profile.id, "component:hero");
+    assert.equal(reopened.findLatestContextPack("site", "component:hero")?.pack.fingerprint, "a".repeat(64));
     reopened.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
