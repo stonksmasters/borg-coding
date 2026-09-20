@@ -1996,32 +1996,41 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           repositoryContext += `\n\nExisting proposed plan to revise explicitly:\n${planningDocs}`;
         }
       } else if (objectFocus && focusType && websiteProject && projectPlan) {
-        compiledArchitectContext = compileFocusedFrontendContext({
-          root: websiteProject.path,
-          scope: { type: focusType, id: focusId },
-          productContract: websiteContext,
-          authority: { plan: projectPlan },
-        });
-        repositoryContext = compiledArchitectContext.text;
         const scopedRegistry = focusType === "page"
           ? projectPlan.sitemap.find((page) => page.id === focusId)
           : projectPlan.components.find((component) => component.id === focusId);
         const scopeName = scopedRegistry?.name ?? focusId;
-        sliceDirective = `FOCUSED ${focusType.toUpperCase()} WORKSPACE — ${scopeName} [${focusId}]. This is an isolated maintenance workspace inside an already-approved website. Work only on the selected ${focusType} and its direct dependencies. Preserve the approved global style system, sitemap, unrelated pages, unrelated components, application behavior outside this scope, and shared contracts. If the requested change would require a structural or global-style change, explain that boundary instead of silently broadening scope. Use the focused registry and targeted source context below; do not rediscover or re-plan the whole repository.`;
+        compiledArchitectContext = compileFocusedFrontendContext({
+          root: websiteProject.path,
+          scope: { type: focusType, id: focusId },
+          productContract: websiteContext,
+          projectBrief: websiteProject.originalBrief,
+          sourceHints: contextSourceHints(websiteProject.path, [requestText, scopeName, scopedRegistry?.purpose ?? ""].join(" ")),
+          stage: "planning",
+          authority: { plan: projectPlan, workflowVersion: startedWorkflow.version },
+        });
+        repositoryContext = compiledArchitectContext.text;
+        sliceDirective = `FOCUSED ${focusType.toUpperCase()} WORKSPACE — ${scopeName} [${focusId}]. This is an isolated maintenance workspace inside an already-approved website. Work only on the selected ${focusType} and its direct dependencies. Preserve the approved global style system, sitemap, unrelated pages, unrelated components, application behavior outside this scope, and shared contracts. If the requested change would require a structural or global-style change, explain that boundary instead of silently broadening scope. Use the focused ContextPack below; do not rediscover or re-plan the whole repository.`;
       } else if (styleFocus && websiteProject && projectPlan) {
-        const docs = readProjectDocs(websiteProject.path);
-        const styleContext = ["styles.md", "design-brief.md", "site-map.md", "components.md", "decisions.md"]
-          .flatMap((name) => docs.filter((doc) => doc.path.endsWith(`/${name}`)))
-          .map((doc) => `${doc.path}\n${doc.content.slice(0, 5000)}`).join("\n\n").slice(0, 24_000);
-        sliceDirective = `GLOBAL STYLE WORKSPACE. The approved sitemap, component responsibilities, content hierarchy, routes, behavior, and data contracts are fixed scope boundaries. Work only on the website-wide visual system: shared color tokens, typography, spacing, radii, shadows, layout rhythm, global responsive rules, motion, and accessibility styling. Prefer shared theme/token/style primitives over component-by-component one-off patches. Do not add/remove pages, rewrite product behavior, redesign information architecture, or change component responsibilities unless the operator explicitly says the style request requires it. Verify the result across representative pages and mobile/desktop widths.\n\nApproved global style context:\n${styleContext}`;
-        repositoryContext = `STYLE FOCUS: use the approved style/design docs and targeted source reads. Do not rediscover or replan the whole website.\n\n${styleContext}`;
+        compiledArchitectContext = compileStyleFrontendContext({
+          root: websiteProject.path,
+          productContract: websiteContext,
+          projectBrief: websiteProject.originalBrief,
+          sourceHints: contextSourceHints(websiteProject.path, `global styles theme typography spacing color layout responsive motion ${requestText}`),
+          stage: "planning",
+          authority: { plan: projectPlan, workflowVersion: startedWorkflow.version },
+        });
+        repositoryContext = compiledArchitectContext.text;
+        sliceDirective = "GLOBAL STYLE WORKSPACE. The approved sitemap, component responsibilities, content hierarchy, routes, behavior, and data contracts are fixed scope boundaries. Work only on the website-wide visual system: shared color tokens, typography, spacing, radii, shadows, layout rhythm, global responsive rules, motion, and accessibility styling. Prefer shared theme/token/style primitives over component-by-component one-off patches. Do not add/remove pages, rewrite product behavior, redesign information architecture, or change component responsibilities unless the operator explicitly says the style request requires it. Use the global Styles ContextPack below; do not rediscover or re-plan the whole website.";
       } else if (slicedApplication && websiteProject && projectPlan && previousSlice) {
         const selectedIndex = startedWorkflow.sliceIndex;
         if (selectedIndex === null) throw new Error("Core did not select a frontend slice for this mini-loop.");
+        const selectedSlice = projectPlan.slices[selectedIndex];
+        if (!selectedSlice) throw new Error(`Core-selected frontend slice ${selectedIndex + 1} is missing from the approved plan.`);
         const plannedSlice: SliceState = {
           ...previousSlice,
           current: selectedIndex,
-          currentTitle: startedWorkflow.sliceTitle ?? projectPlan.slices[selectedIndex]?.title ?? previousSlice.currentTitle,
+          currentTitle: startedWorkflow.sliceTitle ?? selectedSlice.title,
           status: "working",
         };
         sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
@@ -2029,11 +2038,15 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           root: websiteProject.path,
           phase: "frontend",
           sliceIndex: selectedIndex,
-          authority: { plan: projectPlan, state: plannedSlice },
+          authority: { plan: projectPlan, state: plannedSlice, workflowVersion: startedWorkflow.version },
           productContract: websiteContext,
+          projectBrief: websiteProject.originalBrief,
+          sourceHints: contextSourceHints(websiteProject.path, [requestText, selectedSlice.title, selectedSlice.outcome, ...selectedSlice.scope].join(" ")),
+          stage: "planning",
         });
         repositoryContext = compiledArchitectContext.text;
       }
+      if (compiledArchitectContext) recordContextPack(task.id, authorityProjectId, compiledArchitectContext);
       if (rawSliceAction === "backend" && websiteProject) {
         const docs = readProjectDocs(websiteProject.path);
         const handoff = ["data-contract.md", "handoff.md", "decisions.md", "brief.md", "progress.md"]
