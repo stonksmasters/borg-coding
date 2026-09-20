@@ -740,7 +740,12 @@ const server = createServer((request, response) => {
     if (!root) return send(response, 200, { docs: [], slice: null });
     const events = tasks.listEvents(taskId);
     const independentWorkspace = events.some((event) => event.type === "STYLE_WORKSPACE_SELECTED" || event.type === "FOCUSED_WORKSPACE_SELECTED");
-    return send(response, 200, { docs: readProjectDocs(root), slice: independentWorkspace ? null : readSliceState(root) });
+    const ownedWorkflow = workflow.get(task.projectId)?.taskId === task.id ? workflow.get(task.projectId) : null;
+    const authorityProjectId = taskWorkflowAuthorityProjectId(task.id) ?? task.projectId;
+    const authorityWorkflow = workflow.get(authorityProjectId);
+    const plan = projectPlanFromWorkflow(authorityWorkflow ?? ownedWorkflow, root);
+    const slice = independentWorkspace ? null : sliceStateFromWorkflow(ownedWorkflow, plan, root);
+    return send(response, 200, { docs: readProjectDocs(root), slice });
   }
   const taskPreviewRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/preview$/);
   if (request.method === "POST" && taskPreviewRoute) {
