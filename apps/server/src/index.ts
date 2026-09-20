@@ -1119,7 +1119,7 @@ const server = createServer((request, response) => {
         sliceIndex: sliceState.current,
         authority: { plan: projectPlan, state: sliceState, workflowVersion: contextWorkflowVersion },
         productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief,
+        projectBrief: websiteProject?.originalBrief ?? undefined,
         sourceHints: contextSourceHints(contextHintRoot, [task.request, selectedSlice.title, selectedSlice.outcome, ...selectedSlice.scope].join(" ")),
         stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
       }) : null;
@@ -1127,7 +1127,7 @@ const server = createServer((request, response) => {
         root: approvedWorktreePath,
         scope: focusedExecutionScope,
         productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief,
+        projectBrief: websiteProject?.originalBrief ?? undefined,
         sourceHints: contextSourceHints(contextHintRoot, [task.request, focusedEntity?.name ?? "", focusedEntity?.purpose ?? ""].join(" ")),
         stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
         authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
@@ -1135,7 +1135,7 @@ const server = createServer((request, response) => {
       const compiledStyle = styleWorkspace && projectPlan ? compileStyleFrontendContext({
         root: approvedWorktreePath,
         productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief,
+        projectBrief: websiteProject?.originalBrief ?? undefined,
         sourceHints: contextSourceHints(contextHintRoot, `global styles theme typography spacing color layout responsive motion ${task.request}`),
         stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
         authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
@@ -2042,7 +2042,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           root: websiteProject.path,
           scope: { type: focusType, id: focusId },
           productContract: websiteContext,
-          projectBrief: websiteProject.originalBrief,
+          projectBrief: websiteProject.originalBrief ?? undefined,
           sourceHints: contextSourceHints(websiteProject.path, [requestText, scopeName, scopedRegistry?.purpose ?? ""].join(" ")),
           stage: "planning",
           authority: { plan: projectPlan, workflowVersion: startedWorkflow.version },
@@ -2053,7 +2053,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         compiledArchitectContext = compileStyleFrontendContext({
           root: websiteProject.path,
           productContract: websiteContext,
-          projectBrief: websiteProject.originalBrief,
+          projectBrief: websiteProject.originalBrief ?? undefined,
           sourceHints: contextSourceHints(websiteProject.path, `global styles theme typography spacing color layout responsive motion ${requestText}`),
           stage: "planning",
           authority: { plan: projectPlan, workflowVersion: startedWorkflow.version },
@@ -2078,7 +2078,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           sliceIndex: selectedIndex,
           authority: { plan: projectPlan, state: plannedSlice, workflowVersion: startedWorkflow.version },
           productContract: websiteContext,
-          projectBrief: websiteProject.originalBrief,
+          projectBrief: websiteProject.originalBrief ?? undefined,
           sourceHints: contextSourceHints(websiteProject.path, [requestText, selectedSlice.title, selectedSlice.outcome, ...selectedSlice.scope].join(" ")),
           stage: "planning",
         });
