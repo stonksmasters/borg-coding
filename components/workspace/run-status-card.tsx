@@ -58,7 +58,7 @@ export function RunStatusCard({ run, active }: { run: RunView; active: boolean }
 
     <div className="mt-3 grid gap-2 text-[11px] text-slate-500 sm:grid-cols-2">
       <p className="truncate"><span className="text-slate-300">Now:</span> {run.currentAction.replaceAll("_", " ")}</p>
-      <p className="truncate"><span className="text-slate-300">Next:</span> {run.recovery?.resumeAction ?? run.blocker?.action ?? run.nextAction}</p>
+      <p className="truncate"><span className="text-slate-300">Next:</span> {run.blocker?.action ?? run.recovery?.resumeAction ?? run.nextAction}</p>
       <p><span className="text-slate-300">Technical verification:</span> {run.verification.status}</p>
       <p><span className="text-slate-300">Visual / product quality:</span> {run.verification.visualStatus ?? "pending"}</p>
       <p className="flex items-center gap-1.5 sm:col-span-2"><span className="text-slate-300">State:</span>{blocked ? <TriangleAlert className="size-3 text-red-300" /> : run.stage === "ready" ? <Check className="size-3 text-[#a7ff4f]" /> : <Circle className="size-3 text-slate-500" />}{run.stage.replaceAll("_", " ")}</p>
