@@ -10,6 +10,7 @@ export interface RunView {
   detail: string;
   currentAction: string;
   verification: { status: "pending" | "passed" | "failed"; visualStatus: string | null };
+  recovery: { status: string; category: string | null; previousTaskState: string | null; checkpointId: string | null; resumeAction: string; reason: string } | null;
   repair: { attempt: number; maximum: number | null } | null;
   blocker: { title: string; detail: string; action: string } | null;
   nextAction: string;
@@ -37,6 +38,7 @@ export function RunStatusCard({ run, active }: { run: RunView; active: boolean }
           <p className={`text-sm font-semibold ${blocked ? "text-red-100" : "text-[#d9ffb5]"}`}>{run.headline}</p>
           {run.slice && <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-400">Slice {run.slice.index + 1}/{run.slice.total}</span>}
           {run.repair && <span className="rounded bg-amber-200/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-100">Repair {run.repair.attempt}{run.repair.maximum ? `/${run.repair.maximum}` : ""}</span>}
+          {run.recovery && <span className="rounded bg-red-200/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-red-100">{run.recovery.category ?? "recovery"}</span>}
         </div>
         <p className="mt-1 text-xs leading-5 text-slate-400">{run.blocker?.detail ?? run.detail}</p>
         {run.slice?.outcome && <p className="mt-2 text-[11px] leading-5 text-slate-500"><span className="text-slate-300">Outcome:</span> {run.slice.outcome}</p>}
@@ -56,7 +58,7 @@ export function RunStatusCard({ run, active }: { run: RunView; active: boolean }
 
     <div className="mt-3 grid gap-2 text-[11px] text-slate-500 sm:grid-cols-2">
       <p className="truncate"><span className="text-slate-300">Now:</span> {run.currentAction.replaceAll("_", " ")}</p>
-      <p className="truncate"><span className="text-slate-300">Next:</span> {run.blocker?.action ?? run.nextAction}</p>
+      <p className="truncate"><span className="text-slate-300">Next:</span> {run.recovery?.resumeAction ?? run.blocker?.action ?? run.nextAction}</p>
       <p><span className="text-slate-300">Verification:</span> {run.verification.status}{run.verification.visualStatus ? ` · visual ${run.verification.visualStatus}` : ""}</p>
       <p className="flex items-center gap-1.5"><span className="text-slate-300">State:</span>{blocked ? <TriangleAlert className="size-3 text-red-300" /> : run.stage === "ready" ? <Check className="size-3 text-[#a7ff4f]" /> : <Circle className="size-3 text-slate-500" />}{run.stage.replaceAll("_", " ")}</p>
     </div>
