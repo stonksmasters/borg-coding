@@ -1,0 +1,18 @@
+{
+  "name": "BORG Remote",
+  "short_name": "BORG",
+  "description": "LAN remote control for BORG Code.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#080a0f",
+  "theme_color": "#0a0d12",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

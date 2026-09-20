@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0d12" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="LAN remote control for BORG Code." />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+  <title>BORG Remote</title>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">BORG CODE</p>
+        <h1>Remote</h1>
+      </div>
+      <div class="connection"><span id="connectionDot" class="dot"></span><span id="connectionText">Connecting</span></div>
+    </header>
+
+    <section id="localSetup" class="card setup-card hidden" aria-live="polite"></section>
+
+    <section id="pairCard" class="card pair-card">
+      <p class="eyebrow">PAIR DEVICE</p>
+      <h2>Connect to this computer</h2>
+      <p class="muted">Enter the six-digit code shown by BORG on your PC. Pairing is valid until BORG restarts or the session expires.</p>
+      <form id="pairForm" class="pair-form">
+        <label for="pairCode">Pairing code</label>
+        <input id="pairCode" name="pairCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000" required />
+        <button class="primary" type="submit">Connect</button>
+      </form>
+      <p id="pairError" class="error" role="alert"></p>
+    </section>
+
+    <section id="app" class="app hidden">
+      <nav class="session-bar" aria-label="BORG sessions">
+        <div class="session-title-row">
+          <div>
+            <p class="eyebrow">SESSIONS</p>
+            <h2 id="activeSessionTitle">Choose a session</h2>
+          </div>
+          <button id="refreshButton" class="icon-button" type="button" aria-label="Refresh">↻</button>
+        </div>
+        <div id="sessionList" class="session-list"></div>
+      </nav>
+
+      <section class="status-grid">
+        <article class="card metric">
+          <span class="label">Task</span>
+          <strong id="taskState">Idle</strong>
+          <span id="taskId" class="mono subtle">No active task</span>
+        </article>
+        <article class="card metric">
+          <span class="label">Workflow</span>
+          <strong id="workflowState">—</strong>
+          <span id="workflowNext" class="subtle">No next action</span>
+        </article>
+        <article class="card metric">
+          <span class="label">Slice</span>
+          <strong id="sliceState">—</strong>
+          <span id="runtimeState" class="subtle">Runtime idle</span>
+        </article>
+        <article class="card metric">
+          <span class="label">Diagnostics</span>
+          <strong id="diagnosticState">—</strong>
+          <span id="diagnosticDetail" class="subtle">No snapshot</span>
+        </article>
+      </section>
+
+      <section id="approvalCard" class="card action-card hidden">
+        <div>
+          <p class="eyebrow">ACTION REQUIRED</p>
+          <h2 id="approvalTitle">Approval requested</h2>
+          <p id="approvalDetail" class="muted">BORG is waiting for your decision.</p>
+        </div>
+        <div class="button-row">
+          <button id="rejectButton" class="secondary danger" type="button">Reject</button>
+          <button id="approveButton" class="primary" type="button">Approve</button>
+        </div>
+      </section>
+
+      <section class="card transcript-card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">CHAT</p>
+            <h2>Session transcript</h2>
+          </div>
+          <span id="messageCount" class="pill">0</span>
+        </div>
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <form id="messageForm" class="composer">
+          <textarea id="messageInput" rows="3" placeholder="Message BORG…" required></textarea>
+          <div class="composer-actions">
+            <button id="stopButton" class="secondary danger" type="button">Stop</button>
+            <button id="retryButton" class="secondary hidden" type="button">Retry</button>
+            <button id="sendButton" class="primary" type="submit">Send</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card activity-card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">CONTROL PLANE</p>
+            <h2>Recent activity</h2>
+          </div>
+          <span id="lastUpdated" class="subtle">—</span>
+        </div>
+        <div id="activity" class="activity"></div>
+      </section>
+
+      <footer>
+        <button id="logoutButton" class="link-button" type="button">Unpair this phone</button>
+      </footer>
+    </section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
