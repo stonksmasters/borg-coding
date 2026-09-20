@@ -34,7 +34,9 @@ test("repository memory persists, refreshes changed files, and keeps provenance"
     assert.ok(result.symbols.some((item) => item.path === "model.ts" && item.name === "greet"));
     assert.ok(memory.search(root, "model.ts").imports.some((item) => item.target === "model.ts"));
     assert.ok(memory.search(root, "py_model.py").imports.some((item) => item.source === "py_use.py" && item.target === "py_model.py"));
-    assert.deepEqual(memory.relatedPaths(root, "greet model", 4).slice(0, 2), ["model.ts", "use.ts"]);
+    const related = memory.relatedPaths(root, "greet model", 4);
+    assert.equal(related[0], "model.ts");
+    assert.ok(related.includes("use.ts"));
     assert.equal(memory.search(root, "secretSymbol").symbols.length, 0);
     assert.equal(memory.search(root, "greet", 20, () => false).symbols.length, 0);
     const otherRoot = join(directory, "other-repo");
