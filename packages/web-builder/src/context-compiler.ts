@@ -257,10 +257,10 @@ function compileContextPack(input: InternalInput): CompiledContext {
   };
 
   if (input.productContract?.trim()) {
-    add("contract", "@borg/website-product-contract", "Pinned website product contract", bounded(input.productContract, 10_000), true);
+    add("contract", "@borg/website-product-contract", "Pinned website product contract", bounded(input.productContract, 8_000), true);
   }
 
-  const projectBrief = input.projectBrief?.trim() || optionalProjection(input.root, "brief.md", 6_000);
+  const projectBrief = input.projectBrief?.trim() || optionalProjection(input.root, "brief.md", 4_000);
   if (projectBrief) add(input.projectBrief?.trim() ? "authority" : "projection", "@borg/project-brief", "Original project brief", projectBrief, Boolean(input.projectBrief?.trim()));
 
   add("authority", "@borg/project-plan", "Durable approved project constraints", bounded(JSON.stringify({
@@ -272,9 +272,9 @@ function compileContextPack(input: InternalInput): CompiledContext {
     visualDirection: plan.visualDirection,
     acceptanceCriteria: plan.acceptanceCriteria,
     backendRequired: plan.backendRequired,
-  }, null, 2), 9_000), true);
+  }, null, 2), 4_500), true);
 
-  add("authority", "@borg/style-system", "Durable global style system", bounded(JSON.stringify(plan.styles, null, 2), 7_000), true);
+  add("authority", "@borg/style-system", "Durable global style system", bounded(JSON.stringify(plan.styles, null, 2), 5_000), true);
 
   if (input.profileKind === "slice") {
     add("authority", "@borg/current-work", "Core-selected frontend slice", bounded(JSON.stringify({
@@ -283,7 +283,7 @@ function compileContextPack(input: InternalInput): CompiledContext {
       slice,
       status: state?.status ?? "working",
       feedback: state?.feedback ?? [],
-    }, null, 2), 8_000), true);
+    }, null, 2), 4_500), true);
   } else if (scope?.type === "page") {
     add("authority", "@borg/current-work", "Selected page workspace boundary", bounded(JSON.stringify(
       plan.sitemap.find((item) => item.id === scope.id) ?? registry.pages[0] ?? { id: scope.id },
@@ -307,8 +307,8 @@ function compileContextPack(input: InternalInput): CompiledContext {
   const design = readPersistedDesignBrief(input.root);
   if (design) add("projection", ".localcode/build/design-brief.md", "Persisted approved design direction", bounded(JSON.stringify(design, null, 2), 6_000));
 
-  add("registry", ".localcode/build/pages.json", input.profileKind === "styles" ? "Project page inventory" : "Pages relevant to this context", bounded(JSON.stringify(registry.pages, null, 2), 6_000), true);
-  add("registry", ".localcode/build/components.json", input.profileKind === "styles" ? "Project component inventory" : "Components relevant to this context", bounded(JSON.stringify(registry.components, null, 2), 7_000), true);
+  add("registry", ".localcode/build/pages.json", input.profileKind === "styles" ? "Project page inventory" : "Pages relevant to this context", bounded(JSON.stringify(registry.pages, null, 2), 4_500), true);
+  add("registry", ".localcode/build/components.json", input.profileKind === "styles" ? "Project component inventory" : "Components relevant to this context", bounded(JSON.stringify(registry.components, null, 2), 5_500), true);
 
   const decisions = optionalProjection(input.root, "decisions.md", 3_500, true);
   if (decisions) add("projection", ".localcode/build/decisions.md", "Recent durable project decisions", decisions);
