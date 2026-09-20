@@ -1746,6 +1746,7 @@ const server = createServer((request, response) => {
           emit({ type: "stage.updated", stage: "Visual Direction", status: "active" });
           appendTaskEvent(taskId, "DESIGN_REVIEW_STARTED", { provider: policy.provider, model: policy.model, attempt: task.attempts });
           emit({ type: "design.review.started", provider: policy.provider, model: policy.model });
+          const visualReviewSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
           designReview = await visualDirector.review({
             taskId,
             request: [task.request, activeSlicePrompt].filter(Boolean).join("\n\n"),
@@ -1753,6 +1754,15 @@ const server = createServer((request, response) => {
             browserEvidence: verification.browserEvidence,
             brief: designBrief,
             policy,
+            scope: {
+              currentSlice: visualReviewSlice ? {
+                id: visualReviewSlice.id,
+                title: visualReviewSlice.title,
+                outcome: visualReviewSlice.outcome,
+                scope: visualReviewSlice.scope,
+              } : null,
+              projectPages: projectPlan?.sitemap.map((page) => ({ id: page.id, name: page.name, route: page.route })) ?? [],
+            },
             onRequestBody: (body) => recordModelInput(taskId, "visual_director", policy.model, compiledSlice?.sliceId ?? null, [], body),
           });
           appendTaskEvent(taskId, designReview.status === "pass" || designReview.status === "repair" ? "DESIGN_REVIEW_COMPLETED" : "DESIGN_REVIEW_BLOCKED", {
@@ -1765,42 +1775,202 @@ const server = createServer((request, response) => {
             finishRole(activeRoleAssignment, "completed", emit);
             activeRoleAssignment = null;
             emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
-            const refinements = designRefinementCount(taskId);
-            if (refinements >= maxDesignRefinements) {
-              setExecutionState("BLOCKED");
-              task = transitionTask(task, "BLOCKED", emit);
-              appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", { refinements, maximum: maxDesignRefinements, review: designReview });
-              emit({ type: "stream.blocked", message: `Visual Director still requires refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
-              response.end();
-              return;
-            }
-            const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
-            const scopeConflict = designReviewScopeConflict(designReview, activeSlice, projectPlan);
-            if (scopeConflict) {
-              setExecutionState("BLOCKED");
+
+            const requiresPlanRevision = designReview.repairScope === "cross_slice" || designReview.repairScope === "project_plan";
+            if (requiresPlanRevision) {
+              if (!projectPlan || !sliceState || !websiteProject) {
+                setExecutionState("BLOCKED");
+                task = transitionTask(task, "BLOCKED", emit);
+                appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
+                  reason: designReview.scopeReason || designReview.summary,
+                  review: designReview,
+                  error: "Durable project plan or active slice was unavailable for automatic plan revision.",
+                });
+                emit({ type: "stream.blocked", message: "The Visual Director requires a plan-level repair, but BORG could not resolve the durable active plan/slice needed to revise it safely." });
+                response.end();
+                return;
+              }
+
+              const revisionReason = designReview.scopeReason || designReview.summary;
               const checkpoint = createCheckpointSnapshot(task, "pre_repair");
               const recovered = workflow.markRecoveryRequired(task, {
                 category: "plan_repair_required",
                 checkpointId: checkpoint.id,
                 resumeAction: "replan",
-                reason: scopeConflict.reason,
+                reason: revisionReason,
               });
               task = recovered.task;
               syncWorkflowProjection(task, recovered.workflow);
-              appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", { review: designReview, ...scopeConflict });
-              appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", { reason: scopeConflict.reason, review: designReview, checkpointId: checkpoint.id });
-              emit({ type: "stream.blocked", message: `The Visual Director found a scope conflict: ${scopeConflict.reason} Repairing CSS inside the current slice would not satisfy the product brief, so BORG stopped and requires a plan repair.` });
+              appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", {
+                review: designReview,
+                repairScope: designReview.repairScope,
+                reason: revisionReason,
+                currentSliceIndex: sliceState.current,
+                currentSliceId: projectPlan.slices[sliceState.current]?.id ?? null,
+              });
+              appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
+                reason: revisionReason,
+                repairScope: designReview.repairScope,
+                review: designReview,
+                checkpointId: checkpoint.id,
+              });
+
+              const revising = workflow.beginPlanRevision(task, revisionReason);
+              task = revising.task;
+              syncWorkflowProjection(task, revising.workflow);
+              setExecutionState("BLOCKED");
+              emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The current slice cannot satisfy the product-quality review. Revising the project plan without discarding the existing worktree." });
+
+              const revisionModel = teamPolicies.modelFor(teamPolicy, "architect", model, primaryDiscipline);
+              const revisionAssignment = beginRole(task, "architect", primaryDiscipline, revisionModel, packs, emit);
+              const revisionBrief = websiteProject.originalBrief || task.request;
+              const revisionRequest = {
+                ollamaUrl,
+                model: revisionModel,
+                tools,
+                mode: "plan" as const,
+                role: "architect" as const,
+                disciplines: activeDisciplines,
+                phase: "planning" as const,
+                emit,
+                limits: { toolRounds: 3, toolCalls: 4 },
+                onRequestBody: (body: string) => recordModelInput(taskId, "architect", revisionModel, `plan-revision:${projectPlan.revision + 1}`, [], body),
+                messages: [
+                  {
+                    role: "system" as const,
+                    content: "You are BORG's bounded project-plan repair architect. Revise planning authority only. Do not mutate source, run commands, restart repository discovery, or discard already-completed work. The original brief, durable current plan, active slice, and independent review evidence below are authoritative.",
+                  },
+                  {
+                    role: "user" as const,
+                    content: projectPlanRevisionPrompt({
+                      brief: revisionBrief,
+                      currentPlan: projectPlan,
+                      currentSliceIndex: sliceState.current,
+                      conflictReason: revisionReason,
+                      review: designReview,
+                    }),
+                  },
+                ],
+              };
+
+              let revisionResult = await runOllamaAgent(revisionRequest);
+              let parsedRevision = parseProjectPlanResult(revisionResult.answer, revisionBrief, websiteProject.template);
+              if (parsedRevision.source === "fallback") {
+                appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_SEMANTIC_RETRY", {
+                  reason: parsedRevision.fallbackReason,
+                  validation: parsedRevision.validation,
+                });
+                revisionResult = await runOllamaAgent({
+                  ...revisionRequest,
+                  messages: [
+                    ...revisionRequest.messages,
+                    { role: "assistant" as const, content: revisionResult.answer },
+                    { role: "user" as const, content: projectPlanRepairPrompt(parsedRevision) },
+                  ],
+                  limits: { toolRounds: 2, toolCalls: 2 },
+                });
+                parsedRevision = parseProjectPlanResult(revisionResult.answer, revisionBrief, websiteProject.template);
+              }
+
+              if (parsedRevision.source === "fallback" || !parsedRevision.validation.valid) {
+                finishRole(revisionAssignment, "failed", emit);
+                const failureReason = `Plan revision failed semantic validation: ${parsedRevision.fallbackReason ?? parsedRevision.validation.issues.join(" ")}`;
+                const failedRevision = workflow.markRecoveryRequired(task, {
+                  category: "plan_repair_required",
+                  checkpointId: checkpoint.id,
+                  resumeAction: "replan",
+                  reason: failureReason,
+                });
+                task = failedRevision.task;
+                syncWorkflowProjection(task, failedRevision.workflow);
+                appendTaskEvent(taskId, "PLAN_REVISION_FAILED", {
+                  reason: failureReason,
+                  validation: parsedRevision.validation,
+                });
+                emit({ type: "stream.blocked", message: failureReason });
+                response.end();
+                return;
+              }
+
+              const planWorkflow = workflow.setProjectPlan(task, parsedRevision.plan);
+              syncWorkflowProjection(task, planWorkflow);
+              const proposedPlan = planWorkflow.projectPlan as ProjectPlan;
+              const coverage = validateProjectPlanCoverage(proposedPlan, revisionBrief);
+              if (!coverage.valid) throw new Error(`Core plan revision failed coverage after parse validation: ${coverage.issues.join(" ")}`);
+              const delta = projectPlanDelta(projectPlan, proposedPlan);
+              persistProposedProjectPlan(approvedWorktreePath, revisionBrief, proposedPlan, taskId, {
+                coverage,
+                currentSlice: planWorkflow.planRevisionResumeIndex ?? sliceState.current,
+                revisionReason,
+              });
+              appendTaskEvent(taskId, "PROJECT_PLAN_COVERAGE_VALIDATED", {
+                revision: proposedPlan.revision,
+                coverage,
+                planRevision: true,
+              });
+              appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_PROPOSED", {
+                plan: proposedPlan,
+                delta,
+                repairScope: designReview.repairScope,
+                reason: revisionReason,
+                workflowVersion: planWorkflow.version,
+              });
+              appendTaskEvent(taskId, "PLAN_REVISION_MODEL_RESPONSE_COMPLETED", {
+                runtime: "ollama",
+                model: revisionModel,
+                role: "architect",
+                answer: revisionResult.answer,
+                usedTools: revisionResult.usedTools,
+              });
+              finishRole(revisionAssignment, "completed", emit);
+              writeEvent(response, { type: "message.delta", taskId, text: revisionResult.answer });
+
+              const revisionApproval = {
+                ...createApproval({ id: randomUUID(), taskId }),
+                worktreePath: approval.worktreePath,
+                baseCommit: approval.baseCommit,
+              };
+              const requestedRevision = workflow.requestApproval(task, revisionApproval, "project_plan_revision");
+              task = requestedRevision.task;
+              syncWorkflowProjection(task, requestedRevision.workflow);
+              emit({ type: "task.state", taskId, state: task.state, workflow: requestedRevision.workflow });
+              writeEvent(response, {
+                type: "project.plan.approval.requested",
+                taskId,
+                approval: revisionApproval,
+                planText: revisionResult.answer,
+                projectPlan: proposedPlan,
+                planRevision: true,
+                planDelta: delta,
+                message: `Plan revision ${proposedPlan.revision} resolves a ${designReview.repairScope.replaceAll("_", " ")} quality conflict. Approve it to resume the current worktree at the repaired slice boundary.`,
+              });
+              writeEvent(response, { type: "stream.completed", taskId });
               response.end();
               return;
             }
-            repairEvidence = `VISUAL DIRECTOR REFINEMENT REQUIRED. This is not a functional bug repair. Rework the visual design against the persisted Design Brief and the screenshot evidence below. Preserve working behavior, then recapture responsive browser evidence.
+
+            const refinements = designRefinementCount(taskId);
+            if (refinements >= maxDesignRefinements) {
+              setExecutionState("BLOCKED");
+              task = transitionTask(task, "BLOCKED", emit);
+              appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", { refinements, maximum: maxDesignRefinements, review: designReview });
+              emit({ type: "stream.blocked", message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
+              response.end();
+              return;
+            }
+
+            repairEvidence = `VISUAL DIRECTOR CURRENT-SLICE REFINEMENT REQUIRED. The Visual Director explicitly classified this repair as legal inside the current approved slice. Rework the design against the persisted Design Brief and screenshot evidence while preserving working behavior, then recapture responsive browser evidence.
+
+Structured scope decision:
+- repairScope: ${designReview.repairScope}
+- scopeReason: ${designReview.scopeReason}
 
 Work from the authoritative repair grounding that BORG injects automatically:
-- Start from the supplied changed-file list, current source diff, and current changed-file contents. Do not guess paths, components, or CSS selectors.
-- Read only direct dependencies/imports when they are necessary to repair an implicated file.
-- Trace every style change to markup that actually uses it. Remove or avoid selectors that are not present in the rendered DOM.
+- Start from the supplied changed-file list, current source diff, changed-file contents, and direct dependencies. Do not guess paths, components, or CSS selectors.
+- Read only further direct dependencies when necessary to repair an implicated file.
+- Trace every style change to markup that actually uses it.
 - Address the highest-severity visible findings with a material composition change, not small token or spacing adjustments.
-- Stay within the current approved slice only when the requested repair is actually satisfiable inside that slice.
+- Do not broaden beyond the current slice; a wider change requires a new plan-revision classification.
 - Capture mobile, tablet, and desktop evidence after editing and inspect whether the cited visual problem visibly changed before finishing.
 
 ${JSON.stringify(designReview).slice(0, 70000)}`;
