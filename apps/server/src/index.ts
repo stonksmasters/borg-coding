@@ -67,7 +67,7 @@ import { ensurePreviewDependencies } from "../../../packages/web-builder/src/pre
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext, type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanRepairPrompt, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanDelta, projectPlanRepairPrompt, projectPlanRevisionPrompt, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -172,25 +172,6 @@ function repairGroundingSnapshot(root: string) {
     files.length ? `Current changed-file contents:\n${files.join("\n\n")}` : "",
     "Read only direct imports/dependencies of these files when needed to make the evidenced repair.",
   ].filter(Boolean).join("\n\n");
-}
-
-function designReviewScopeConflict(review: DesignReviewResult, activeSlice: { title: string; outcome: string; scope: string[] } | null, plan: ProjectPlan | null) {
-  if (review.status !== "repair" || !activeSlice || !plan) return null;
-  const reviewText = [review.summary, ...review.findings.flatMap((finding) => [finding.title, finding.description, finding.remediation])].join(" ").toLowerCase();
-  const sliceText = [activeSlice.title, activeSlice.outcome, ...activeSlice.scope].join(" ").toLowerCase();
-  const structuralDemand = /\b(?:missing|placeholder|not implemented|actual|dense|data density|metrics?|alerts?|table|queue|workflow|workspace|control center|operational|screen|page|section)\b/.test(reviewText);
-  const narrowMarketingSlice = /\b(?:homepage|hero|marketing|call to action|cta)\b/.test(sliceText);
-  const requestedOutsidePages = plan.sitemap
-    .filter((page) => reviewText.includes(page.name.toLowerCase()) && !sliceText.includes(page.name.toLowerCase()))
-    .map((page) => page.name);
-  const explicitOutsideDemand = requestedOutsidePages.length > 0 && /\b(?:add|include|implement|build|surface|show|missing|needs?)\b/.test(reviewText);
-  if (!(explicitOutsideDemand || (narrowMarketingSlice && structuralDemand))) return null;
-  return {
-    reason: requestedOutsidePages.length
-      ? `Visual review requires work on pages outside the current slice: ${requestedOutsidePages.join(", ")}.`
-      : `Visual review requires application structure that materially exceeds the current slice "${activeSlice.title}".`,
-    requestedOutsidePages,
-  };
 }
 
 async function visionRuntimeStatus() {
