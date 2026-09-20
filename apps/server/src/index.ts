@@ -2269,7 +2269,8 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       task,
       workflow: workflow.get(task.projectId)?.taskId === task.id ? workflow.get(task.projectId) : null,
       approval: currentApproval,
-      projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_PROPOSED"),
+      projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_PROPOSED" || event.type === "PROJECT_PLAN_REVISION_PROPOSED"),
+      projectPlanRevisionApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_REVISION_PROPOSED"),
       findings: tasks.listFindings(taskId),
       events: tasks.listEvents(taskId),
       roleAssignments: tasks.listRoleAssignments(taskId),
@@ -2288,22 +2289,90 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         return send(response, 409, { error: `Approval was already ${approval.status.toLowerCase()}.` });
       }
       if (task.state !== "AWAITING_APPROVAL") return send(response, 409, { error: "Task is not awaiting approval." });
-      const isProjectPlanApproval = tasks.listEvents(task.id).some((event) => event.type === "PROJECT_PLAN_PROPOSED");
+      const approvalEvents = tasks.listEvents(task.id);
+      const isProjectPlanRevisionApproval = approvalEvents.some((event) => event.type === "PROJECT_PLAN_REVISION_PROPOSED");
+      const isProjectPlanApproval = !isProjectPlanRevisionApproval && approvalEvents.some((event) => event.type === "PROJECT_PLAN_PROPOSED");
+      const approvalKind = isProjectPlanRevisionApproval ? "project_plan_revision" as const : isProjectPlanApproval ? "project_plan" as const : "execution" as const;
       if (decision === "reject") {
         const rejected = { ...approval, status: "REJECTED" as const, decidedAt: new Date().toISOString() };
-        const decided = workflow.decideApproval(task, rejected, isProjectPlanApproval ? "project_plan" : "execution");
+        const decided = workflow.decideApproval(task, rejected, approvalKind);
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
         const repositoryPath = taskProjectRepository(task.id);
-        if (repositoryPath) recordMemoryNote(repositoryPath, { id: `approval:${approval.id}`, kind: "decision", text: isProjectPlanApproval ? "Frontend phase plan requires revision." : "Implementation mini-plan rejected by operator.", taskId: task.id, path: null, line: null, createdAt: rejected.decidedAt! });
-        return send(response, 200, { task, approval: rejected, workflow: decided.workflow, projectPlanApproval: isProjectPlanApproval });
+        if (repositoryPath) recordMemoryNote(repositoryPath, {
+          id: `approval:${approval.id}`,
+          kind: "decision",
+          text: isProjectPlanRevisionApproval
+            ? "Automatic project-plan revision was rejected; existing worktree remains isolated for inspection."
+            : isProjectPlanApproval
+              ? "Frontend phase plan requires revision."
+              : "Implementation mini-plan rejected by operator.",
+          taskId: task.id,
+          path: null,
+          line: null,
+          createdAt: rejected.decidedAt!,
+        });
+        return send(response, 200, {
+          task,
+          approval: rejected,
+          workflow: decided.workflow,
+          projectPlanApproval: isProjectPlanApproval,
+          projectPlanRevisionApproval: isProjectPlanRevisionApproval,
+        });
       }
       if (decision !== "approve") return send(response, 400, { error: "Decision must be approve or reject." });
       const repositoryPath = taskProjectRepository(task.id);
       if (!repositoryPath) return send(response, 409, { error: "This task has no durable repository binding." });
+      if (isProjectPlanRevisionApproval) {
+        if (!approval.worktreePath || !approval.baseCommit || !existsSync(approval.worktreePath)) {
+          return send(response, 409, { error: "Plan revision approval requires the existing approved worktree and base commit." });
+        }
+        const authoritativePlan = projectPlanFromWorkflow(workflow.get(task.projectId), approval.worktreePath);
+        if (!authoritativePlan) return send(response, 409, { error: "The durable revised project plan is missing from SQLite." });
+        const website = websiteInfo(approval.worktreePath);
+        const revisionBrief = website?.originalBrief || task.request;
+        const coverage = validateProjectPlanCoverage(authoritativePlan, revisionBrief);
+        if (!coverage.valid) return send(response, 409, { error: "The revised project plan no longer passes semantic coverage.", coverage });
+
+        const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString() };
+        const decided = workflow.decideApproval(task, approved, "project_plan_revision");
+        task = decided.task;
+        syncWorkflowProjection(task, decided.workflow);
+        const approvedPlan = projectPlanFromWorkflow(decided.workflow, null);
+        if (!approvedPlan) return send(response, 500, { error: "Core approved the plan revision without a durable plan snapshot." });
+        const approvedProject = approveProjectPlan(approval.worktreePath, task.id, approvedPlan);
+        setFrontendWorkflowStage(approval.worktreePath, "slice_implementing", {
+          currentSlice: decided.workflow.sliceIndex ?? approvedProject.state.current,
+          totalSlices: approvedPlan.slices.length,
+          taskId: task.id,
+          detail: `Plan revision ${approvedPlan.revision} approved. Resuming the existing worktree at the repaired slice boundary.`,
+        });
+        appendTaskEvent(task.id, "PROJECT_PLAN_REVISION_RESUMED", {
+          revision: approvedPlan.revision,
+          sliceIndex: decided.workflow.sliceIndex,
+          worktreePath: approval.worktreePath,
+          baseCommit: approval.baseCommit,
+          coverage,
+          workflowVersion: decided.workflow.version,
+        });
+        return send(response, 200, {
+          task,
+          approval: approved,
+          workflow: decided.workflow,
+          projectPlanApproved: false,
+          projectPlanRevisionApproved: true,
+          projectPlan: approvedProject.plan,
+          slice: approvedProject.state,
+          worktree: { path: approval.worktreePath, baseCommit: approval.baseCommit },
+        });
+      }
       if (isProjectPlanApproval) {
         const authoritativePlan = projectPlanFromWorkflow(workflow.get(task.projectId), repositoryPath);
         if (!authoritativePlan) return send(response, 409, { error: "The durable project plan is missing from SQLite." });
+        const website = websiteInfo(repositoryPath);
+        const planningBrief = website?.originalBrief || task.request;
+        const coverage = validateProjectPlanCoverage(authoritativePlan, planningBrief);
+        if (!coverage.valid) return send(response, 409, { error: "The project plan no longer passes semantic coverage and cannot be approved.", coverage });
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
         const decided = workflow.decideApproval(task, approved, "project_plan");
         task = decided.task;
