@@ -1,65 +1,12 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync as writeRawFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { ProjectComponent, ProjectPage, ProjectPlan, ProjectSlice, ProjectStyleSystem } from "../../core/src/project-domain.ts";
 import { initializeProjectModel } from "./project-model.ts";
 
 export type SliceAction = "initial" | "revise" | "advance";
-export type ProjectSlice = {
-  id: string;
-  title: string;
-  outcome: string;
-  scope: string[];
-  acceptanceCriteria: string[];
-};
-export type ProjectSitemapPage = {
-  id: string;
-  name: string;
-  route: string;
-  purpose: string;
-  sections: string[];
-  componentIds: string[];
-  acceptanceCriteria: string[];
-};
-export type PlannedComponent = {
-  id: string;
-  name: string;
-  kind: "layout" | "section" | "ui" | "feature";
-  purpose: string;
-  usedBy: string[];
-  variants: string[];
-  acceptanceCriteria: string[];
-};
-export type ProjectStyleSystem = {
-  direction: string;
-  colors: string[];
-  typography: string[];
-  spacing: string[];
-  radii: string[];
-  shadows: string[];
-  layoutPrinciples: string[];
-  motion: string[];
-  responsive: string[];
-  accessibility: string[];
-  avoid: string[];
-};
-export type ProjectPlan = {
-  version: 2;
-  revision: number;
-  status: "proposed" | "approved" | "frontend_complete";
-  phase: "frontend";
-  siteGoal: string;
-  audience: string;
-  pages: string[];
-  features: string[];
-  sitemap: ProjectSitemapPage[];
-  components: PlannedComponent[];
-  styles: ProjectStyleSystem;
-  visualDirection: string;
-  backendRequired: boolean;
-  slices: ProjectSlice[];
-  acceptanceCriteria: string[];
-  proposedAt: string;
-  approvedAt: string | null;
-};
+export type { ProjectPlan, ProjectSlice, ProjectStyleSystem };
+export type ProjectSitemapPage = ProjectPage;
+export type PlannedComponent = ProjectComponent;
 export type SliceState = {
   version: 2;
   current: number;
