@@ -709,11 +709,16 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
 
 export function projectPlanRepairPrompt(result: ProjectPlanParseResult): string {
   const required = result.validation.explicitRequiredPages;
+  const capabilities = result.validation.requiredCapabilities;
   return [
     "The previous machine-readable project plan failed semantic coverage and must be regenerated.",
     result.fallbackReason ? `Failure: ${result.fallbackReason}` : "",
     required.length ? `Explicit required pages/screens: ${required.join(", ")}.` : "",
-    "Every explicitly required page must appear in the sitemap AND be named in at least one bounded implementation slice. Internal applications must use application-oriented slices; do not use homepage/hero/marketing slices for dashboards or operations tools.",
+    capabilities.length ? `Required product capabilities: ${capabilities.join(", ")}.` : "",
+    result.validation.missingCapabilities.length ? `Capabilities missing from the rejected plan: ${result.validation.missingCapabilities.join(", ")}.` : "",
+    result.validation.contradictions.length ? `Brief/plan contradictions to remove:\n- ${result.validation.contradictions.join("\n- ")}` : "",
+    "Every explicitly required page must appear in the sitemap AND be named in at least one bounded implementation slice. Every required capability must be represented by concrete pages/components/slices and acceptance criteria, not vague feature prose.",
+    "Internal applications must use application-oriented slices; do not use homepage/hero/marketing slices for dashboards or operations tools.",
     "Return the complete corrected plan and end with exactly one valid <borg-project-plan>...</borg-project-plan> block.",
   ].filter(Boolean).join("\n\n");
 }
