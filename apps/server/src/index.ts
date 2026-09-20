@@ -387,6 +387,7 @@ async function reconcileInterruptedDelivery(task: Task): Promise<boolean> {
     || !approval.baseCommit
     || !recordedRoot
     || current?.taskId !== task.id
+    || current.loop !== "slice"
     || current.phase !== "frontend"
   ) return false;
 
@@ -503,7 +504,7 @@ function projectPlanFromWorkflow(state: WorkflowState | null, fallbackRoot: stri
 }
 
 function sliceStateFromWorkflow(state: WorkflowState | null, plan: ProjectPlan | null, fallbackRoot: string | null): SliceState | null {
-  if (state?.projectPlan && plan && state.sliceIndex !== null) {
+  if (state?.projectPlan && plan && state.sliceIndex !== null && (state.loop === "project" || state.loop === "slice")) {
     const status: SliceState["status"] = plan.status === "frontend_complete"
       ? "frontend_complete"
       : state.pendingCommand?.action === "start_slice" || state.nextAction === "start_slice"
