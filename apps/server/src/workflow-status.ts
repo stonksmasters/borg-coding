@@ -28,6 +28,20 @@ export interface RunView {
   verification: { status: "pending" | "passed" | "failed"; visualStatus: string | null };
   recovery: { status: string; category: string | null; previousTaskState: string | null; checkpointId: string | null; resumeAction: string; reason: string } | null;
   repair: { attempt: number; maximum: number | null } | null;
+  planRevision: {
+    from: number;
+    to: number;
+    repairScope: string;
+    reason: string;
+    delta: {
+      addedPages: string[];
+      removedPages: string[];
+      changedPages: string[];
+      addedSlices: string[];
+      removedSlices: string[];
+      changedSlices: string[];
+    };
+  } | null;
   blocker: { title: string; detail: string; action: string } | null;
   nextAction: string;
   updatedAt: string;
@@ -144,6 +158,33 @@ export function deriveWorkflowStatus(
     || event.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
     || event.type === "PLAN_REPAIR_REQUIRED"
     || event.type === "VISUAL_REGRESSION_COMPLETED");
+  const revisionEvent = events.findLast((event) => event.type === "PROJECT_PLAN_REVISION_PROPOSED");
+  const revisionPayload = revisionEvent?.payload as {
+    delta?: {
+      fromRevision?: number; toRevision?: number;
+      addedPages?: string[]; removedPages?: string[]; changedPages?: string[];
+      addedSlices?: string[]; removedSlices?: string[]; changedSlices?: string[];
+    };
+    repairScope?: string;
+    reason?: string;
+  } | undefined;
+  const revisionDelta = revisionPayload?.delta;
+  const planRevision = revisionDelta && Number.isFinite(revisionDelta.fromRevision) && Number.isFinite(revisionDelta.toRevision)
+    ? {
+        from: Number(revisionDelta.fromRevision),
+        to: Number(revisionDelta.toRevision),
+        repairScope: String(revisionPayload?.repairScope ?? "project_plan"),
+        reason: String(revisionPayload?.reason ?? "The approved plan required structural repair."),
+        delta: {
+          addedPages: revisionDelta.addedPages ?? [],
+          removedPages: revisionDelta.removedPages ?? [],
+          changedPages: revisionDelta.changedPages ?? [],
+          addedSlices: revisionDelta.addedSlices ?? [],
+          removedSlices: revisionDelta.removedSlices ?? [],
+          changedSlices: revisionDelta.changedSlices ?? [],
+        },
+      }
+    : null;
   const completed = steps.filter((type) => events.some((event) => event.type === type));
   const terminal = ["COMPLETE", "BLOCKED", "FAILED", "DELIVERY_READY"].includes(task.state);
   const fallbackNextAction = task.state === "AWAITING_APPROVAL" ? "Review and approve the frontend plan."
@@ -197,7 +238,11 @@ export function deriveWorkflowStatus(
       outcome: activeSlice?.outcome ?? task.request,
     } : null,
     stage,
-    headline: baselineApprovalCount > 0 ? "Visual baseline approval required" : headlineFor(stage, slice),
+    headline: baselineApprovalCount > 0
+      ? "Visual baseline approval required"
+      : stage === "awaiting_approval" && planRevision
+        ? `Plan revision ${planRevision.from} → ${planRevision.to} ready for approval`
+        : headlineFor(stage, slice),
     detail,
     currentAction,
     verification: {
@@ -206,6 +251,7 @@ export function deriveWorkflowStatus(
     },
     recovery: workflow && workflow.recovery.status !== "inactive" ? workflow.recovery : null,
     repair: task.attempts > 0 ? { attempt: task.attempts, maximum: null } : null,
+    planRevision,
     blocker: null,
     nextAction,
     updatedAt: workflow?.updatedAt ?? task.updatedAt,
