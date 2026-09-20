@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   WorkflowStateSchema,
+  inactiveVerificationGate,
+  inactiveWorkflowRecovery,
   type Approval,
   type Task,
   type TaskContinuation,
@@ -26,6 +28,16 @@ export interface WorkflowStore {
 
 export type WorkflowIntent = "project_plan" | "frontend_slice" | "backend" | "general";
 export type FrontendSliceAction = "initial" | "advance" | "revise";
+export type VerificationRecordInput = {
+  passed: boolean;
+  attempt: number;
+  profile?: string | null;
+  summary: string;
+  browserPassed?: boolean | null;
+  specialistPassed?: boolean | null;
+  resultSha256?: string | null;
+  evidence?: unknown;
+};
 
 function loopForIntent(intent: WorkflowIntent): WorkflowState["loop"] {
   return intent === "project_plan" ? "project"
@@ -122,6 +134,16 @@ function command(
   };
 }
 
+function pendingVerification(attempt: number) {
+  return { ...inactiveVerificationGate, attempt };
+}
+
+function assertVerificationPassed(task: Task, workflow: WorkflowState, target: string) {
+  if (workflow.verification.status !== "passed" || workflow.verification.attempt !== task.attempts) {
+    throw new Error(`${target} requires a passed verification gate for repair attempt ${task.attempts}.`);
+  }
+}
+
 export class WorkflowEngine {
   private readonly store: WorkflowStore;
   constructor(store: WorkflowStore) { this.store = store; }
@@ -184,6 +206,8 @@ export class WorkflowEngine {
             ? { ...existing.pendingCommand, claimedByTaskId: task.id, claimedAt: now }
             : null,
       lastConsumedCommandId: sliceSelection?.supersededCommandId ?? existing?.lastConsumedCommandId ?? null,
+      verification: pendingVerification(0),
+      recovery: inactiveWorkflowRecovery,
       repairAttempt: 0,
       recoveryCategory: null,
       detail,
@@ -243,6 +267,7 @@ export class WorkflowEngine {
   transition(task: Task, to: TaskState): { task: Task; workflow: WorkflowState; event: TaskEvent } {
     assertTransition(task.state, to);
     const current = this.requireTask(task);
+    if (to === "REVIEWING" || to === "DELIVERY_READY") assertVerificationPassed(task, current, to);
     const now = new Date().toISOString();
     const updatedTask = { ...task, state: to, updatedAt: now };
     const interruptedCommand = to === "RECOVERY_REQUIRED" && current.pendingCommand?.claimedByTaskId === task.id
@@ -254,6 +279,18 @@ export class WorkflowEngine {
       pendingCommand: interruptedCommand
         ? { ...interruptedCommand, claimedByTaskId: null, claimedAt: null }
         : current.pendingCommand,
+      verification: to === "VERIFYING" || to === "IMPLEMENTING" ? pendingVerification(updatedTask.attempts) : current.verification,
+      recovery: to === "RECOVERY_REQUIRED"
+        ? {
+            status: "required",
+            category: current.recoveryCategory ?? "interrupted",
+            previousTaskState: task.state,
+            checkpointId: current.recovery.checkpointId,
+            resumeAction: "inspect_worktree",
+            reason: "The active workflow was interrupted and requires inspection before mutation resumes.",
+            updatedAt: now,
+          }
+        : current.recovery,
       repairAttempt: updatedTask.attempts,
       detail: `Task moved from ${task.state} to ${to}.`,
       version: current.version + 1,
@@ -373,6 +410,90 @@ export class WorkflowEngine {
     });
   }
 
+  recordVerification(task: Task, input: VerificationRecordInput): WorkflowState {
+    if (task.state !== "VERIFYING") throw new Error("Verification results may be recorded only while the task is VERIFYING.");
+    if (input.attempt !== task.attempts) {
+      throw new Error(`Verification attempt ${input.attempt} does not match task repair attempt ${task.attempts}.`);
+    }
+    const current = this.requireTask(task);
+    const now = new Date().toISOString();
+    const gate = {
+      status: input.passed ? "passed" as const : "failed" as const,
+      attempt: input.attempt,
+      profile: input.profile?.trim() || null,
+      summary: input.summary.trim().slice(0, 4_000),
+      browserPassed: input.browserPassed ?? null,
+      specialistPassed: input.specialistPassed ?? null,
+      resultSha256: input.resultSha256 ?? null,
+      completedAt: now,
+    };
+    const state = WorkflowStateSchema.parse({
+      ...current,
+      verification: gate,
+      status: "verifying",
+      nextAction: input.passed ? "checkpoint" : "repair",
+      detail: gate.summary || (input.passed ? "Verification passed." : "Verification failed."),
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    this.store.commitWorkflowMutation({
+      state,
+      events: [taskEvent(task.id, "VERIFICATION_COMPLETED", {
+        gate,
+        verification: input.evidence ?? { passed: input.passed },
+        attempt: input.attempt,
+        workflowVersion: state.version,
+      }, now)],
+    });
+    return state;
+  }
+
+  markRecoveryRequired(task: Task, input: {
+    category: string;
+    reason: string;
+    checkpointId?: string | null;
+    resumeAction?: WorkflowState["recovery"]["resumeAction"];
+  }): { task: Task; workflow: WorkflowState } {
+    assertTransition(task.state, "RECOVERY_REQUIRED");
+    const current = this.requireTask(task);
+    const now = new Date().toISOString();
+    const updatedTask = { ...task, state: "RECOVERY_REQUIRED" as const, updatedAt: now };
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      status: "recovery_required",
+      nextAction: "recover",
+      pendingCommand: current.pendingCommand?.claimedByTaskId === task.id
+        ? { ...current.pendingCommand, claimedByTaskId: null, claimedAt: null }
+        : current.pendingCommand,
+      recoveryCategory: input.category,
+      recovery: {
+        status: "required",
+        category: input.category,
+        previousTaskState: task.state,
+        checkpointId: input.checkpointId ?? null,
+        resumeAction: input.resumeAction ?? "inspect_worktree",
+        reason: input.reason.trim().slice(0, 4_000),
+        updatedAt: now,
+      },
+      detail: input.reason.trim().slice(0, 4_000),
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    this.store.commitWorkflowMutation({
+      task: updatedTask,
+      state: workflow,
+      events: [taskEvent(task.id, "TASK_RECOVERY_REQUIRED", {
+        category: input.category,
+        checkpointId: input.checkpointId ?? null,
+        previousState: task.state,
+        resumeAction: workflow.recovery.resumeAction,
+        reason: workflow.recovery.reason,
+        workflowVersion: workflow.version,
+      }, now)],
+    });
+    return { task: updatedTask, workflow };
+  }
+
   retry(task: Task, input: {
     reason: string;
     eventType: "REPAIR_SCHEDULED" | "IMPLEMENTATION_RETRY_SCHEDULED";
@@ -393,6 +514,16 @@ export class WorkflowEngine {
       status: "running",
       nextAction: "implement",
       pendingCommand: null,
+      verification: pendingVerification(updatedTask.attempts),
+      recovery: {
+        status: "repairing",
+        category: input.category ?? current.recovery.category,
+        previousTaskState: task.state,
+        checkpointId: current.recovery.checkpointId,
+        resumeAction: "retry_current_scope",
+        reason: (input.action ?? input.reason).trim().slice(0, 4_000),
+        updatedAt: now,
+      },
       repairAttempt: updatedTask.attempts,
       recoveryCategory: input.category ?? current.recoveryCategory,
       detail: input.action ?? input.reason,
@@ -417,11 +548,21 @@ export class WorkflowEngine {
 
   recovery(task: Task, category: string, detail: string, fatal: boolean): WorkflowState {
     const current = this.requireTask(task);
+    const now = new Date().toISOString();
     return this.update(task, current, {
       status: fatal ? "blocked" : "recovery_required",
       nextAction: fatal ? "recover" : "repair",
       pendingCommand: null,
       recoveryCategory: category,
+      recovery: {
+        status: fatal ? "blocked" : "required",
+        category,
+        previousTaskState: task.state,
+        checkpointId: current.recovery.checkpointId,
+        resumeAction: fatal ? "inspect_worktree" : "retry_current_scope",
+        reason: detail.trim().slice(0, 4_000),
+        updatedAt: now,
+      },
       detail,
       repairAttempt: task.attempts,
     }, "WORKFLOW_RECOVERY_UPDATED", { category, detail, fatal });
@@ -437,6 +578,9 @@ export class WorkflowEngine {
       throw new Error(`Continuation expected task state ${continuation.previousState}, but task is ${task.state}.`);
     }
     const current = this.requireTask(task);
+    if ((continuation.resultingState === "REVIEWING" || continuation.resultingState === "DELIVERY_READY") && current.verification.status !== "passed") {
+      throw new Error("Checkpoint continuation cannot restore a post-verification state without a durable passed verification gate.");
+    }
     const now = new Date().toISOString();
     const updatedTask = { ...task, state: continuation.resultingState, attempts: options.resetAttempts ? 0 : task.attempts, updatedAt: now };
     const projection = taskProjection(continuation.resultingState);
@@ -444,6 +588,24 @@ export class WorkflowEngine {
       ...current,
       ...projection,
       pendingCommand: null,
+      verification: continuation.resultingState === "IMPLEMENTING" || continuation.resultingState === "VERIFYING"
+        ? pendingVerification(updatedTask.attempts)
+        : current.verification,
+      recovery: continuation.status === "recovery_required"
+        ? {
+            status: "required",
+            category: current.recoveryCategory ?? "checkpoint_continuation",
+            previousTaskState: continuation.previousState,
+            checkpointId: continuation.checkpointId,
+            resumeAction: continuation.resumeAction === "inspect_worktree" ? "inspect_worktree"
+              : continuation.resumeAction === "await_approval" ? "await_approval"
+                : continuation.resumeAction === "deliver" ? "deliver"
+                  : continuation.resumeAction === "replan" ? "replan"
+                    : "none",
+            reason: continuation.detail,
+            updatedAt: now,
+          }
+        : inactiveWorkflowRecovery,
       repairAttempt: updatedTask.attempts,
       recoveryCategory: continuation.status === "recovery_required" ? current.recoveryCategory ?? "checkpoint_continuation" : null,
       detail: continuation.detail,
@@ -473,6 +635,7 @@ export class WorkflowEngine {
   beginDelivery(task: Task, input: { method: "commit" | "export"; expectedBaseCommit?: string | null }): { task: Task; workflow: WorkflowState } {
     assertTransition(task.state, "DELIVERING");
     const current = this.requireTask(task);
+    assertVerificationPassed(task, current, "Delivery");
     const now = new Date().toISOString();
     const updatedTask = { ...task, state: "DELIVERING" as const, updatedAt: now };
     const workflow = WorkflowStateSchema.parse({
@@ -525,6 +688,7 @@ export class WorkflowEngine {
   completeDelivery(task: Task, result: unknown): { task: Task; workflow: WorkflowState } {
     assertTransition(task.state, "COMPLETE");
     const current = this.requireTask(task);
+    assertVerificationPassed(task, current, "Delivery completion");
     const now = new Date().toISOString();
     const updatedTask = { ...task, state: "COMPLETE" as const, updatedAt: now };
     const frontend = current.loop === "slice" && current.phase === "frontend" && current.projectPlan && current.sliceIndex !== null;
@@ -576,6 +740,8 @@ export class WorkflowEngine {
         handoff: null,
         pendingCommand: null,
         lastConsumedCommandId: null,
+        verification: pendingVerification(task.attempts),
+        recovery: inactiveWorkflowRecovery,
         repairAttempt: task.attempts,
         recoveryCategory: null,
         detail: "Migrated legacy task into the persistent workflow engine.",
