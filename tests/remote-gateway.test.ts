@@ -45,8 +45,8 @@ async function waitFor(url: string, child: ChildProcess, stderr: () => string) {
 test("LAN remote pairs devices and proxies only the bounded BORG control surface", async (t) => {
   const gatewayPort = await freePort();
   const remotePort = await freePort();
-  let receivedChat: Record<string, unknown> | null = null;
-  let receivedApproval: Record<string, unknown> | null = null;
+  const receivedChat: { value: Record<string, unknown> | null } = { value: null };
+  const receivedApproval: { value: Record<string, unknown> | null } = { value: null };
 
   const gateway = createServer((request, response) => {
     const url = request.url ?? "/";
@@ -112,7 +112,7 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
     }
     if (request.method === "POST" && url === "/api/tasks/task-1/approval") {
       void readBody(request).then((body) => {
-        receivedApproval = JSON.parse(body) as Record<string, unknown>;
+        receivedApproval.value = JSON.parse(body) as Record<string, unknown>;
         response.end(JSON.stringify({ approval: { status: "APPROVED" } }));
       });
       return;
@@ -124,7 +124,7 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
     }
     if (request.method === "POST" && url === "/api/chat") {
       void readBody(request).then((body) => {
-        receivedChat = JSON.parse(body) as Record<string, unknown>;
+        receivedChat.value = JSON.parse(body) as Record<string, unknown>;
         response.writeHead(200, { "content-type": "application/x-ndjson" });
         response.end([
           JSON.stringify({ type: "task.created", task: { id: "task-2" } }),
@@ -215,7 +215,7 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
     body: JSON.stringify({ decision: "approve" }),
   });
   assert.equal(approval.status, 200);
-  assert.equal(receivedApproval?.decision, "approve");
+  assert.equal(receivedApproval.value?.decision, "approve");
 
   const stop = await fetch(`${base}/api/remote/sessions/session-1/stop`, { method: "POST", headers: auth });
   assert.equal(stop.status, 200);
@@ -228,7 +228,7 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
   });
   assert.equal(chat.status, 200);
   assert.match(await chat.text(), /stream.completed/);
-  assert.equal(receivedChat?.sessionId, "session-1");
+  assert.equal(receivedChat.value?.sessionId, "session-1");
 
   const disallowed = await fetch(`${base}/api/remote/access`, { headers: auth });
   assert.equal(disallowed.status, 404);
