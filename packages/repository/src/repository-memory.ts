@@ -154,6 +154,28 @@ export class RepositoryMemory {
     };
   }
 
+  relatedPaths(rootPath: string, request: string, limit = 12, allowPath: (path: string) => boolean = () => true): string[] {
+    const terms = [...new Set(request.toLowerCase().match(/[a-z][a-z0-9_]{3,}/g) ?? [])].slice(0, 12);
+    const scores = new Map<string, number>();
+    const add = (path: string, score: number) => {
+      if (!path || !allowPath(path)) return;
+      scores.set(path, (scores.get(path) ?? 0) + score);
+    };
+    for (const term of terms) {
+      const result = this.search(rootPath, term, Math.max(3, Math.min(12, limit)), allowPath);
+      for (const item of result.symbols as { path: string }[]) add(item.path, 4);
+      for (const item of result.imports as { source: string; target: string }[]) {
+        add(item.source, 2);
+        add(item.target, 3);
+      }
+      for (const item of result.notes) if (item.path) add(item.path, 1);
+    }
+    return [...scores.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, Math.max(1, Math.min(30, Math.floor(limit))))
+      .map(([path]) => path);
+  }
+
   context(rootPath: string, request: string, allowPath: (path: string) => boolean = () => true): string {
     const terms = [...new Set(request.toLowerCase().match(/[a-z][a-z0-9_]{3,}/g) ?? [])].slice(0, 8);
     const sections = terms.flatMap((term) => {

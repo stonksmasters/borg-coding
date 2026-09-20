@@ -1,6 +1,6 @@
 # BORG Context System
 
-Last updated: 2026-09-19
+Last updated: 2026-09-20
 
 ## Purpose
 
@@ -8,7 +8,9 @@ BORG needs long-running project memory without turning every model call into a f
 
 The solution is a Context Compiler: a server-owned layer that assembles the smallest sufficient context for the current action from durable project state.
 
-The Context Compiler now exists as an explicit, bounded service for frontend work. It consumes authoritative project-plan and slice state when available, pins the global website product/design contract, records a provenance manifest, and adds only relevant project-model, handoff, decision, evidence, and source-file context. Generated build files remain fallback/projection inputs for migration and inspection rather than progression authority.
+The Context Compiler is an explicit, bounded service for frontend work. Its canonical output is a typed `ContextPack`: a deterministic, fingerprinted artifact containing a profile, authority source, bounded text, provenance manifest, and exact source hashes. Packs are persisted in SQLite before model execution so restart/recovery and diagnostics can inspect exactly what knowledge BORG assembled.
+
+The compiler consumes the durable project plan and workflow slice when available. Generated build files are supplemental projection inputs only; they cannot replace newer workflow authority. The exact serialized Ollama request is persisted separately in `model_contexts`. A ContextPack answers "what project knowledge did BORG compile?"; a model-context record answers "what exact request body did the runtime send?"
 
 ## Core distinction
 
@@ -93,7 +95,13 @@ If the project decided discovery is mobile-first with persistent bottom navigati
 
 ### Include relevant files, not arbitrary repository breadth
 
-Repository intelligence should identify likely dependencies and surfaces before broad source reads.
+Repository intelligence identifies likely dependencies and surfaces before source reads. Context compilation no longer walks hundreds of files and reads their contents to rank relevance on every mini-loop. Source selection follows this order:
+
+1. registered Page/Component source mappings;
+2. ranked symbol/import paths from the persistent repository-memory index;
+3. a small known-entrypoint fallback when neither exists.
+
+The model can still use read-only repository tools when a scoped pack proves insufficient, but broad scanning is no longer the compiler's default behavior.
 
 ### Include recent evidence when it changes the next action
 
@@ -132,9 +140,9 @@ BORG should re-run project-level planning only when:
 
 Normal repair, refinement, or continuation stays inside the existing phase and slice loop.
 
-## Page and component scoped context
+## Scoped context profiles
 
-When pages and components become first-class entities, the Context Compiler should support entity-scoped contexts.
+Pages, components, slices, and global styles use the same ContextPack compiler with different profiles.
 
 For a component workspace, include:
 
@@ -158,7 +166,9 @@ For a page workspace, include:
 - responsive requirements;
 - current evidence.
 
-This is one of the main ways BORG can improve quality while reducing prompt size.
+For the Styles workspace, include the canonical global style system, compact page/component inventory, shared style/layout sources, relevant decisions, and representative source hints without injecting every component implementation.
+
+This is one of the main ways BORG improves quality while reducing prompt size.
 
 ## What must not live only in model memory
 
@@ -179,21 +189,29 @@ Those belong to the system.
 
 The current compiler provides:
 
-- typed project/slice/scope inputs;
-- authoritative workflow-state injection;
-- pinned website product/design contract;
+- one canonical `ContextPack` domain contract;
+- explicit `slice`, `page`, `component`, and `styles` profiles;
+- planning / execution / repair stage identity;
+- authoritative workflow plan and slice injection;
+- canonical style-system injection from the durable project plan;
+- pinned website product and original-project contracts;
 - bounded character budgets;
-- source provenance manifests;
-- project-model and registry context;
+- required vs optional manifest entries;
+- SHA-256 provenance for every included section;
+- deterministic pack fingerprints;
+- project-model Page/Component registry context;
 - handoff and durable-decision compression;
-- recent verification/review evidence;
-- relevant source selection using path and bounded content signals;
-- persisted exact model-input diagnostics;
-- tests proving irrelevant project files are excluded.
+- source selection from registered mappings and repository-memory symbol/import hints;
+- no compiler-owned broad source-tree content scan;
+- a small entrypoint fallback for unmapped greenfield projects;
+- SQLite persistence of compiled packs;
+- separate persistence of exact model request bodies;
+- diagnostic endpoints for both artifacts;
+- tests for relevance, deterministic fingerprints, Styles isolation, dependency hints, and restart persistence.
 
-The Ollama request trimmer reserves substantially more of its budget for pinned system/product contracts than for old tool history. Under context pressure, stale tool turns should disappear before the current product contract and slice acceptance criteria do.
+Under context pressure, pinned product/project/style/current-work contracts are added before optional projections and source files. Optional history and source context is dropped before durable constraints.
 
-Next hardening should use language-intelligence dependency mappings for file selection and add richer page/component-specific profiles rather than broadening prompts again.
+Remaining hardening should improve the freshness and precision of Page/Component source mappings and attach repair/evidence overlays to the same pack model without broadening the base prompt.
 
 ## Success criteria
 

@@ -2,7 +2,7 @@ import type { Task, TaskEvent, WorkflowState } from "../../../packages/core/src/
 import type { ProjectPlan, SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const steps = ["IMPLEMENTATION_RESPONSE_COMPLETED", "VERIFICATION_COMPLETED", "REVIEW_COMPLETED", "FRONTEND_SLICE_READY", "DELIVERY_READY"];
-const visibleEvents = new Set(["AGENT_ACTIVITY", "TOOL_STARTED", "TOOL_COMPLETED", "TOOL_FAILED", "VERIFICATION_COMPLETED", "VISUAL_REGRESSION_COMPLETED", "DESIGN_REVIEW_COMPLETED", "DESIGN_REVIEW_BLOCKED", "FRONTEND_SLICE_READY", "RUNTIME_FAILED", "REPAIR_LIMIT_REACHED", "MODEL_CONTEXT_RECORDED", "IMPLEMENTATION_BUDGET_CONTINUATION", "IMPLEMENTATION_BUDGET_EXHAUSTED", "EXECUTION_STATE_CHANGED", "REPAIR_CONTEXT_CREATED"]);
+const visibleEvents = new Set(["AGENT_ACTIVITY", "TOOL_STARTED", "TOOL_COMPLETED", "TOOL_FAILED", "VERIFICATION_COMPLETED", "VISUAL_REGRESSION_COMPLETED", "DESIGN_REVIEW_COMPLETED", "DESIGN_REVIEW_BLOCKED", "FRONTEND_SLICE_READY", "RUNTIME_FAILED", "REPAIR_LIMIT_REACHED", "MODEL_CONTEXT_RECORDED", "CONTEXT_PACK_COMPILED", "IMPLEMENTATION_BUDGET_CONTINUATION", "IMPLEMENTATION_BUDGET_EXHAUSTED", "EXECUTION_STATE_CHANGED", "REPAIR_CONTEXT_CREATED"]);
 
 export type RunStage =
   | "planning"
@@ -37,6 +37,7 @@ function activityDetail(event: TaskEvent) {
   if (event.type === "VERIFICATION_COMPLETED") return (event.payload.verification as { passed?: boolean } | undefined)?.passed ? "Verification passed" : "Verification failed";
   if (event.type === "VISUAL_REGRESSION_COMPLETED") return `Visual regression: ${String((event.payload.report as { status?: string } | undefined)?.status ?? "completed")}`;
   if (event.type === "DESIGN_REVIEW_COMPLETED") return `Visual review: ${String((event.payload.review as { status?: string } | undefined)?.status ?? "completed")}`;
+  if (event.type === "CONTEXT_PACK_COMPILED") return `Prepared ${String((event.payload.profile as { kind?: string } | undefined)?.kind ?? "scoped")} context pack`;
   if (event.type === "MODEL_CONTEXT_RECORDED") return `Saved ${String(event.payload.role ?? "model")} input`;
   if (event.type === "IMPLEMENTATION_BUDGET_CONTINUATION") return "Implementation budget reached; continuing the same slice with compact context";
   if (event.type === "IMPLEMENTATION_BUDGET_EXHAUSTED") return "Implementation budget exhausted; completion must be proven by verification";
