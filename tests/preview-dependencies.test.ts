@@ -33,6 +33,29 @@ test("preview installs missing worktree dependencies and checks the result", asy
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("concurrent preview requests share one dependency install per worktree", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-preview-deps-lock-"));
+  try {
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const runtime = { run: async () => {
+      calls += 1;
+      await gate;
+      markInstalled(root);
+      return { exitCode: 0, stderr: "", stdout: "" };
+    } } as unknown as Pick<ProcessRuntime, "run">;
+
+    const first = ensurePreviewDependencies("task-a", root, runtime);
+    const second = ensurePreviewDependencies("task-b", root, runtime);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls, 1);
+    release();
+    await Promise.all([first, second]);
+    assert.equal(calls, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("preview reports a failed dependency install", async () => {
   const root = mkdtempSync(join(tmpdir(), "borg-preview-deps-fail-"));
   try {
