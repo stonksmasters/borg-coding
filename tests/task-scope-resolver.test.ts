@@ -340,3 +340,26 @@ test("execution scope distinguishes style, frontend slice, backend, and general 
   assert.equal(general.kind, "general");
   assert.equal(general.websiteWorkflow, "initial_generation");
 });
+
+
+test("execution events are scope markers only and cannot recreate frontend slice authority", () => {
+  const withoutDurablePlan = resolveExecutionTaskScope({
+    events: [{ type: "FRONTEND_SLICE_SELECTED", payload: { action: "initial" } }],
+    hasWebsite: true,
+    hasProjectPlan: false,
+    hasSliceState: false,
+    priorDeliveredWebsiteTask: false,
+  });
+  assert.equal(withoutDurablePlan.frontendSlice, false);
+  assert.equal(withoutDurablePlan.kind, "general");
+
+  const withoutDurableSlice = resolveExecutionTaskScope({
+    events: [{ type: "FRONTEND_SLICE_SELECTED", payload: { action: "initial" } }],
+    hasWebsite: true,
+    hasProjectPlan: true,
+    hasSliceState: false,
+    priorDeliveredWebsiteTask: false,
+  });
+  assert.equal(withoutDurableSlice.frontendSlice, false);
+  assert.equal(withoutDurableSlice.kind, "general");
+});
