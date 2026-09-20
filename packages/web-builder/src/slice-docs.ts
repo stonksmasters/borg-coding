@@ -73,6 +73,156 @@ function route(value: unknown, fallback: string) {
   const next = clean(value, fallback).replace(/\s+/g, "-").toLowerCase();
   return next.startsWith("/") ? next : `/${next.replace(/^\/+/, "")}`;
 }
+
+function normalizedRequirement(value: string) {
+  return value.toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\b(?:page|screen|view|route)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const commonApplicationPages = [
+  "Overview", "Schedule", "Jobs", "Job Detail", "Customers", "Customer Detail",
+  "Technicians", "Technician Detail", "Vehicles", "Inventory", "Reports", "Settings",
+  "Dashboard", "Activity", "Users", "User Detail", "Teams", "Team Detail",
+  "Projects", "Project Detail", "Tasks", "Task Detail", "Orders", "Order Detail",
+  "Analytics", "Billing", "Notifications", "Profile",
+];
+
+export function extractExplicitPageRequirements(brief: string): string[] {
+  const found: string[] = [];
+  const add = (value: string) => {
+    const cleaned = value
+      .replace(/^[\s\-*\d.)]+/, "")
+      .replace(/\b(?:pages?|screens?|routes?|views?)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[,:;]+$/, "");
+    if (!cleaned || cleaned.length > 80) return;
+    const key = normalizedRequirement(cleaned);
+    if (!key || found.some((item) => normalizedRequirement(item) === key)) return;
+    found.push(cleaned);
+  };
+
+  const cues = /(?:at\s+minimum|required\s+(?:pages?|screens?|routes?)|must\s+(?:include|contain|provide)|(?:pages?|screens?|routes?)\s*(?:include|are|:))\s*:?[ \t]*([^\n.]+)/gi;
+  for (const match of brief.matchAll(cues)) {
+    for (const item of String(match[1] ?? "").split(/\s*,\s*|\s*;\s*|\s+and\s+/i)) add(item);
+  }
+
+  if (found.length < 3) {
+    const lower = brief.toLowerCase();
+    const lexicalMatches = commonApplicationPages.filter((name) => {
+      const phrase = normalizedRequirement(name).replace(/\s+/g, "\\s+");
+      return new RegExp(`\\b${phrase}\\b`, "i").test(lower);
+    });
+    if (lexicalMatches.length >= 4) for (const item of lexicalMatches) add(item);
+  }
+
+  return found.slice(0, 30);
+}
+
+function applicationRoute(name: string, index: number) {
+  const normalized = normalizedRequirement(name);
+  if (normalized === "overview" || normalized === "dashboard") return "/";
+  const detail = normalized.match(/^(.+?) detail$/);
+  if (detail) {
+    const base = detail[1].replace(/\s+/g, "-");
+    const plural = base.endsWith("s") ? base : base.endsWith("y") ? `${base.slice(0, -1)}ies` : `${base}s`;
+    return `/${plural}/:id`;
+  }
+  return index === 0 ? "/" : `/${slug(name, index)}`;
+}
+
+function applicationSections(name: string): string[] {
+  const value = normalizedRequirement(name);
+  if (/overview|dashboard/.test(value)) return ["Application navigation", "Operational KPIs", "Alerts and exceptions", "Active work queue", "Team availability", "Upcoming schedule"];
+  if (/schedule/.test(value)) return ["Schedule controls", "Calendar / timeline", "Assignment state", "Conflicts and exceptions", "Loading / empty states"];
+  if (/job detail/.test(value)) return ["Job summary", "Status and timeline", "Assignment", "Customer / site", "Materials and notes", "Activity and actions"];
+  if (/jobs?/.test(value)) return ["Search / filters", "Jobs table / board", "Status and priority", "Assignment controls", "Bulk / row actions", "Loading / empty states"];
+  if (/customer detail/.test(value)) return ["Customer summary", "Contacts and locations", "Jobs / history", "Notes", "Actions"];
+  if (/customers?/.test(value)) return ["Search / filters", "Customer list / table", "Status / value summary", "Primary actions", "Loading / empty states"];
+  if (/technician detail/.test(value)) return ["Technician summary", "Availability", "Assigned work", "Skills / coverage", "Performance context", "Actions"];
+  if (/technicians?/.test(value)) return ["Availability summary", "Technician roster", "Skills / territory filters", "Assignment state", "Loading / empty states"];
+  if (/vehicles?/.test(value)) return ["Fleet summary", "Vehicle list / table", "Status / maintenance", "Assignments", "Exceptions"];
+  if (/inventory/.test(value)) return ["Inventory summary", "Search / filters", "Stock table", "Low-stock / exception states", "Adjust / transfer actions"];
+  if (/reports?|analytics/.test(value)) return ["Report navigation", "Date / segment controls", "Operational metrics", "Charts / tables", "Export / drill-down actions"];
+  if (/settings|billing|profile/.test(value)) return ["Settings navigation", "Configuration form", "Validation / save states", "Permission / error states"];
+  return ["Search / filters", "Primary workspace", "Detail / inspection state", "Primary actions", "Loading / empty / error states"];
+}
+
+function applicationSlices(sitemap: ProjectSitemapPage[]): ProjectSlice[] {
+  if (!sitemap.length) return [];
+  const slices: ProjectSlice[] = [{
+    id: "application-foundation",
+    title: "Application shell and operational overview",
+    outcome: `The shared application shell and ${sitemap[0].name} screen work as a dense, credible operational workspace on desktop and mobile.`,
+    scope: ["application navigation", "shared layout and design tokens", sitemap[0].name, ...sitemap[0].sections],
+    acceptanceCriteria: ["application navigation is functional", `${sitemap[0].name} contains representative operational data and meaningful states`, "desktop and mobile compositions are intentional", "no placeholder or dead visible controls remain"],
+  }];
+
+  const remaining = sitemap.slice(1);
+  for (let index = 0; index < remaining.length; index += 3) {
+    const pages = remaining.slice(index, index + 3);
+    const names = pages.map((page) => page.name);
+    slices.push({
+      id: `application-${index / 3 + 1}-${slug(names.join("-"), index)}`,
+      title: names.join(", "),
+      outcome: `${names.join(", ")} are implemented as complete, navigable application screens with realistic data, interactions, and edge states.`,
+      scope: pages.flatMap((page) => [page.name, ...page.sections]).slice(0, 30),
+      acceptanceCriteria: [
+        ...names.map((name) => `${name} is reachable and materially implemented`),
+        "visible controls have real local behavior or explicit disabled states",
+        "loading, empty, and error states are represented where relevant",
+      ],
+    });
+  }
+  return slices;
+}
+
+export type ProjectPlanValidation = {
+  valid: boolean;
+  explicitRequiredPages: string[];
+  missingPages: string[];
+  missingSliceCoverage: string[];
+  issues: string[];
+};
+
+export function validateProjectPlanCoverage(plan: ProjectPlan, brief: string): ProjectPlanValidation {
+  const explicitRequiredPages = extractExplicitPageRequirements(brief);
+  const pageCorpus = plan.sitemap.map((page) => [page.name, page.route, page.purpose].join(" ")).map(normalizedRequirement);
+  const sliceCorpus = plan.slices.map((slice) => [slice.title, slice.outcome, ...slice.scope].join(" ")).map(normalizedRequirement);
+  const covered = (corpus: string[], requirement: string) => {
+    const required = normalizedRequirement(requirement);
+    const tokens = required.split(" ").filter((token) => token.length > 1);
+    return corpus.some((value) => value.includes(required) || tokens.every((token) => value.split(" ").includes(token)));
+  };
+  const missingPages = explicitRequiredPages.filter((item) => !covered(pageCorpus, item));
+  const missingSliceCoverage = explicitRequiredPages.filter((item) => !covered(sliceCorpus, item));
+  const dashboard = /dashboard|portal|admin|operations|internal\s+(?:app|tool)|control\s+center|dispatcher/i.test(brief);
+  const marketingSlices = dashboard
+    ? plan.slices.filter((slice) => /homepage|hero|marketing|calls? to action/i.test([slice.title, slice.outcome, ...slice.scope].join(" "))).map((slice) => slice.title)
+    : [];
+  const issues = [
+    ...(missingPages.length ? [`Missing required sitemap pages: ${missingPages.join(", ")}.`] : []),
+    ...(missingSliceCoverage.length ? [`Required pages are not explicitly assigned to an implementation slice: ${missingSliceCoverage.join(", ")}.`] : []),
+    ...(marketingSlices.length ? [`Application brief received marketing-site slices: ${marketingSlices.join(", ")}.`] : []),
+  ];
+  return { valid: issues.length === 0, explicitRequiredPages, missingPages, missingSliceCoverage, issues };
+}
+
+export type ProjectPlanParseResult = {
+  plan: ProjectPlan;
+  source: "model" | "fallback";
+  fallbackReason: string | null;
+  validation: ProjectPlanValidation;
+  retryRecommended: boolean;
+};
+
+function complexApplicationBrief(brief: string) {
+  const required = extractExplicitPageRequirements(brief);
+  return required.length >= 4 || (/\b(?:full[- ]stack|dashboard|portal|operations|internal app|admin)\b/i.test(brief) && brief.length >= 500);
+}
 function fallbackStyles(commerce: boolean): ProjectStyleSystem {
   return {
     direction: commerce
@@ -113,9 +263,11 @@ function fallbackSitemap(brief: string, commerce: boolean, dashboard: boolean, c
     }
     if (admin) add("Admin", "/admin", "Operate marketplace-wide administration.", ["Admin navigation", "Overview", "Users", "Sellers", "Products", "Orders", "Reviews", "Categories", "Promotions"]);
   } else if (dashboard) {
-    add("Dashboard", "/", "Provide the primary operational overview and navigation.", ["Application navigation", "Overview / KPI summary", "Primary work queue", "Recent activity", "Empty / loading states"]);
-    add("Activity", "/activity", "Inspect recent operational events and records.", ["Filters", "Activity list / table", "Detail state"]);
-    add("Settings", "/settings", "Manage application preferences and configuration.", ["Settings navigation", "Preferences", "Account / workspace settings"]);
+    const requiredPages = extractExplicitPageRequirements(brief);
+    const applicationPages = requiredPages.length >= 3 ? requiredPages : ["Overview", "Activity", "Settings"];
+    for (const [index, name] of applicationPages.entries()) {
+      add(name, applicationRoute(name, index), `${name} operational workspace required by the product brief.`, applicationSections(name));
+    }
   } else {
     add("Home", "/", "Communicate the primary value proposition and direct users into the site's core journey.", ["Navigation", "Hero", "Primary proof / value sections", "Primary CTA", "Footer"]);
     if (/service|offering|solution/.test(text)) add("Services", "/services", "Explain services or solutions in enough detail to support a decision.", ["Services overview", "Service details", "Proof / process", "CTA"]);
@@ -327,13 +479,15 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
       scope: ["admin shell and navigation", "marketplace overview", "users/sellers/products/orders/reviews", "categories and promotions", "at least one legitimate administrative action", "permission-denied states"],
       acceptanceCriteria: ["admin pages are distinct from seller tooling", "role boundaries are explicit in UI and backend contract", "the administrative action updates representative state", "unauthorized states are handled intentionally"],
     });
+  } else if (dashboard) {
+    const applicationSitemap = fallbackSitemap(brief, false, true, contentHeavy, seller, admin, accounts);
+    slices.push(...applicationSlices(applicationSitemap));
   } else {
     slices.push(
       { id: "foundation", title: "Homepage shell and hero", outcome: "The homepage navigation, visual foundation, and hero are polished and usable in the preview.", scope: ["design tokens and layout shell", "header and navigation", "homepage hero", "basic responsive and accessible behavior"], acceptanceCriteria: ["hero communicates the primary offer", "desktop and mobile layouts are usable", "visible navigation controls work"] },
       { id: "homepage-sections", title: contentHeavy ? "Homepage content and discovery sections" : "Homepage sections and calls to action", outcome: "The homepage sections below the hero form a complete, coherent page with working calls to action.", scope: ["approved homepage content sections", "reusable section components", "section imagery and copy", "calls to action and interaction states"], acceptanceCriteria: ["all approved homepage sections are present", "section components work across target viewports", "calls to action have a meaningful destination or state"] },
       { id: "content-flows", title: contentHeavy ? "Content structure and discovery" : "Remaining pages and interactions", outcome: "The remaining core pages, content, and interactions required by the brief work coherently.", scope: ["remaining core screens", "interaction states", "loading, empty, and error states where relevant"], acceptanceCriteria: ["approved pages are reachable", "core interactions work", "relevant states are represented"] },
     );
-    if (dashboard) slices.push({ id: "secondary-flows", title: "Secondary flows and edge states", outcome: "Secondary user journeys and cross-screen behavior are complete enough for end-to-end browser review.", scope: ["secondary journeys", "navigation continuity", "edge and demonstration states"], acceptanceCriteria: ["key journeys can be exercised end to end", "no dead controls in approved scope"] });
   }
 
   slices.push({
@@ -374,10 +528,18 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
   };
 }
 
-export function parseProjectPlan(answer: string, brief: string, template = ""): ProjectPlan {
+export function parseProjectPlanResult(answer: string, brief: string, template = ""): ProjectPlanParseResult {
   const fallback = fallbackProjectPlan(brief, template);
+  const fallbackValidation = validateProjectPlanCoverage(fallback, brief);
+  const useFallback = (reason: string, candidateValidation: ProjectPlanValidation = fallbackValidation): ProjectPlanParseResult => ({
+    plan: fallback,
+    source: "fallback",
+    fallbackReason: reason,
+    validation: candidateValidation,
+    retryRecommended: complexApplicationBrief(brief),
+  });
   const match = answer.match(planMarker);
-  if (!match) return fallback;
+  if (!match) return useFallback("Planner response did not contain a <borg-project-plan> block.");
   try {
     const raw = JSON.parse(match[1]) as Record<string, unknown>;
     const rawSlices = Array.isArray(raw.slices) ? raw.slices.slice(0, 12) : [];
@@ -392,7 +554,7 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
         acceptanceCriteria: list(value.acceptanceCriteria, ["Working preview", "Relevant verification passes"]),
       };
     }).filter((slice) => slice.title && slice.outcome);
-    if (slices.length < 2) return fallback;
+    if (slices.length < 2) return useFallback("Planner returned fewer than two usable implementation slices.");
 
     const rawSitemap = Array.isArray(raw.sitemap) ? raw.sitemap.slice(0, 30) : [];
     const sitemap = rawSitemap.length ? rawSitemap.map((item, index) => {
@@ -457,7 +619,7 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
       avoid: list(rawStyles.avoid, fallback.styles.avoid),
     };
 
-    return {
+    const candidate: ProjectPlan = {
       ...fallback,
       siteGoal: clean(raw.siteGoal, fallback.siteGoal),
       audience: clean(raw.audience, fallback.audience),
@@ -471,7 +633,27 @@ export function parseProjectPlan(answer: string, brief: string, template = ""): 
       slices,
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
-  } catch { return fallback; }
+    const validation = validateProjectPlanCoverage(candidate, brief);
+    if (!validation.valid) return useFallback(validation.issues.join(" "), validation);
+    return { plan: candidate, source: "model", fallbackReason: null, validation, retryRecommended: false };
+  } catch (error) {
+    return useFallback(`Planner project-plan JSON could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export function parseProjectPlan(answer: string, brief: string, template = ""): ProjectPlan {
+  return parseProjectPlanResult(answer, brief, template).plan;
+}
+
+export function projectPlanRepairPrompt(result: ProjectPlanParseResult): string {
+  const required = result.validation.explicitRequiredPages;
+  return [
+    "The previous machine-readable project plan failed semantic coverage and must be regenerated.",
+    result.fallbackReason ? `Failure: ${result.fallbackReason}` : "",
+    required.length ? `Explicit required pages/screens: ${required.join(", ")}.` : "",
+    "Every explicitly required page must appear in the sitemap AND be named in at least one bounded implementation slice. Internal applications must use application-oriented slices; do not use homepage/hero/marketing slices for dashboards or operations tools.",
+    "Return the complete corrected plan and end with exactly one valid <borg-project-plan>...</borg-project-plan> block.",
+  ].filter(Boolean).join("\n\n");
 }
 
 export function projectPlanningPrompt(brief: string): string {
