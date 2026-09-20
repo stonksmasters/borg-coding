@@ -11,6 +11,7 @@ import {
   markSliceReady,
   parseProjectPlan,
   parseProjectPlanResult,
+  projectPlanRepairPrompt,
   validateProjectPlanCoverage,
   persistDesignBrief,
   persistProposedProjectPlan,
@@ -227,6 +228,7 @@ test("plan coverage detects required product capabilities instead of checking pa
   assert.ok(report.requiredCapabilities.includes("search_filtering"));
   assert.ok(report.requiredCapabilities.includes("reporting"));
   assert.ok(report.missingCapabilities.includes("authentication"));
+  assert.ok(report.missingCapabilities.includes("record_mutation"));
   assert.equal(report.valid, false);
 });
 
@@ -275,4 +277,43 @@ test("persisted plans write an inspectable semantic coverage report and refuse i
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test("semantic planning retry tells the architect which capabilities and contradictions failed", () => {
+  const brief = "Build an authenticated internal dispatcher app. Do not build a marketing site. Required pages: Overview, Jobs, Customers, Settings. Users must create/edit/delete jobs.";
+  const invalidPlan = {
+    ...fallbackProjectPlan(brief, "dashboard"),
+    features: [],
+    slices: [
+      {
+        id: "hero",
+        title: "Homepage hero",
+        outcome: "Market the dispatcher product.",
+        scope: ["Hero", "Call to action"],
+        acceptanceCriteria: ["CTA is visible"],
+      },
+      {
+        id: "review",
+        title: "Frontend review",
+        outcome: "Review the page.",
+        scope: ["Review"],
+        acceptanceCriteria: ["Build passes"],
+      },
+    ],
+  };
+  const validation = validateProjectPlanCoverage(invalidPlan, brief);
+  const prompt = projectPlanRepairPrompt({
+    plan: invalidPlan,
+    source: "fallback",
+    fallbackReason: validation.issues.join(" "),
+    validation,
+    retryRecommended: true,
+  });
+
+  assert.match(prompt, /Required product capabilities:/i);
+  assert.match(prompt, /authentication/i);
+  assert.match(prompt, /record_mutation/i);
+  assert.match(prompt, /Brief\/plan contradictions/i);
+  assert.match(prompt, /marketing/i);
 });
