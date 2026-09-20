@@ -1,6 +1,6 @@
 # Task checkpoints and continuation
 
-BORG stores immutable task checkpoints and append-only continuation attempts in the canonical SQLite task database. A checkpoint records the durable task state, permission mode, repository/worktree identity, approval state, saved plan, completed and remaining lifecycle steps, active specialist context, and last durable event.
+BORG stores immutable task checkpoints and append-only continuation attempts in the canonical SQLite task database. A checkpoint records the durable task state, permission mode, repository/worktree identity, approval state, saved plan, completed and remaining lifecycle steps, active specialist context, last durable event, workflow version, verification gate, and recovery descriptor.
 
 ## Checkpoint boundaries
 
@@ -19,6 +19,8 @@ Continuation reconstructs state from SQLite and current Git evidence. It never a
 - Mutation-stage continuation never automatically replays the last tool call or agent response.
 - Missing, escaped, or diverged worktrees require explicit recovery.
 - Recovery-required continuations restore PLAN mode until mutation authority is valid again.
+- Post-verification continuation cannot restore REVIEWING or DELIVERY_READY unless the checkpoint itself contains a passed verification gate.
+- Restart recovery persists the exact recovery category, interrupted state, checkpoint ID, reason, and safe resume action instead of reconstructing them from UI history.
 
 The continuation timeline records the parent continuation, previous and resulting task state, restored mode, repository validation state, required next action, and human-readable recovery detail.
 
