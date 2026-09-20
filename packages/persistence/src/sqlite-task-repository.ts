@@ -373,7 +373,7 @@ export class SqliteTaskRepository {
   }
 
   listInterruptedTasks(): Task[] {
-    const states = ["IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERING"];
+    const states = ["CLASSIFYING", "DISCOVERING", "PLANNING", "IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERING"];
     const placeholders = states.map(() => "?").join(", ");
     const rows = this.database.prepare(`SELECT data FROM tasks WHERE state IN (${placeholders}) ORDER BY updated_at`).all(...states) as { data: string }[];
     return rows.map((row) => TaskSchema.parse(JSON.parse(row.data)));

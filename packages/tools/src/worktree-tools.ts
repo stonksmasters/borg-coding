@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import { BrowserVerification } from "../../browser-verification/src/index.ts";
+import { BrowserVerification, type BrowserEvidenceReport } from "../../browser-verification/src/index.ts";
 import { VisualRegressionService } from "../../visual-regression/src/index.ts";
 import { ProcessRuntime, type ProcessKind } from "../../process-runtime/src/index.ts";
 import type { ExecutionState } from "../../core/src/execution-state.ts";
@@ -40,6 +40,16 @@ const MAX_FILE_BYTES = 500_000;
 const MAX_OUTPUT_BYTES = 120_000;
 const MAX_COMMAND_SECONDS = 900;
 const allowedCommands = new Set(["node", "npm", "python", "python3", "dotnet", "cargo", "go"]);
+
+export function validateBrowserEvidence(evidence: BrowserEvidenceReport | null, commandPassed: boolean): BrowserEvidenceReport | null {
+  if (!evidence) return null;
+  const issues = [...evidence.issues];
+  if (!commandPassed) issues.push("Browser evidence was not accepted because deterministic verification commands failed.");
+  if (evidence.dom.some((node) => node.text?.includes("BORG is preparing the approved design."))) {
+    issues.push("Preview still shows the BORG starter placeholder; implemented UI is not connected to the application entrypoint.");
+  }
+  return issues.length === evidence.issues.length ? evidence : { ...evidence, passed: false, issues };
+}
 
 export const worktreeToolDefinitions = {
   worktree_list: {
@@ -434,6 +444,7 @@ export class WorktreeTools {
     const profile = this.profiles(root).find((item) => item.id === profileId)!;
     const results: (CommandResult & { label: string })[] = [];
     let browserEvidence = this.browser.latest(context.taskId);
+    let commandPassed = false;
     try {
       if (!profile.commands.length) throw new Error(`No commands were detected for the ${profileId} verification profile.`);
       for (const command of profile.commands) {
@@ -441,11 +452,12 @@ export class WorktreeTools {
         results.push({ ...result, label: command.label });
         if (result.exitCode !== 0 || result.timedOut) break;
       }
+      commandPassed = results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut);
     } finally {
-      await this.browser.ensureEvidenceForVerification({ taskId: context.taskId, worktreePath: root }).catch(() => null);
+      if (commandPassed) await this.browser.ensureEvidenceForVerification({ taskId: context.taskId, worktreePath: root }).catch(() => null);
       browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
-    const commandPassed = results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut);
+    browserEvidence = validateBrowserEvidence(browserEvidence, commandPassed);
     const visualRegression = this.visualRegression.compare(root, browserEvidence, profileId);
     return {
       profile: profileId,

@@ -125,8 +125,18 @@ test("verified delivered slice schedules one durable advance command", () => {
   assert.equal(started.pendingCommand?.claimedByTaskId, nextTask.id);
   assert.equal(started.lastConsumedCommandId, command!.id);
 
-  // A restart during planning may safely reclaim the same durable command.
+  // A live task owns its durable command exclusively.
   const replayTask = createTask({ id: "slice-2-replay", projectId: "project", request: "Slice 2 replay" });
+  assert.throws(
+    () => engine.start(replayTask, "frontend_slice", "Duplicate live launch", { commandId: delivered.workflow.pendingCommand!.id }),
+    /already claimed/,
+  );
+
+  // Startup recovery releases the interrupted claim before retrying the durable command.
+  nextTask = engine.transition(nextTask, "CLASSIFYING").task;
+  const interrupted = engine.transition(nextTask, "RECOVERY_REQUIRED");
+  assert.equal(interrupted.workflow.pendingCommand?.claimedByTaskId, null);
+  assert.equal(interrupted.workflow.pendingCommand?.id, delivered.workflow.pendingCommand!.id);
   const replayed = engine.start(replayTask, "frontend_slice", "Replay after restart", { commandId: delivered.workflow.pendingCommand!.id });
   assert.equal(replayed.pendingCommand?.claimedByTaskId, replayTask.id);
 

@@ -28,6 +28,10 @@ const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".css", ".scss",
 const ignored = new Set([".git", ".borg", ".localcode", "node_modules", "dist", "build", ".next", ".vinext", ".wrangler", "coverage"]);
 function hash(text: string) { return createHash("sha256").update(text).digest("hex"); }
 function tokens(text: string) { return new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 3 && !["frontend", "website", "working", "current", "slice", "page", "component", "review"].includes(word))); }
+function bounded(text: string, maximum: number) {
+  const value = text.trim();
+  return value.length <= maximum ? value : `${value.slice(0, maximum)}\n[Content compacted for the slice context.]`;
+}
 
 function sourceCandidates(root: string, relevant: Set<string>) {
   const found: string[] = [];
@@ -61,7 +65,7 @@ export function compileFrontendContext(input: ContextInput): CompiledContext {
   if (!slice) throw new Error(`Frontend slice ${input.sliceIndex + 1} is not in the approved plan.`);
   const model = readProjectModel(root);
   const design = readPersistedDesignBrief(root);
-  const budgetCharacters = Math.max(4_000, Math.min(80_000, input.budgetCharacters ?? 36_000));
+  const budgetCharacters = Math.max(4_000, Math.min(80_000, input.budgetCharacters ?? 64_000));
   const manifest: ContextItem[] = [];
   const sections: string[] = [];
   let characters = 0;
@@ -76,22 +80,22 @@ export function compileFrontendContext(input: ContextInput): CompiledContext {
     manifest.push({ kind, path, reason, characters: section.length, sha256: hash(section) });
     return true;
   };
-  if (input.productContract?.trim()) add("document", "@borg/website-product-contract", "Pinned global website product contract", input.productContract.trim(), true);
+  if (input.productContract?.trim()) add("document", "@borg/website-product-contract", "Pinned global website product contract", bounded(input.productContract, 12_000), true);
   const briefPath = join(root, ".localcode", "build", "brief.md");
   if (!existsSync(briefPath)) throw new Error("Project brief is missing. Repair the project model before continuing.");
-  add("document", ".localcode/build/brief.md", "Approved project brief", readFileSync(briefPath, "utf8"), true);
-  add("document", ".localcode/build/plan.md", "Approved frontend phase and slice", JSON.stringify({ siteGoal: plan.siteGoal, audience: plan.audience, visualDirection: plan.visualDirection, acceptanceCriteria: plan.acceptanceCriteria, slice }, null, 2), true);
-  if (design) add("document", ".localcode/build/design-brief.md", "Approved design direction", JSON.stringify(design, null, 2), true);
+  add("document", ".localcode/build/brief.md", "Approved project brief", bounded(readFileSync(briefPath, "utf8"), 8_000), true);
+  add("document", ".localcode/build/plan.md", "Approved frontend phase and slice", bounded(JSON.stringify({ siteGoal: plan.siteGoal, audience: plan.audience, visualDirection: plan.visualDirection, acceptanceCriteria: plan.acceptanceCriteria, slice }, null, 2), 10_000), true);
+  if (design) add("document", ".localcode/build/design-brief.md", "Approved design direction", bounded(JSON.stringify(design, null, 2), 8_000), true);
   const stylesPath = join(root, ".localcode", "build", "styles.md");
-  if (existsSync(stylesPath) && lstatSync(stylesPath).isFile()) add("document", ".localcode/build/styles.md", "Approved global style system", readFileSync(stylesPath, "utf8").slice(0, 12_000), true);
+  if (existsSync(stylesPath) && lstatSync(stylesPath).isFile()) add("document", ".localcode/build/styles.md", "Approved global style system", bounded(readFileSync(stylesPath, "utf8"), 8_000), true);
   const page = input.scope?.type === "page" ? model.pages.find((item) => item.id === input.scope?.id) : null;
   const component = input.scope?.type === "component" ? model.components.find((item) => item.id === input.scope?.id) : null;
   if (input.scope && !page && !component) throw new Error(`Unknown ${input.scope.type} scope: ${input.scope.id}`);
   const relevantWords = tokens([slice.title, slice.outcome, ...slice.scope, page?.name ?? "", component?.name ?? ""].join(" "));
   const relatedPages = page ? [page] : model.pages.filter((item) => [...tokens(item.name)].some((word) => relevantWords.has(word)));
   const relatedComponents = component ? [component, ...model.components.filter((item) => component.dependencies.includes(item.id))] : model.components.filter((item) => relatedPages.some((candidate) => item.usedBy.includes(candidate.id)) || [...tokens(item.name)].some((word) => relevantWords.has(word)));
-  add("registry", ".localcode/build/pages.json", "Relevant page definitions", JSON.stringify(relatedPages, null, 2), true);
-  add("registry", ".localcode/build/components.json", "Relevant components and direct dependencies", JSON.stringify(relatedComponents, null, 2), true);
+  add("registry", ".localcode/build/pages.json", "Relevant page definitions", bounded(JSON.stringify(relatedPages, null, 2), 8_000), true);
+  add("registry", ".localcode/build/components.json", "Relevant components and direct dependencies", bounded(JSON.stringify(relatedComponents, null, 2), 8_000), true);
   for (const [name, reason] of [["decisions.md", "Recent project decisions"], ["handoff.md", "Latest slice handoff"], ["current-plan.md", "Current slice execution notes"]] as const) {
     const path = join(root, ".localcode", "build", name);
     if (existsSync(path) && lstatSync(path).isFile()) add("document", `.localcode/build/${name}`, reason, readFileSync(path, "utf8").slice(-4_000));
@@ -132,7 +136,7 @@ export function compileFocusedFrontendContext(input: FocusedContextInput): Compi
       ? model.pages.filter((item) => component.usedBy.includes(item.id) || item.components.includes(component.id))
       : [];
 
-  const budgetCharacters = Math.max(6_000, Math.min(80_000, input.budgetCharacters ?? 36_000));
+  const budgetCharacters = Math.max(6_000, Math.min(80_000, input.budgetCharacters ?? 64_000));
   const manifest: ContextItem[] = [];
   const sections: string[] = [];
   let characters = 0;
@@ -148,21 +152,21 @@ export function compileFocusedFrontendContext(input: FocusedContextInput): Compi
     return true;
   };
 
-  if (input.productContract?.trim()) add("document", "@borg/website-product-contract", "Pinned global website product contract", input.productContract.trim(), true);
+  if (input.productContract?.trim()) add("document", "@borg/website-product-contract", "Pinned global website product contract", bounded(input.productContract, 12_000), true);
   const briefPath = join(root, ".localcode", "build", "brief.md");
   if (existsSync(briefPath) && lstatSync(briefPath).isFile()) add("document", ".localcode/build/brief.md", "Approved project brief", readFileSync(briefPath, "utf8").slice(0, 8_000), true);
-  add("document", ".localcode/build/plan.md", "Approved website-level constraints", JSON.stringify({
+  add("document", ".localcode/build/plan.md", "Approved website-level constraints", bounded(JSON.stringify({
     siteGoal: plan.siteGoal,
     audience: plan.audience,
     visualDirection: plan.visualDirection,
     acceptanceCriteria: plan.acceptanceCriteria,
-  }, null, 2), true);
+  }, null, 2), 10_000), true);
   const design = readPersistedDesignBrief(root);
-  if (design) add("document", ".localcode/build/design-brief.md", "Approved design direction", JSON.stringify(design, null, 2), true);
+  if (design) add("document", ".localcode/build/design-brief.md", "Approved design direction", bounded(JSON.stringify(design, null, 2), 8_000), true);
   const stylesPath = join(root, ".localcode", "build", "styles.md");
-  if (existsSync(stylesPath) && lstatSync(stylesPath).isFile()) add("document", ".localcode/build/styles.md", "Approved global style system", readFileSync(stylesPath, "utf8").slice(0, 12_000), true);
-  add("registry", ".localcode/build/pages.json", page ? "Selected page definition" : "Pages using selected component", JSON.stringify(relatedPages, null, 2), true);
-  add("registry", ".localcode/build/components.json", component ? "Selected component and direct dependencies" : "Components used by selected page", JSON.stringify(relatedComponents, null, 2), true);
+  if (existsSync(stylesPath) && lstatSync(stylesPath).isFile()) add("document", ".localcode/build/styles.md", "Approved global style system", bounded(readFileSync(stylesPath, "utf8"), 8_000), true);
+  add("registry", ".localcode/build/pages.json", page ? "Selected page definition" : "Pages using selected component", bounded(JSON.stringify(relatedPages, null, 2), 8_000), true);
+  add("registry", ".localcode/build/components.json", component ? "Selected component and direct dependencies" : "Components used by selected page", bounded(JSON.stringify(relatedComponents, null, 2), 8_000), true);
 
   for (const [name, reason] of [["decisions.md", "Recent project decisions"], ["handoff.md", "Latest project handoff"]] as const) {
     const path = join(root, ".localcode", "build", name);

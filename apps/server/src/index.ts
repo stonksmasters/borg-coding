@@ -422,16 +422,21 @@ async function reconcileInterruptedDelivery(task: Task): Promise<boolean> {
 
 async function recoverInterruptedTasks(): Promise<void> {
   for (const task of tasks.listInterruptedTasks()) {
-    if (await reconcileInterruptedDelivery(task)) continue;
-    const checkpoint = createCheckpointSnapshot(task, "interrupted");
-    const recovered = workflow.transition(task, "RECOVERY_REQUIRED");
-    syncWorkflowProjection(recovered.task, recovered.workflow);
-    appendTaskEvent(task.id, "TASK_RECOVERY_REQUIRED", {
-      checkpointId: checkpoint.id,
-      previousState: task.state,
-      workflowVersion: recovered.workflow.version,
-      reason: "The server restarted while a mutation-capable lifecycle stage was active.",
-    });
+    if (workflow.get(task.projectId)?.taskId !== task.id) continue;
+    try {
+      if (await reconcileInterruptedDelivery(task)) continue;
+      const checkpoint = createCheckpointSnapshot(task, "interrupted");
+      const recovered = workflow.transition(task, "RECOVERY_REQUIRED");
+      syncWorkflowProjection(recovered.task, recovered.workflow);
+      appendTaskEvent(task.id, "TASK_RECOVERY_REQUIRED", {
+        checkpointId: checkpoint.id,
+        previousState: task.state,
+        workflowVersion: recovered.workflow.version,
+        reason: "The server restarted while an active lifecycle stage was running.",
+      });
+    } catch (error) {
+      console.error(`[workflow] startup recovery failed for task ${task.id}`, error);
+    }
   }
 }
 
@@ -2142,6 +2147,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         response.end();
       });
     }).catch((error) => {
+      console.error("[chat] request failed", error);
       writeEvent(response, { type: "stream.failed", message: error instanceof Error ? error.message : "Invalid request" });
       response.end();
     });

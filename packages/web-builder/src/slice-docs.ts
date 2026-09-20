@@ -311,7 +311,9 @@ export function readProjectPlan(root: string): ProjectPlan | null {
 
 export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
   const text = brief.toLowerCase();
-  const commerce = /e.?commerce|commerce|marketplace|shop|store|catalog|product|cart|checkout/.test(`${template} ${text}`);
+  // "Product" is common in software and agency briefs and is not evidence of a store.
+  // Require an explicit commerce concept before selecting the commerce fallback plan.
+  const commerce = /e.?commerce|commerce|marketplace|\bshop(?:ping)?\b|\bstorefront\b|\bcatalog\b|\bcart\b|\bcheckout\b/.test(`${template} ${text}`);
   const dashboard = /dashboard|portal|admin|operations|analytics/.test(`${template} ${text}`);
   const contentHeavy = /blog|content|news|docs|documentation|magazine/.test(`${template} ${text}`);
   const social = /social|creator|feed|follow|favorite|wishlist|review|trending|recommend/.test(text);

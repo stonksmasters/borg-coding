@@ -77,6 +77,9 @@ export class WorkflowEngine {
         if (existing?.lastConsumedCommandId === options.commandId) throw new Error(`Workflow command ${options.commandId} was already consumed.`);
         throw new Error(`Workflow command ${options.commandId} is no longer pending.`);
       }
+      if (existing.pendingCommand.claimedByTaskId && existing.pendingCommand.claimedByTaskId !== task.id) {
+        throw new Error(`Workflow command ${options.commandId} is already claimed by task ${existing.pendingCommand.claimedByTaskId}.`);
+      }
     }
     const now = new Date().toISOString();
     const state = WorkflowStateSchema.parse({
@@ -131,15 +134,26 @@ export class WorkflowEngine {
     const current = this.requireTask(task);
     const now = new Date().toISOString();
     const updatedTask = { ...task, state: to, updatedAt: now };
+    const interruptedCommand = to === "RECOVERY_REQUIRED" && current.pendingCommand?.claimedByTaskId === task.id
+      ? current.pendingCommand
+      : null;
     const workflow = WorkflowStateSchema.parse({
       ...current,
       ...taskProjection(to),
+      pendingCommand: interruptedCommand
+        ? { ...interruptedCommand, claimedByTaskId: null, claimedAt: null }
+        : current.pendingCommand,
       repairAttempt: updatedTask.attempts,
       detail: `Task moved from ${task.state} to ${to}.`,
       version: current.version + 1,
       updatedAt: now,
     });
-    const event = taskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to, workflowVersion: workflow.version }, now);
+    const event = taskEvent(task.id, "TASK_STATE_CHANGED", {
+      from: task.state,
+      to,
+      workflowVersion: workflow.version,
+      releasedCommandId: interruptedCommand?.id ?? null,
+    }, now);
     this.store.commitWorkflowMutation({ task: updatedTask, state: workflow, events: [event] });
     return { task: updatedTask, workflow, event };
   }

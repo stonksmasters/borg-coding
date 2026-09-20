@@ -404,6 +404,7 @@ async function launchFrontendWorkflowSession(
   action: "initial" | "advance" | "revise" | "backend",
   feedback = "",
   workflowCommandId: string | null = null,
+  waitForCompletion = false,
 ) {
   const root = rootWorkflowSession(parent);
   if (!root.repositoryPath) throw new Error("The website session is not attached to a repository.");
@@ -440,14 +441,15 @@ async function launchFrontendWorkflowSession(
   });
   frontendLaunches.set(key, { session, run });
   await Promise.race([started, new Promise<void>((resolveStarted) => setTimeout(resolveStarted, 5_000))]);
+  if (waitForCompletion) await run;
   return session;
 }
 
-async function driveWorkflow(session: ChatSession, state: CoreWorkflowState | null | undefined) {
+async function driveWorkflow(session: ChatSession, state: CoreWorkflowState | null | undefined, waitForCompletion = false) {
   const pending = state?.pendingCommand;
   if (!pending) return null;
-  if (pending.action === "start_slice") return launchFrontendWorkflowSession(session, "initial", "", pending.id);
-  if (pending.action === "advance_slice") return launchFrontendWorkflowSession(session, "advance", "", pending.id);
+  if (pending.action === "start_slice") return launchFrontendWorkflowSession(session, "initial", "", pending.id, waitForCompletion);
+  if (pending.action === "advance_slice") return launchFrontendWorkflowSession(session, "advance", "", pending.id, waitForCompletion);
   return null;
 }
 
@@ -530,6 +532,16 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
         if (event.type === "approval.requested") {
           coreApproval = event.approval as Record<string, unknown> | null;
           continue;
+        }
+        if (event.type === "runtime.failed" || event.type === "stream.failed") {
+          appendMessage({
+            sessionId: session.id,
+            taskId,
+            role: "system",
+            kind: "warning",
+            text: String(event.message ?? "The workflow stopped unexpectedly."),
+            metadata: event,
+          });
         }
         const toolText = describeToolEvent(event);
         if (toolText && event.type !== "tool.started") {
@@ -963,7 +975,7 @@ async function recoverApprovedFrontendPlans() {
       if (state.taskId && chats.latestTaskId(parent.id) !== state.taskId) chats.bindTask(parent.id, state.taskId);
 
       if (state.pendingCommand) {
-        await driveWorkflow(parent, state);
+        await driveWorkflow(parent, state, true);
         continue;
       }
 

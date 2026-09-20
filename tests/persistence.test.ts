@@ -12,6 +12,20 @@ test("tasks round-trip through SQLite", () => {
   repository.close();
 });
 
+test("startup recovery includes interrupted planning and mutation stages", () => {
+  const repository = new SqliteTaskRepository(":memory:");
+  for (const state of ["DISCOVERING", "PLANNING", "IMPLEMENTING", "VERIFYING"] as const) {
+    repository.saveTask({ ...createTask({ id: `task-${state}`, projectId: "project-1", request: "Continue the slice" }), state });
+  }
+  repository.saveTask({ ...createTask({ id: "task-complete", projectId: "project-1", request: "Done" }), state: "COMPLETE" });
+
+  assert.deepEqual(
+    new Set(repository.listInterruptedTasks().map((task) => task.state)),
+    new Set(["DISCOVERING", "PLANNING", "IMPLEMENTING", "VERIFYING"]),
+  );
+  repository.close();
+});
+
 test("approval decisions and worktree metadata round-trip through SQLite", () => {
   const repository = new SqliteTaskRepository(":memory:");
   const task = createTask({ id: "task-approval", projectId: "project-1", request: "Change the feature" });

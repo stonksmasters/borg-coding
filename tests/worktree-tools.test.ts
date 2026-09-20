@@ -5,7 +5,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { GitWorktreeManager } from "../packages/repository/src/git-worktree-manager.ts";
-import { WorktreeTools, type RecordedApproval } from "../packages/tools/src/worktree-tools.ts";
+import { validateBrowserEvidence, WorktreeTools, type RecordedApproval } from "../packages/tools/src/worktree-tools.ts";
+
+test("browser evidence cannot pass for a broken build or the starter placeholder", () => {
+  const evidence = {
+    taskId: "task-preview",
+    passed: true,
+    issues: [],
+    url: "http://127.0.0.1:3000",
+    viewport: { width: 1280, height: 720 },
+    capturedAt: new Date().toISOString(),
+    dom: [{ selector: "main", tag: "main", role: null, name: null, text: "BORG is preparing the approved design.", href: null, disabled: false, visible: true, rect: { x: 0, y: 0, width: 100, height: 100 } }],
+    console: [],
+    network: [],
+    accessibility: null,
+    screenshots: [],
+    responsive: [],
+    server: null,
+  };
+
+  const result = validateBrowserEvidence(evidence, false);
+  assert.equal(result?.passed, false);
+  assert.match(result?.issues.join(" ") ?? "", /commands failed/i);
+  assert.match(result?.issues.join(" ") ?? "", /starter placeholder/i);
+});
 
 test("worktree mutation requires approval and remains inside the recorded task worktree", async () => {
   const root = mkdtempSync(join(tmpdir(), "borg-mutation-"));

@@ -43,6 +43,16 @@ test("website types receive appropriately sized fallback phase plans", () => {
   assert.ok(ecommerce.components.some((component) => component.usedBy.length > 0));
 });
 
+test("software product and consumer experience briefs do not become commerce plans", () => {
+  const nightlife = fallbackProjectPlan("Build a premium consumer product for discovering late-night experiences, events, rooftops, and neighborhoods.", "saas-landing");
+  const agency = fallbackProjectPlan("Build a production-quality product development studio website with project case studies and services.", "saas-landing");
+
+  assert.doesNotMatch(nightlife.slices[0].title, /commerce/i);
+  assert.doesNotMatch(agency.slices[0].title, /commerce/i);
+  assert.match(nightlife.slices[0].title, /hero/i);
+  assert.match(agency.slices[0].title, /hero/i);
+});
+
 test("commerce fallback preserves vertical product slices when model formatting fails", () => {
   const plan = fallbackProjectPlan(
     "Build a social-commerce marketplace with discovery feed, product variants, cart, checkout, orders, auth, wishlist, sellers, inventory, and admin roles.",
