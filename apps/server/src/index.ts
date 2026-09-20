@@ -57,6 +57,7 @@ import { assertArchitectOutput, architectRepairPrompt, validateArchitectOutput }
 import { runFreshReview } from "./fresh-review.ts";
 import { deriveWorkflowStatus } from "./workflow-status.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
+import { resolveExecutionScopeMarkers, resolveExecutionTaskScope, resolvePlanningTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
@@ -1360,11 +1361,9 @@ const server = createServer((request, response) => {
     const authorityProjectId = taskWorkflowAuthorityProjectId(task.id) ?? task.projectId;
     const authorityWorkflow = workflow.get(authorityProjectId);
     const projectPlan = websiteProject ? projectPlanFromWorkflow(authorityWorkflow ?? ownedTaskWorkflow, approvedWorktreePath) : null;
-    const focusedWorkspaceEvent = websiteProject ? tasks.listEvents(taskId).findLast((event) => event.type === "FOCUSED_WORKSPACE_SELECTED") : null;
-    const focusedWorkspace = focusedWorkspaceEvent?.payload as { scopeType?: "page" | "component"; scopeId?: string } | undefined;
-    const focusedExecutionScope = focusedWorkspace?.scopeType && focusedWorkspace.scopeId
-      ? { type: focusedWorkspace.scopeType, id: focusedWorkspace.scopeId } as const
-      : null;
+    const executionScopeEvents = tasks.listEvents(taskId);
+    const executionMarkers = resolveExecutionScopeMarkers(executionScopeEvents, Boolean(websiteProject));
+    const focusedExecutionScope = executionMarkers.focus;
     const focusedBrowserRoute = focusedExecutionScope && projectPlan
       ? (() => {
           const staticRoute = (route: string | null | undefined) =>
@@ -1378,20 +1377,27 @@ const server = createServer((request, response) => {
             .find((route): route is string => Boolean(route)) ?? null;
         })()
       : null;
-    const styleWorkspace = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "STYLE_WORKSPACE_SELECTED");
-    const sliceState = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED")
+    const sliceState = websiteProject && executionMarkers.frontendSliceSelected
       ? sliceStateFromWorkflow(ownedTaskWorkflow, projectPlan, approvedWorktreePath)
       : null;
     const priorDeliveredWebsiteTask = websiteProject
       ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
       : false;
-    const websiteWorkflow: WebsiteWorkflowKind = styleWorkspace || focusedExecutionScope ? "iterative_edit" : sliceState && projectPlan ? "initial_generation" : priorDeliveredWebsiteTask ? "iterative_edit" : "initial_generation";
+    const executionScope = resolveExecutionTaskScope({
+      events: executionScopeEvents,
+      hasWebsite: Boolean(websiteProject),
+      hasProjectPlan: Boolean(projectPlan),
+      hasSliceState: Boolean(sliceState),
+      priorDeliveredWebsiteTask,
+    });
+    const styleWorkspace = executionScope.styleWorkspace;
+    const websiteWorkflow = executionScope.websiteWorkflow;
     const websiteContext = websiteProject ? websiteGenerationContext({
       name: websiteProject.name,
       template: websiteProject.template,
       originalBrief: websiteProject.originalBrief,
     }, websiteWorkflow) : "";
-    const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
+    const backendHandoff = executionScope.backendPhase
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
     const styleExecutionContext = styleWorkspace && websiteProject
       ? "GLOBAL STYLE WORKSPACE. Preserve sitemap, routes, page purposes, component responsibilities, content hierarchy, interactions, and data behavior. Change shared visual primitives first: theme/tokens, typography, spacing, radii, shadows, layout rhythm, responsive styling, motion, and accessibility presentation. Avoid one-off component patches when a shared rule can solve the request. Verify representative pages at mobile and desktop widths."
@@ -2532,21 +2538,31 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const projectPlan = selectedWebsite ? projectPlanFromWorkflow(durableWorkflow, selectedWebsite.path) : null;
       const previousSlice = selectedWebsite ? sliceStateFromWorkflow(durableWorkflow, projectPlan, selectedWebsite.path) : null;
       if (mode !== "ask" && selectedWebsite && projectPlan && projectPlan.status !== "proposed" && ensureProjectModel(selectedWebsite.path, projectPlan)) commitProjectRegistries(selectedWebsite.path);
-      const rawSliceAction = String(input.sliceAction ?? "initial");
-      if (rawSliceAction === "retry") throw new Error("Blocked tasks must be retried through their existing task continuation endpoint.");
-      const projectPlanning = mode !== "ask" && rawSliceAction === "initial" && Boolean(selectedWebsite && (!projectPlan || projectPlan.status === "proposed") && previousSlice?.status !== "ready");
-      const focusedPlanReady = Boolean(selectedWebsite && projectPlan && projectPlan.status !== "proposed");
-      if (mode !== "ask" && ["style", "page", "component"].includes(rawSliceAction) && !focusedPlanReady) {
-        throw new Error("Approve the website plan before starting a focused Page, Component, or Styles workspace.");
-      }
-      const styleFocus = mode !== "ask" && rawSliceAction === "style" && focusedPlanReady;
-      const focusType = rawSliceAction === "page" || rawSliceAction === "component" ? rawSliceAction as "page" | "component" : null;
-      const focusId = focusType ? String(input.scopeId ?? "").trim() : "";
-      const objectFocus = mode !== "ask" && Boolean(focusType && focusId && focusedPlanReady);
-      if (focusType && !focusId) throw new Error(`${focusType} workspace is missing its durable scope id.`);
-      const slicedApplication = mode !== "ask" && !["backend", "style", "page", "component"].includes(rawSliceAction) && Boolean(selectedWebsite && projectPlan?.status === "approved" && previousSlice);
-      const miniLoop = slicedApplication || styleFocus || objectFocus;
-      const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise" ? rawSliceAction : "initial";
+      const planningScope = resolvePlanningTaskScope({
+        mode,
+        rawSliceAction: String(input.sliceAction ?? "initial"),
+        scopeId: input.scopeId == null ? null : String(input.scopeId),
+        hasWebsite: Boolean(selectedWebsite),
+        projectPlanStatus: projectPlan?.status ?? null,
+        previousSliceStatus: previousSlice?.status ?? null,
+        hasPreviousSlice: Boolean(previousSlice),
+        durableHasProjectPlan: Boolean(durableWorkflow?.projectPlan),
+        pendingCommand: durableWorkflow?.pendingCommand ?? null,
+        explicitWorkflowCommandId: typeof input.workflowCommandId === "string" ? input.workflowCommandId : null,
+      });
+      const {
+        rawSliceAction,
+        projectPlanning,
+        slicedApplication,
+        miniLoop,
+        styleFocus,
+        sliceAction,
+        workflowCommandId,
+        workflowDetail,
+      } = planningScope;
+      const focusType = planningScope.focus?.type ?? null;
+      const focusId = planningScope.focus?.id ?? "";
+      const objectFocus = Boolean(planningScope.focus);
       const teamPolicy = teamPolicies.load(selectedPath);
       const routed = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
       const websiteFrontend = mode !== "ask" && Boolean(selectedWebsite) && rawSliceAction !== "backend";
@@ -2563,24 +2579,6 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         disciplines: route.disciplines,
         riskLevel: minimumRiskFor(packs),
       };
-      const explicitWorkflowCommandId = typeof input.workflowCommandId === "string" && input.workflowCommandId.trim() ? input.workflowCommandId.trim() : null;
-      const expectedCommandAction = slicedApplication && sliceAction === "initial"
-        ? "start_slice"
-        : slicedApplication && sliceAction === "advance"
-          ? "advance_slice"
-          : null;
-      const workflowCommandId = explicitWorkflowCommandId
-        ?? (expectedCommandAction && durableWorkflow?.pendingCommand?.action === expectedCommandAction ? durableWorkflow.pendingCommand.id : null);
-      if (durableWorkflow?.projectPlan && expectedCommandAction && !workflowCommandId) {
-        throw new Error(`Core has no pending ${expectedCommandAction} command for this project.`);
-      }
-      const workflowDetail = slicedApplication
-        ? "Continuing the approved project workflow without repository rediscovery."
-        : objectFocus
-          ? `Planning a focused ${focusType} edit without changing the main frontend slice workflow.`
-          : styleFocus
-            ? "Planning a global style edit without changing the main frontend slice workflow."
-            : "Planning the requested project work.";
       const startedWorkflow = slicedApplication
         ? workflow.startFrontendSlice(task, sliceAction, workflowDetail, {
             commandId: workflowCommandId,
@@ -2588,7 +2586,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           })
         : workflow.start(
             task,
-            rawSliceAction === "backend" ? "backend" : projectPlanning ? "project_plan" : "general",
+            planningScope.workflowIntent,
             workflowDetail,
           );
       syncWorkflowProjection(task, startedWorkflow);
