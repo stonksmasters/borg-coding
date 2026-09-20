@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PlanningOrchestrator, type PlanningOrchestratorDependencies } from "../apps/server/src/planning-orchestrator.ts";
+import type { Approval, RoleAssignment, Task, TaskCheckpoint, WorkflowState } from "../packages/core/src/contracts.ts";
 import { DisciplineRouter, TeamPolicyService } from "../packages/orchestration/src/index.ts";
 
 function baseWorkflowState(taskId: string, projectId: string) {
@@ -58,7 +59,7 @@ function harness() {
   let currentWorkflow: ReturnType<typeof baseWorkflowState> | null = null;
 
   const workflow = {
-    get: (_projectId: string) => currentWorkflow,
+    get: () => currentWorkflow,
     start: (task: { id: string; projectId: string }, intent: string, detail: string) => {
       workflowCalls.push({ name: "start", value: { intent, detail } });
       currentWorkflow = { ...baseWorkflowState(task.id, task.projectId), detail };
@@ -67,7 +68,7 @@ function harness() {
     startFrontendSlice: () => {
       throw new Error("frontend slice start was not expected in this harness");
     },
-    requestApproval: (task: any, approval: any, kind: string) => {
+    requestApproval: (task: Task, approval: Approval, kind: string) => {
       workflowCalls.push({ name: "requestApproval", value: { kind, approvalId: approval.id } });
       const nextTask = { ...task, state: "AWAITING_APPROVAL", updatedAt: new Date().toISOString() };
       currentWorkflow = {
@@ -111,15 +112,15 @@ function harness() {
     },
     ollamaUrl: "http://127.0.0.1:11434",
     model: "test-model",
-    runAgent: async (input: any) => {
+    runAgent: async (input: Parameters<PlanningOrchestratorDependencies["runAgent"]>[0]) => {
       workflowCalls.push({ name: "runAgent", value: { mode: input.mode, role: input.role } });
       return { answer: "Plan\n1. Inspect the approved scope.\n2. Make the bounded change.\n3. Verify the result.", usedTools: false, budgetExhausted: false };
     },
     appendTaskEvent: (taskId: string, type: string, payload: Record<string, unknown>) => {
       taskEvents.push({ taskId, type, payload });
     },
-    syncWorkflowProjection: (_task: any, state: any) => state,
-    transitionTask: (task: any, state: string, emit?: (event: Record<string, unknown>) => void) => {
+    syncWorkflowProjection: (_task: Task, state: WorkflowState) => state,
+    transitionTask: (task: Task, state: Task["state"], emit?: (event: Record<string, unknown>) => void) => {
       const updated = { ...task, state, updatedAt: new Date().toISOString() };
       emit?.({ type: "task.state", taskId: task.id, state, workflow: currentWorkflow });
       return updated;
@@ -130,7 +131,7 @@ function harness() {
     contextSourceHints: () => [],
     recordContextPack: () => undefined,
     recordModelInput: () => undefined,
-    beginRole: (task: any, role: string, discipline: string, selectedModel: string | null) => ({
+    beginRole: (task: Task, role: RoleAssignment["role"], discipline: RoleAssignment["discipline"], selectedModel: string | null) => ({
       id: "role-1",
       taskId: task.id,
       role,
@@ -142,14 +143,14 @@ function harness() {
       status: "active",
       startedAt: new Date().toISOString(),
       completedAt: null,
-    }),
-    finishRole: (assignment: any, status: string) => ({ ...assignment, status, completedAt: new Date().toISOString() }),
+    } as RoleAssignment),
+    finishRole: (assignment: RoleAssignment, status: "completed" | "failed") => ({ ...assignment, status, completedAt: new Date().toISOString() }),
     recordHandoff: () => undefined,
-    createCheckpointSnapshot: (task: any, kind: string) => ({
+    createCheckpointSnapshot: (task: Task, kind: TaskCheckpoint["kind"]) => ({
       id: "checkpoint-1",
       taskId: task.id,
       kind,
-    }),
+    } as TaskCheckpoint),
   } as unknown as PlanningOrchestratorDependencies;
 
   return {
