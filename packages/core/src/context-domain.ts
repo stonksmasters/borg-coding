@@ -31,6 +31,7 @@ export const ContextPackSchema = z.object({
   version: z.literal(1),
   profile: ContextProfileSchema,
   authority: z.enum(["workflow", "legacy_projection"]),
+  sliceId: z.string().min(1),
   text: z.string(),
   manifest: z.array(ContextManifestItemSchema),
   characters: z.number().int().nonnegative(),
