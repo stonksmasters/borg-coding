@@ -21,11 +21,66 @@ export type WorkflowMutation = {
 
 export interface WorkflowStore {
   findWorkflow(projectId: string): WorkflowState | null;
-  saveWorkflow(state: WorkflowState): void;
   commitWorkflowMutation(input: WorkflowMutation): void;
 }
 
 export type WorkflowIntent = "project_plan" | "frontend_slice" | "backend" | "general";
+export type FrontendSliceAction = "initial" | "advance" | "revise";
+
+function loopForIntent(intent: WorkflowIntent): WorkflowState["loop"] {
+  return intent === "project_plan" ? "project"
+    : intent === "frontend_slice" ? "slice"
+      : intent === "backend" ? "backend"
+        : "general";
+}
+
+function selectFrontendSlice(
+  existing: WorkflowState | null,
+  action: FrontendSliceAction | undefined,
+  commandId: string | null | undefined,
+) {
+  if (!existing?.projectPlan || !existing.planApproved || existing.projectPlan.status === "proposed") {
+    throw new Error("Frontend slices require an approved durable project plan.");
+  }
+  if (!action) throw new Error("Frontend slice start requires an explicit slice action.");
+
+  if (action === "revise") {
+    if (commandId) throw new Error("Slice revision must not claim a start/advance command.");
+    if (existing.sliceIndex === null) throw new Error("No frontend slice exists to revise.");
+    if (existing.status !== "awaiting_feedback" && existing.nextAction !== "request_feedback" && existing.nextAction !== "advance_slice") {
+      throw new Error("Only a verified slice awaiting feedback may be revised.");
+    }
+    const slice = existing.projectPlan.slices[existing.sliceIndex];
+    if (!slice) throw new Error(`Frontend slice ${existing.sliceIndex + 1} is outside the approved plan.`);
+    return {
+      index: existing.sliceIndex,
+      total: existing.projectPlan.slices.length,
+      title: slice.title,
+      command: null,
+      supersededCommandId: existing.pendingCommand?.id ?? null,
+    };
+  }
+
+  const expectedAction = action === "initial" ? "start_slice" : "advance_slice";
+  if (!commandId) throw new Error(`Frontend slice ${action} requires Core's pending ${expectedAction} command.`);
+  const pending = existing.pendingCommand;
+  if (!pending || pending.id !== commandId || pending.action !== expectedAction) {
+    if (existing.lastConsumedCommandId === commandId) throw new Error(`Workflow command ${commandId} was already consumed.`);
+    throw new Error(`Workflow command ${commandId} is no longer pending for ${expectedAction}.`);
+  }
+  if (pending.claimedByTaskId) throw new Error(`Workflow command ${commandId} is already claimed by task ${pending.claimedByTaskId}.`);
+
+  const index = action === "initial" ? (existing.sliceIndex ?? 0) : (existing.sliceIndex ?? -1) + 1;
+  const slice = existing.projectPlan.slices[index];
+  if (!slice) throw new Error(`Frontend slice ${index + 1} is outside the approved plan.`);
+  return {
+    index,
+    total: existing.projectPlan.slices.length,
+    title: slice.title,
+    command: pending,
+    supersededCommandId: null,
+  };
+}
 
 function taskProjection(state: TaskState): Pick<WorkflowState, "status" | "nextAction"> {
   switch (state) {
@@ -69,10 +124,14 @@ export class WorkflowEngine {
     task: Task,
     intent: WorkflowIntent,
     detail = "Workflow created.",
-    options: { commandId?: string | null; feedback?: string } = {},
+    options: { commandId?: string | null; feedback?: string; sliceAction?: FrontendSliceAction } = {},
   ): WorkflowState {
     const existing = this.store.findWorkflow(task.projectId);
-    if (options.commandId) {
+    const sliceSelection = intent === "frontend_slice"
+      ? selectFrontendSlice(existing, options.sliceAction, options.commandId)
+      : null;
+
+    if (intent !== "frontend_slice" && options.commandId) {
       if (existing?.pendingCommand?.id !== options.commandId) {
         if (existing?.lastConsumedCommandId === options.commandId) throw new Error(`Workflow command ${options.commandId} was already consumed.`);
         throw new Error(`Workflow command ${options.commandId} is no longer pending.`);
@@ -81,25 +140,31 @@ export class WorkflowEngine {
         throw new Error(`Workflow command ${options.commandId} is already claimed by task ${existing.pendingCommand.claimedByTaskId}.`);
       }
     }
+
     const now = new Date().toISOString();
     const state = WorkflowStateSchema.parse({
       projectId: task.projectId,
       taskId: task.id,
+      loop: loopForIntent(intent),
       phase: intent === "backend" ? "backend" : intent === "project_plan" ? "planning" : intent === "frontend_slice" ? "frontend" : existing?.phase ?? "planning",
       status: "planning",
       nextAction: "plan",
       planApprovalId: existing?.planApprovalId ?? null,
       planApproved: existing?.planApproved ?? false,
       projectPlan: existing?.projectPlan ?? null,
-      sliceIndex: existing?.sliceIndex ?? null,
-      sliceTotal: existing?.sliceTotal ?? null,
-      sliceTitle: existing?.sliceTitle ?? null,
+      sliceIndex: sliceSelection?.index ?? existing?.sliceIndex ?? null,
+      sliceTotal: sliceSelection?.total ?? existing?.sliceTotal ?? null,
+      sliceTitle: sliceSelection?.title ?? existing?.sliceTitle ?? null,
       feedback: options.feedback?.trim() ? [...(existing?.feedback ?? []), options.feedback.trim().slice(0, 4000)] : existing?.feedback ?? [],
       handoff: existing?.handoff ?? null,
-      pendingCommand: options.commandId && existing?.pendingCommand
-        ? { ...existing.pendingCommand, claimedByTaskId: task.id, claimedAt: now }
-        : null,
-      lastConsumedCommandId: existing?.lastConsumedCommandId ?? null,
+      pendingCommand: sliceSelection?.command
+        ? { ...sliceSelection.command, claimedByTaskId: task.id, claimedAt: now }
+        : intent === "frontend_slice"
+          ? null
+          : options.commandId && existing?.pendingCommand
+            ? { ...existing.pendingCommand, claimedByTaskId: task.id, claimedAt: now }
+            : null,
+      lastConsumedCommandId: sliceSelection?.supersededCommandId ?? existing?.lastConsumedCommandId ?? null,
       repairAttempt: 0,
       recoveryCategory: null,
       detail,
@@ -110,13 +175,31 @@ export class WorkflowEngine {
     this.store.commitWorkflowMutation({
       task,
       state,
-      events: [taskEvent(task.id, "TASK_CREATED", { state: task.state, workflowVersion: state.version, consumedCommandId: options.commandId ?? null }, now)],
+      events: [taskEvent(task.id, "TASK_CREATED", {
+        state: task.state,
+        workflowVersion: state.version,
+        loop: state.loop,
+        sliceAction: options.sliceAction ?? null,
+        sliceIndex: state.sliceIndex,
+        claimedCommandId: sliceSelection?.command?.id ?? options.commandId ?? null,
+        supersededCommandId: sliceSelection?.supersededCommandId ?? null,
+      }, now)],
     });
     return state;
   }
 
+  startFrontendSlice(
+    task: Task,
+    action: FrontendSliceAction,
+    detail = "Starting the selected frontend slice mini-loop.",
+    options: { commandId?: string | null; feedback?: string } = {},
+  ): WorkflowState {
+    return this.start(task, "frontend_slice", detail, { ...options, sliceAction: action });
+  }
+
   setProjectPlan(task: Task, plan: WorkflowProjectPlan): WorkflowState {
     const current = this.requireTask(task);
+    if (current.loop !== "project" || current.phase !== "planning") throw new Error("Only the outer project planning loop may replace the project plan.");
     return this.update(task, current, {
       projectPlan: plan,
       sliceTotal: plan.slices.length,
@@ -241,37 +324,25 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow };
   }
 
-  slice(task: Task, input: {
-    index: number;
-    total: number;
-    title: string;
-    status?: "running" | "awaiting_feedback" | "complete";
-    handoff?: string;
-  }): WorkflowState {
+  activateSlice(task: Task, handoff?: string): WorkflowState {
     const current = this.requireTask(task);
-    const status = input.status ?? "running";
-    const last = input.index + 1 >= input.total;
-    const nextVersion = current.version + 1;
-    const nextAction: WorkflowState["nextAction"] = status === "awaiting_feedback"
-      ? (last ? "request_feedback" : "advance_slice")
-      : status === "complete" ? "none" : "implement";
-    const projectPlan = current.projectPlan && status === "awaiting_feedback" && last
-      ? { ...current.projectPlan, status: "frontend_complete" as const }
-      : current.projectPlan;
+    if (current.loop !== "slice" || current.phase !== "frontend") throw new Error("Only the frontend slice mini-loop may activate a slice.");
+    if (!current.planApproved || !current.projectPlan || current.projectPlan.status === "proposed") throw new Error("An approved project plan is required before slice activation.");
+    if (current.sliceIndex === null) throw new Error("Core has not selected a frontend slice.");
+    const slice = current.projectPlan.slices[current.sliceIndex];
+    if (!slice) throw new Error(`Frontend slice ${current.sliceIndex + 1} is outside the approved plan.`);
     return this.update(task, current, {
-      phase: "frontend",
-      projectPlan,
-      sliceIndex: input.index,
-      sliceTotal: input.total,
-      sliceTitle: input.title,
-      handoff: input.handoff?.trim().slice(0, 20_000) ?? current.handoff,
-      status: status === "awaiting_feedback" ? "awaiting_feedback" : status === "complete" ? "complete" : "running",
-      nextAction,
-      pendingCommand: status === "awaiting_feedback" && !last ? command(task.projectId, nextVersion, "advance_slice", new Date().toISOString()) : null,
-      detail: status === "awaiting_feedback"
-        ? `Slice ${input.index + 1} is verified, delivered, and checkpointed.`
-        : `Slice ${input.index + 1} is active.`,
-    }, "WORKFLOW_SLICE_UPDATED", { index: input.index, total: input.total, title: input.title, status, nextAction });
+      sliceTotal: current.projectPlan.slices.length,
+      sliceTitle: slice.title,
+      handoff: handoff?.trim().slice(0, 20_000) ?? current.handoff,
+      status: "running",
+      nextAction: "implement",
+      detail: `Slice ${current.sliceIndex + 1} is active inside the bounded slice mini-loop.`,
+    }, "WORKFLOW_SLICE_ACTIVATED", {
+      index: current.sliceIndex,
+      total: current.projectPlan.slices.length,
+      title: slice.title,
+    });
   }
 
   retry(task: Task, input: {
@@ -463,6 +534,7 @@ export class WorkflowEngine {
       const migrated = WorkflowStateSchema.parse({
         projectId: task.projectId,
         taskId: task.id,
+        loop: "general",
         phase: "planning",
         status: taskProjection(task.state).status,
         nextAction: taskProjection(task.state).nextAction,
@@ -483,7 +555,10 @@ export class WorkflowEngine {
         createdAt: now,
         updatedAt: now,
       });
-      this.store.saveWorkflow(migrated);
+      this.store.commitWorkflowMutation({
+        state: migrated,
+        events: [taskEvent(task.id, "WORKFLOW_MIGRATED", { workflowVersion: migrated.version }, now)],
+      });
       return migrated;
     }
     if (existing.taskId !== task.id) throw new Error(`Workflow ${task.projectId} is owned by task ${existing.taskId ?? "none"}, not ${task.id}.`);
