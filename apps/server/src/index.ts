@@ -24,6 +24,7 @@ import {
 } from "../../../packages/core/src/contracts.ts";
 import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import { normalizeWorkflowEvents } from "../../../packages/core/src/workflow-events.ts";
+import { DebugSnapshotSchema, evaluateDebugInvariants, redactDebugValue, type DebugSnapshot } from "../../../packages/core/src/control-plane-debug.ts";
 import { taskRepositoryPath } from "../../../packages/core/src/task-repository-binding.ts";
 import { assertExecutionTransition, buildRepairContext, formatRepairContext, type ExecutionState } from "../../../packages/core/src/execution-state.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
@@ -183,6 +184,120 @@ function commitBuildDocs(repositoryPath: string, message: string) {
   const staged = execFileSync("git", ["-C", repositoryPath, "diff", "--cached", "--name-only", "--", ".localcode/build"], { encoding: "utf8" }).trim();
   if (!staged) return;
   execFileSync("git", ["-C", repositoryPath, "-c", "user.name=BORG", "-c", "user.email=borg@local.invalid", "commit", "-m", message, "--", ".localcode/build"], { stdio: "ignore" });
+}
+
+function boundedDebugLog(value: string, maximum = 20_000) {
+  return value.length > maximum ? value.slice(value.length - maximum) : value;
+}
+
+function gitRead(root: string | null, args: string[]): string | null {
+  if (!root || !existsSync(root)) return null;
+  try { return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true }).trim(); }
+  catch { return null; }
+}
+
+function buildDebugSnapshot(taskId: string): DebugSnapshot | null {
+  const task = tasks.findTask(taskId);
+  if (!task) return null;
+  const approval = tasks.findApproval(taskId);
+  const events = tasks.listEvents(taskId);
+  const projectWorkflow = workflow.get(task.projectId);
+  const ownedWorkflow = projectWorkflow?.taskId === task.id ? projectWorkflow : null;
+  const repositoryPath = taskProjectRepository(taskId);
+  const worktreePath = approval?.worktreePath ?? null;
+  const root = worktreePath && existsSync(worktreePath) ? worktreePath : repositoryPath && existsSync(repositoryPath) ? repositoryPath : null;
+  const plan = projectPlanFromWorkflow(ownedWorkflow, root);
+  const slice = sliceStateFromWorkflow(ownedWorkflow, plan, root);
+  const baselineCandidates = pendingVisualBaselineCandidates(taskId);
+  const status = deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length });
+
+  const contextPacks = tasks.listContextPacks(taskId).slice(0, 20).map((record) => ({
+    id: record.id,
+    profileId: record.pack.profile.id,
+    kind: record.pack.profile.kind,
+    stage: record.pack.profile.stage,
+    workflowVersion: record.pack.profile.workflowVersion,
+    sliceId: record.pack.sliceId,
+    authority: record.pack.authority,
+    fingerprint: record.pack.fingerprint,
+    characters: record.pack.characters,
+    budgetCharacters: record.pack.budgetCharacters,
+    manifestCount: record.pack.manifest.length,
+    createdAt: record.createdAt,
+  }));
+  const modelContexts = tasks.listModelContexts(taskId).slice(0, 20).map((record) => ({
+    id: record.id,
+    role: record.role,
+    model: record.model,
+    sliceId: record.sliceId,
+    inputSha256: record.inputSha256,
+    manifestCount: record.manifest.length,
+    createdAt: record.createdAt,
+  }));
+  const processes = processRuntime.list(taskId).slice(-30).map((process) => ({
+    id: process.id,
+    kind: process.kind,
+    label: process.label,
+    command: process.command,
+    args: process.args,
+    cwd: process.cwd,
+    url: process.url,
+    pid: process.pid,
+    status: process.status,
+    exitCode: process.exitCode,
+    timedOut: process.timedOut,
+    startedAt: process.startedAt,
+    completedAt: process.completedAt,
+    durationMs: process.durationMs,
+    stdout: boundedDebugLog(process.stdout),
+    stderr: boundedDebugLog(process.stderr),
+  }));
+  const roleAssignments = tasks.listRoleAssignments(taskId);
+  const diagnostics = evaluateDebugInvariants({
+    task,
+    workflow: ownedWorkflow,
+    approval,
+    latestContextWorkflowVersion: contextPacks[0]?.workflowVersion ?? null,
+    worktreeExists: worktreePath ? existsSync(worktreePath) : null,
+    activeRoleCount: roleAssignments.filter((assignment) => assignment.status === "active").length,
+    failedProcessCount: processes.filter((process) => process.status === "failed").length,
+  });
+
+  const snapshot = {
+    version: 1 as const,
+    generatedAt: new Date().toISOString(),
+    readOnly: true as const,
+    task,
+    workflow: ownedWorkflow,
+    approval,
+    status: { ...status, baselineApprovalCount: baselineCandidates.length },
+    events: normalizeWorkflowEvents(task, events).slice(-150),
+    contextPacks,
+    modelContexts,
+    processes,
+    git: {
+      repositoryPath,
+      worktreePath,
+      baseCommit: approval?.baseCommit ?? null,
+      headCommit: gitRead(root, ["rev-parse", "HEAD"]),
+      status: gitRead(root, ["status", "--short"]) ?? "",
+      worktreeExists: worktreePath ? existsSync(worktreePath) : null,
+    },
+    checkpoints: tasks.listCheckpoints(taskId).slice(-20),
+    continuations: tasks.listContinuations(taskId).slice(-20),
+    roleAssignments: roleAssignments.slice(-30),
+    handoffs: tasks.listHandoffs(taskId).slice(-30),
+    reviewRuns: tasks.listReviewRuns(taskId).slice(-20),
+    reviewFindings: tasks.listReviewFindings(taskId).slice(-50),
+    diagnostics,
+    redaction: {
+      version: 1 as const,
+      sensitiveFieldsRedacted: true,
+      rawModelInputIncluded: false as const,
+      environmentValuesIncluded: false as const,
+    },
+  };
+  return DebugSnapshotSchema.parse(redactDebugValue(snapshot));
 }
 
 function pendingVisualBaselineCandidates(taskId: string): BaselineCandidate[] {
@@ -875,6 +990,78 @@ const server = createServer((request, response) => {
       return pack ? send(response, 200, { pack }) : send(response, 404, { error: "Context pack not found." });
     }
     return send(response, 200, { packs: tasks.listContextPacks(taskId) });
+  }
+
+  if (request.method === "GET" && request.url === "/api/control/health") {
+    return send(response, 200, {
+      service: "borg-control-plane",
+      version: 1,
+      readOnly: true,
+      core: "available",
+      generatedAt: new Date().toISOString(),
+    });
+  }
+
+  const controlSnapshotRoute = request.url?.match(/^\/api\/control\/tasks\/([^/?]+)\/snapshot$/);
+  if (request.method === "GET" && controlSnapshotRoute) {
+    const taskId = decodeURIComponent(controlSnapshotRoute[1]);
+    const snapshot = buildDebugSnapshot(taskId);
+    return snapshot ? send(response, 200, { snapshot }) : send(response, 404, { error: "Task not found." });
+  }
+
+  const controlEventsRoute = request.url?.match(/^\/api\/control\/tasks\/([^/?]+)\/events$/);
+  if (request.method === "GET" && controlEventsRoute) {
+    const taskId = decodeURIComponent(controlEventsRoute[1]);
+    const task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found." });
+    return send(response, 200, {
+      taskId,
+      events: redactDebugValue(normalizeWorkflowEvents(task, tasks.listEvents(taskId)).slice(-200)),
+    });
+  }
+
+  const controlExportRoute = request.url?.match(/^\/api\/control\/tasks\/([^/?]+)\/export$/);
+  if (request.method === "GET" && controlExportRoute) {
+    const taskId = decodeURIComponent(controlExportRoute[1]);
+    const snapshot = buildDebugSnapshot(taskId);
+    return snapshot ? send(response, 200, {
+      bundle: {
+        format: "borg-debug-json",
+        version: 1,
+        filename: `borg-debug-${taskId}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+        snapshot,
+      },
+    }) : send(response, 404, { error: "Task not found." });
+  }
+
+  const controlStreamRoute = request.url?.match(/^\/api\/control\/tasks\/([^/?]+)\/stream$/);
+  if (request.method === "GET" && controlStreamRoute) {
+    const taskId = decodeURIComponent(controlStreamRoute[1]);
+    const task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found." });
+    response.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      "access-control-allow-origin": "http://localhost:5173",
+    });
+    let lastEventId = tasks.listEvents(taskId).at(-1)?.id ?? null;
+    response.write(`event: ready\ndata: ${JSON.stringify({ taskId, generatedAt: new Date().toISOString() })}\n\n`);
+    const timer = setInterval(() => {
+      if (response.destroyed) return;
+      const raw = tasks.listEvents(taskId);
+      const index = lastEventId ? raw.findIndex((event) => event.id === lastEventId) : -1;
+      const next = index >= 0 ? raw.slice(index + 1) : raw.slice(-50);
+      if (next.length) {
+        const normalized = normalizeWorkflowEvents(task, next);
+        for (const event of normalized) response.write(`event: workflow\ndata: ${JSON.stringify(redactDebugValue(event))}\n\n`);
+        lastEventId = next.at(-1)?.id ?? lastEventId;
+      } else {
+        response.write(`event: heartbeat\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`);
+      }
+    }, 2_000);
+    request.once("close", () => clearInterval(timer));
+    return;
   }
 
   const workflowEventsRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/workflow-events$/);
