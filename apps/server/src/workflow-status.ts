@@ -37,7 +37,8 @@ function activityDetail(event: TaskEvent) {
   if (event.type === "VERIFICATION_COMPLETED") return (event.payload.verification as { passed?: boolean } | undefined)?.passed ? "Verification passed" : "Verification failed";
   if (event.type === "VISUAL_REGRESSION_COMPLETED") return `Visual regression: ${String((event.payload.report as { status?: string } | undefined)?.status ?? "completed")}`;
   if (event.type === "DESIGN_REVIEW_COMPLETED") return `Visual review: ${String((event.payload.review as { status?: string } | undefined)?.status ?? "completed")}`;
-  if (event.type === "CONTEXT_PACK_COMPILED") return `Prepared ${String((event.payload.profile as { kind?: string } | undefined)?.kind ?? "scoped")} context pack`;\n  if (event.type === "MODEL_CONTEXT_RECORDED") return `Saved ${String(event.payload.role ?? "model")} input`;
+  if (event.type === "CONTEXT_PACK_COMPILED") return `Prepared ${String((event.payload.profile as { kind?: string } | undefined)?.kind ?? "scoped")} context pack`;
+  if (event.type === "MODEL_CONTEXT_RECORDED") return `Saved ${String(event.payload.role ?? "model")} input`;
   if (event.type === "IMPLEMENTATION_BUDGET_CONTINUATION") return "Implementation budget reached; continuing the same slice with compact context";
   if (event.type === "IMPLEMENTATION_BUDGET_EXHAUSTED") return "Implementation budget exhausted; completion must be proven by verification";
   if (event.type === "EXECUTION_STATE_CHANGED") return `${String(event.payload.state ?? "execution").replaceAll("_", " ")} · repair ${Number(event.payload.repairAttempt ?? 0)}`;
