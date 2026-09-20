@@ -225,10 +225,16 @@ function renderState(runtime) {
   const pending = state.task?.state === "AWAITING_APPROVAL" && approval?.status === "REQUESTED";
   els.approvalCard.classList.toggle("hidden", !pending);
   if (pending) {
-    els.approvalTitle.textContent = runtime?.projectPlanApproval ? "Approve frontend plan" : "BORG needs approval";
-    els.approvalDetail.textContent = runtime?.escalation?.planText
-      ? "PLAN is complete. Approval authorizes the persisted work."
-      : "Review the plan on desktop if needed, then approve or reject from here.";
+    els.approvalTitle.textContent = runtime?.projectPlanRevisionApproval
+      ? "Approve plan revision & continue"
+      : runtime?.projectPlanApproval
+        ? "Approve frontend plan"
+        : "BORG needs approval";
+    els.approvalDetail.textContent = runtime?.projectPlanRevisionApproval
+      ? "BORG revised the project plan because the current slice could not legally satisfy product-quality review. Approval resumes the existing worktree."
+      : runtime?.escalation?.planText
+        ? "PLAN is complete. Approval authorizes the persisted work."
+        : "Review the plan on desktop if needed, then approve or reject from here.";
   }
 
   const retryable = ["BLOCKED", "FAILED", "RECOVERY_REQUIRED"].includes(state.task?.state || "");
