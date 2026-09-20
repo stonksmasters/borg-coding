@@ -134,11 +134,13 @@ export function deriveWorkflowStatus(
   const stage = baselineApprovalCount > 0 ? "awaiting_approval" as const : stageFor(task, events, slice);
   const activeSlice = plan && slice ? plan.slices[slice.current] ?? null : null;
   const legacyVerificationPassed = (latestVerification?.payload.verification as { passed?: boolean } | undefined)?.passed ?? null;
-  const verificationPassed = workflow?.verification.status === "passed"
-    ? true
-    : workflow?.verification.status === "failed"
-      ? false
-      : legacyVerificationPassed;
+  const verificationPassed = workflow
+    ? workflow.verification.status === "passed"
+      ? true
+      : workflow.verification.status === "failed"
+        ? false
+        : null
+    : legacyVerificationPassed;
   const visualStatus = latestVisual?.type === "VISUAL_REGRESSION_COMPLETED"
     ? String((latestVisual.payload.report as { status?: string } | undefined)?.status ?? "completed")
     : latestVisual
