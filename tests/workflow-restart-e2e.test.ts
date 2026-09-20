@@ -21,6 +21,9 @@ function plan(): WorkflowProjectPlan {
     audience: "Customers",
     pages: ["Home"],
     features: ["Navigation", "Portfolio", "Contact"],
+    sitemap: [{ id: "home", name: "Home", route: "/", purpose: "Primary page", sections: ["Navigation"], componentIds: ["site-header"], acceptanceCriteria: ["Home is reachable"] }],
+    components: [{ id: "site-header", name: "Site Header", kind: "layout", purpose: "Global navigation", usedBy: ["home"], variants: ["desktop", "mobile"], acceptanceCriteria: ["Navigation works"] }],
+    styles: { direction: "Focused product UI", colors: [], typography: [], spacing: [], radii: [], shadows: [], layoutPrinciples: [], motion: [], responsive: [], accessibility: [], avoid: [] },
     visualDirection: "High-end editorial product site",
     backendRequired: false,
     slices: [
