@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync as writeRawFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { WorkflowState } from "../../core/src/contracts.ts";
 import type { ProjectComponent, ProjectPage, ProjectPlan, ProjectSlice, ProjectStyleSystem } from "../../core/src/project-domain.ts";
 import { initializeProjectModel } from "./project-model.ts";
 
@@ -588,24 +589,67 @@ export function markSliceReady(
   const plan = authority?.plan ?? readProjectPlan(root);
   const state = authority?.state ?? readSliceState(root);
   if (!plan || !state || state.lastTaskId !== taskId) return null;
-  const complete = state.current === plan.slices.length - 1;
-  const next: SliceState = { ...state, status: complete ? "frontend_complete" : "awaiting_feedback" };
+  // Verification proves the slice is checkpoint-ready; it does not complete the
+  // slice or frontend phase. Only WorkflowEngine.completeDelivery may advance the
+  // durable project workflow, after which projectDeliveredFrontendCheckpoint()
+  // updates these generated docs.
+  const next: SliceState = { ...state, status: "awaiting_feedback" };
   writeState(root, next);
   const dir = docsDirectory(root);
   const slice = currentSlice(plan, state);
-  writeFileSync(join(dir, "progress.md"), `${safeRead(join(dir, "progress.md"))}\n## ${slice.title}\n\nStatus: ${next.status.replaceAll("_", " ")}\n\n${summary.slice(0, 3000)}\n`);
+  const finalSlice = state.current === plan.slices.length - 1;
+  writeFileSync(join(dir, "progress.md"), `${safeRead(join(dir, "progress.md"))}\n## ${slice.title}\n\nStatus: verified; checkpoint pending\n\n${summary.slice(0, 3000)}\n`);
   writeFileSync(join(dir, "verification.md"), `${safeRead(join(dir, "verification.md"))}\n## ${slice.title} — ${taskId}\n\n${summary.slice(0, 5000)}\n`);
-  writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nCompleted: **${slice.title}**\n\n${summary.slice(0, 3000)}\n\n${complete ? (plan.backendRequired ? "Frontend completion gate is ready for user review. Backend planning may begin only after approval." : "Frontend completion gate is ready for user review. No backend phase is required by the approved brief.") : "After the verified checkpoint, continue automatically with the next approved slice in a new mini-loop session using this handoff."}\n`);
-  writeFileSync(join(dir, "history.md"), `${safeRead(join(dir, "history.md"))}\n## ${slice.title} — ${taskId}\n\n${summary.slice(0, 3000)}\n`);
-  if (complete) {
-    const completedPlan: ProjectPlan = { ...plan, status: "frontend_complete" };
-    writeFileSync(join(dir, "plan.md"), planMarkdown(completedPlan));
-  }
-  setFrontendWorkflowStage(root, complete ? "frontend_complete" : "awaiting_feedback", {
+  writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nVerified: **${slice.title}**\n\n${summary.slice(0, 3000)}\n\n${finalSlice ? "The final frontend slice is verified, but the frontend phase is not complete until Core checkpoints delivery." : "The slice is verified, but the next slice is not authorized until Core checkpoints delivery and schedules it."}\n`);
+  writeFileSync(join(dir, "history.md"), `${safeRead(join(dir, "history.md"))}\n## ${slice.title} — ${taskId}\n\nVerified; checkpoint pending.\n\n${summary.slice(0, 3000)}\n`);
+  setFrontendWorkflowStage(root, "awaiting_feedback", {
     currentSlice: state.current,
     totalSlices: plan.slices.length,
     taskId,
-    detail: complete ? "All approved frontend slices are complete." : `${slice.title} is verified and ready for an automatic checkpoint and next slice.`,
+    detail: `${slice.title} is verified. Core must checkpoint delivery before project progression changes.`,
+  });
+  return next;
+}
+
+export function projectDeliveredFrontendCheckpoint(root: string, workflow: WorkflowState): SliceState | null {
+  const plan = workflow.projectPlan as ProjectPlan | null;
+  if (workflow.phase !== "frontend" || !plan || workflow.sliceIndex === null) return null;
+  const slice = plan.slices[workflow.sliceIndex];
+  if (!slice) return null;
+
+  const complete = plan.status === "frontend_complete";
+  const next: SliceState = {
+    version: 2,
+    current: workflow.sliceIndex,
+    total: plan.slices.length,
+    currentTitle: workflow.sliceTitle ?? slice.title,
+    status: complete ? "frontend_complete" : "awaiting_feedback",
+    brief: plan.siteGoal,
+    lastTaskId: workflow.taskId,
+    feedback: workflow.feedback,
+    planRevision: plan.revision,
+    backendRequired: plan.backendRequired,
+  };
+
+  const dir = docsDirectory(root);
+  writeState(root, next);
+  writeFileSync(join(dir, "plan.md"), planMarkdown(plan));
+  writeFileSync(join(dir, "current-slice.md"), complete
+    ? `# Current slice\n\nFrontend complete after checkpointing **${slice.title}**.\n`
+    : `# Current slice\n\nCheckpointed **${slice.title}**. Core scheduled the next approved slice.\n`);
+  writeFileSync(join(dir, "progress.md"), `${safeRead(join(dir, "progress.md"))}\n## Checkpoint — ${slice.title}\n\nStatus: checkpointed\n\nWorkflow version: ${workflow.version}\n\nNext action: ${workflow.nextAction}\n`);
+  writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nCheckpointed: **${slice.title}**\n\n${complete
+    ? (plan.backendRequired
+      ? "The approved frontend phase is complete. Backend planning is eligible when the operator chooses to continue."
+      : "The approved frontend phase is complete. No backend phase is required by the approved plan.")
+    : "Core has durably scheduled the next approved frontend slice. Continue only from that Core command; do not rediscover or re-plan the project."}\n`);
+  setFrontendWorkflowStage(root, complete ? "frontend_complete" : "awaiting_feedback", {
+    currentSlice: workflow.sliceIndex,
+    totalSlices: plan.slices.length,
+    taskId: workflow.taskId,
+    detail: complete
+      ? "All approved frontend slices are checkpointed and the frontend phase is complete."
+      : `${slice.title} is checkpointed and Core scheduled the next approved slice.`,
   });
   return next;
 }
