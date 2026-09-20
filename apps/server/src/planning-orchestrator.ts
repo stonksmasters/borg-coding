@@ -100,6 +100,7 @@ export type PlanningOrchestratorDependencies = {
   designDirector: DesignDirectorService;
   ollamaUrl: string;
   model: string;
+  runAgent: typeof runOllamaAgent;
   appendTaskEvent: (taskId: string, type: string, payload: Record<string, unknown>) => void;
   syncWorkflowProjection: (task: Task, state: WorkflowState) => WorkflowState;
   transitionTask: (task: Task, state: TaskState, emit?: PlanningEventSink) => Task;
@@ -488,7 +489,7 @@ export class PlanningOrchestrator {
     } satisfies Parameters<typeof runOllamaAgent>[0];
 
     try {
-      let { answer, usedTools } = await runOllamaAgent(architectRequest);
+      let { answer, usedTools } = await this.deps.runAgent(architectRequest);
 
       if (task.state === "DISCOVERING") task = this.deps.transitionTask(task, "PLANNING", emit);
 
@@ -501,7 +502,7 @@ export class PlanningOrchestrator {
           status: "active",
           message: "The first plan described unverified work. Asking the architect to correct it.",
         });
-        const repaired = await runOllamaAgent({
+        const repaired = await this.deps.runAgent({
           ...architectRequest,
           messages: [
             architectRequest.messages[0],
@@ -541,7 +542,7 @@ export class PlanningOrchestrator {
             status: "active",
             message: "The first project plan missed required product scope. Regenerating it from the explicit brief requirements.",
           });
-          const repaired = await runOllamaAgent({
+          const repaired = await this.deps.runAgent({
             ...architectRequest,
             messages: [
               architectRequest.messages[0],
