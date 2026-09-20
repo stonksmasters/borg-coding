@@ -82,7 +82,7 @@ test("WorkflowEngine rejects a stale task from taking project ownership", () => 
   const engine = new WorkflowEngine(store);
   const first = createTask({ id: "first", projectId: "project", request: "First" });
   const stale = createTask({ id: "stale", projectId: "project", request: "Stale" });
-  engine.start(first, "frontend_slice");
+  engine.start(first, "general");
   assert.throws(() => engine.transition(stale, "CLASSIFYING"), /owned by task first/);
 });
 
@@ -103,7 +103,9 @@ test("verified delivered slice schedules one durable advance command", () => {
   assert.ok(command);
 
   task = createTask({ id: "slice-1", projectId: "project", request: "Slice 1" });
-  engine.start(task, "frontend_slice", "Start slice", { commandId: command!.id });
+  const firstStarted = engine.startFrontendSlice(task, "initial", "Start slice", { commandId: command!.id });
+  assert.equal(firstStarted.loop, "slice");
+  assert.equal(firstStarted.sliceIndex, 0);
   task = engine.transition(task, "CLASSIFYING").task;
   task = engine.transition(task, "DISCOVERING").task;
   task = engine.transition(task, "PLANNING").task;
@@ -111,7 +113,7 @@ test("verified delivered slice schedules one durable advance command", () => {
   task = engine.requestApproval(task, sliceApproval, "execution").task;
   const sliceApproved = { ...sliceApproval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: "/tmp/worktree", baseCommit: "abc" };
   task = engine.decideApproval(task, sliceApproved, "execution").task;
-  engine.slice(task, { index: 0, total: 2, title: "Hero", status: "running" });
+  engine.activateSlice(task);
   task = engine.transition(task, "VERIFYING").task;
   task = engine.transition(task, "REVIEWING").task;
   task = engine.transition(task, "DELIVERY_READY").task;
@@ -123,7 +125,7 @@ test("verified delivered slice schedules one durable advance command", () => {
   assert.equal(delivered.workflow.status, "awaiting_feedback");
 
   let nextTask = createTask({ id: "slice-2", projectId: "project", request: "Slice 2" });
-  const started = engine.start(nextTask, "frontend_slice", "Advance", { commandId: delivered.workflow.pendingCommand!.id });
+  const started = engine.startFrontendSlice(nextTask, "advance", "Advance", { commandId: delivered.workflow.pendingCommand!.id });
   assert.equal(started.pendingCommand?.id, delivered.workflow.pendingCommand!.id);
   assert.equal(started.pendingCommand?.claimedByTaskId, nextTask.id);
   assert.equal(started.lastConsumedCommandId, command!.id);
@@ -131,7 +133,7 @@ test("verified delivered slice schedules one durable advance command", () => {
   // A live task owns its durable command exclusively.
   const replayTask = createTask({ id: "slice-2-replay", projectId: "project", request: "Slice 2 replay" });
   assert.throws(
-    () => engine.start(replayTask, "frontend_slice", "Duplicate live launch", { commandId: delivered.workflow.pendingCommand!.id }),
+    () => engine.startFrontendSlice(replayTask, "advance", "Duplicate live launch", { commandId: delivered.workflow.pendingCommand!.id }),
     /already claimed/,
   );
 
@@ -140,7 +142,7 @@ test("verified delivered slice schedules one durable advance command", () => {
   const interrupted = engine.transition(nextTask, "RECOVERY_REQUIRED");
   assert.equal(interrupted.workflow.pendingCommand?.claimedByTaskId, null);
   assert.equal(interrupted.workflow.pendingCommand?.id, delivered.workflow.pendingCommand!.id);
-  const replayed = engine.start(replayTask, "frontend_slice", "Replay after restart", { commandId: delivered.workflow.pendingCommand!.id });
+  const replayed = engine.startFrontendSlice(replayTask, "advance", "Replay after restart", { commandId: delivered.workflow.pendingCommand!.id });
   assert.equal(replayed.pendingCommand?.claimedByTaskId, replayTask.id);
 
   nextTask = replayTask;
@@ -153,17 +155,59 @@ test("verified delivered slice schedules one durable advance command", () => {
   assert.equal(awaiting.workflow.lastConsumedCommandId, delivered.workflow.pendingCommand!.id);
 
   assert.throws(
-    () => engine.start(createTask({ id: "duplicate", projectId: "project", request: "Duplicate" }), "frontend_slice", "Duplicate", { commandId: delivered.workflow.pendingCommand!.id }),
+    () => engine.startFrontendSlice(createTask({ id: "duplicate", projectId: "project", request: "Duplicate" }), "advance", "Duplicate", { commandId: delivered.workflow.pendingCommand!.id }),
     /already consumed|no longer pending/,
   );
 });
 
 
+test("slice revision stays on the selected slice and invalidates the pending advance command", () => {
+  const store = new MemoryWorkflowStore();
+  const engine = new WorkflowEngine(store);
+  let task = createTask({ id: "plan-revision", projectId: "project-revision", request: "Plan" });
+  engine.start(task, "project_plan");
+  task = engine.transition(task, "CLASSIFYING").task;
+  task = engine.transition(task, "DISCOVERING").task;
+  task = engine.transition(task, "PLANNING").task;
+  engine.setProjectPlan(task, projectPlan());
+  const approval = createApproval({ id: "plan-revision-approval", taskId: task.id });
+  task = engine.requestApproval(task, approval, "project_plan").task;
+  task = engine.decideApproval(task, { ...approval, status: "APPROVED", decidedAt: new Date().toISOString() }, "project_plan").task;
+
+  const initialCommand = engine.get(task.projectId)!.pendingCommand!;
+  let slice = createTask({ id: "revision-slice", projectId: task.projectId, request: "Build first slice" });
+  engine.startFrontendSlice(slice, "initial", "Start first slice", { commandId: initialCommand.id });
+  slice = engine.transition(slice, "CLASSIFYING").task;
+  slice = engine.transition(slice, "DISCOVERING").task;
+  slice = engine.transition(slice, "PLANNING").task;
+  const sliceApproval = createApproval({ id: "revision-slice-approval", taskId: slice.id });
+  slice = engine.requestApproval(slice, sliceApproval, "execution").task;
+  slice = engine.decideApproval(slice, { ...sliceApproval, status: "APPROVED", decidedAt: new Date().toISOString(), worktreePath: "/tmp/revision", baseCommit: "base" }, "execution").task;
+  engine.activateSlice(slice);
+  slice = engine.transition(slice, "VERIFYING").task;
+  slice = engine.transition(slice, "REVIEWING").task;
+  slice = engine.transition(slice, "DELIVERY_READY").task;
+  slice = engine.beginDelivery(slice, { method: "commit", expectedBaseCommit: "base" }).task;
+  const delivered = engine.completeDelivery(slice, { commit: "one" });
+  const advanceCommand = delivered.workflow.pendingCommand!;
+  assert.equal(advanceCommand.action, "advance_slice");
+
+  const revision = createTask({ id: "revision-task", projectId: task.projectId, request: "Revise the first slice" });
+  const startedRevision = engine.startFrontendSlice(revision, "revise", "Revise current slice", { feedback: "Adjust the hero." });
+  assert.equal(startedRevision.sliceIndex, 0);
+  assert.equal(startedRevision.pendingCommand, null);
+  assert.equal(startedRevision.lastConsumedCommandId, advanceCommand.id);
+  assert.throws(
+    () => engine.startFrontendSlice(createTask({ id: "stale-advance", projectId: task.projectId, request: "Skip ahead" }), "advance", "Stale advance", { commandId: advanceCommand.id }),
+    /already consumed|no longer pending/,
+  );
+});
+
 test("blocked task continuation preserves task identity and resets only repair attempts", () => {
   const store = new MemoryWorkflowStore();
   const engine = new WorkflowEngine(store);
   let task = createTask({ id: "slice-retry", projectId: "project-retry", request: "Repair the existing slice" });
-  engine.start(task, "frontend_slice");
+  engine.start(task, "general");
   task = engine.transition(task, "CLASSIFYING").task;
   task = engine.transition(task, "DISCOVERING").task;
   task = engine.transition(task, "PLANNING").task;
