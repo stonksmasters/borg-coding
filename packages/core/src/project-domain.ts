@@ -50,7 +50,7 @@ export const emptyProjectStyleSystem = {
   responsive: [],
   accessibility: [],
   avoid: [],
-} as const;
+};
 
 export const ProjectStyleSystemSchema = z.object({
   direction: z.string(),
