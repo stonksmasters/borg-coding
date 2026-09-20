@@ -353,6 +353,14 @@ internal sealed class BorgHost : IAsyncDisposable
             "--experimental-strip-types --import ./apps/server/src/desktop-lifecycle-hook.ts --experimental-sqlite apps/server/src/desktop-gateway.ts",
             TimeSpan.FromSeconds(25));
 
+        StatusChanged?.Invoke("Starting LAN remote control…");
+        await EnsureServiceAsync(
+            "remote",
+            "http://127.0.0.1:4313/health",
+            "node.exe",
+            "--experimental-strip-types --import ./apps/server/src/desktop-lifecycle-hook.ts apps/server/src/remote-gateway.ts",
+            TimeSpan.FromSeconds(25));
+
         StatusChanged?.Invoke("Starting the BORG workspace…");
         await EnsureServiceAsync(
             "web",
@@ -425,6 +433,7 @@ internal sealed class BorgHost : IAsyncDisposable
         startInfo.Environment["BORG_DESKTOP_EXE"] = Environment.ProcessPath ?? string.Empty;
         startInfo.Environment["BORG_SHUTDOWN_SIGNAL"] = shutdownSignal;
         startInfo.Environment["BORG_CORE_URL"] = "http://127.0.0.1:4311";
+        startInfo.Environment["BORG_GATEWAY_URL"] = "http://127.0.0.1:4312";
 
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         process.OutputDataReceived += (_, eventArgs) => AppendLog(name, eventArgs.Data);
