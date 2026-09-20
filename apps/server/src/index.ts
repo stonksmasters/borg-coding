@@ -451,6 +451,12 @@ function taskProjectRepository(taskId: string): string | null {
   return taskRepositoryPath(tasks.listEvents(taskId));
 }
 
+function taskWorkflowAuthorityProjectId(taskId: string): string | null {
+  const event = tasks.listEvents(taskId).findLast((candidate) => candidate.type === "PROJECT_WORKFLOW_AUTHORITY_BOUND");
+  const projectId = event?.payload.projectId;
+  return typeof projectId === "string" && projectId.trim() ? projectId : null;
+}
+
 function taskProjectRoot(taskId: string): string | null {
   const task = tasks.findTask(taskId);
   if (!task) return null;
@@ -981,7 +987,9 @@ const server = createServer((request, response) => {
     const designContext = designBrief ? designBriefPrompt(designBrief) : "";
     const taskWorkflow = workflow.get(task.projectId);
     const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
-    const projectPlan = websiteProject ? projectPlanFromWorkflow(ownedTaskWorkflow, approvedWorktreePath) : null;
+    const authorityProjectId = taskWorkflowAuthorityProjectId(task.id) ?? task.projectId;
+    const authorityWorkflow = workflow.get(authorityProjectId);
+    const projectPlan = websiteProject ? projectPlanFromWorkflow(authorityWorkflow ?? ownedTaskWorkflow, approvedWorktreePath) : null;
     const focusedWorkspaceEvent = websiteProject ? tasks.listEvents(taskId).findLast((event) => event.type === "FOCUSED_WORKSPACE_SELECTED") : null;
     const focusedWorkspace = focusedWorkspaceEvent?.payload as { scopeType?: "page" | "component"; scopeId?: string } | undefined;
     const focusedExecutionScope = focusedWorkspace?.scopeType && focusedWorkspace.scopeId
@@ -1059,10 +1067,11 @@ const server = createServer((request, response) => {
         authority: { plan: projectPlan, state: sliceState },
         productContract: websiteContext,
       }) : null;
-      const compiledFocus = focusedExecutionScope ? compileFocusedFrontendContext({
+      const compiledFocus = focusedExecutionScope && projectPlan ? compileFocusedFrontendContext({
         root: approvedWorktreePath,
         scope: focusedExecutionScope,
         productContract: websiteContext,
+        authority: { plan: projectPlan },
       }) : null;
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       const focusedExecutionPrompt = compiledFocus
@@ -1814,9 +1823,12 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
       const mode: PermissionMode = (["ask", "plan", "edit", "agent"] as const).includes(requestedMode as PermissionMode) ? requestedMode as PermissionMode : "ask";
       const requestText = String(input.request ?? "");
       const projectId = String(input.projectId ?? "local");
+      const authorityProjectId = typeof input.authorityProjectId === "string" && input.authorityProjectId.trim()
+        ? input.authorityProjectId.trim()
+        : projectId;
       const selectedPath = access.load().repositoryPath;
       const selectedWebsite = selectedPath ? websiteInfo(selectedPath) : null;
-      const durableWorkflow = workflow.get(projectId);
+      const durableWorkflow = workflow.get(authorityProjectId);
       const projectPlan = selectedWebsite ? projectPlanFromWorkflow(durableWorkflow, selectedWebsite.path) : null;
       const previousSlice = selectedWebsite ? sliceStateFromWorkflow(durableWorkflow, projectPlan, selectedWebsite.path) : null;
       if (mode !== "ask" && selectedWebsite && projectPlan && projectPlan.status !== "proposed" && ensureProjectModel(selectedWebsite.path, projectPlan)) commitProjectRegistries(selectedWebsite.path);
@@ -1880,6 +1892,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
             workflowDetail,
           );
       syncWorkflowProjection(task, startedWorkflow);
+      appendTaskEvent(task.id, "PROJECT_WORKFLOW_AUTHORITY_BOUND", { projectId: authorityProjectId });
       if (selectedPath) appendTaskEvent(task.id, "TASK_REPOSITORY_BOUND", { repositoryPath: selectedPath });
       if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
       if (slicedApplication) appendTaskEvent(task.id, "FRONTEND_SLICE_SELECTED", { action: sliceAction, feedback: previousSlice ? requestText : "", previous: previousSlice?.current ?? null });
@@ -1953,6 +1966,7 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
           root: websiteProject.path,
           scope: { type: focusType, id: focusId },
           productContract: websiteContext,
+          authority: { plan: projectPlan },
         });
         repositoryContext = compiledArchitectContext.text;
         const scopedRegistry = focusType === "page"
