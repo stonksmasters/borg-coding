@@ -45,6 +45,21 @@ function titleize(type: string) {
 
 function statusFor(event: TaskEvent): WorkflowEvent["status"] {
   const type = event.type;
+  if (type === "VERIFICATION_COMPLETED") {
+    const gate = event.payload.gate as { status?: string } | undefined;
+    const verification = event.payload.verification as { passed?: boolean } | undefined;
+    const passed = gate?.status === "passed" || verification?.passed === true;
+    return passed ? "succeeded" : "failed";
+  }
+  if (type === "TASK_STATE_CHANGED") {
+    const target = String(event.payload.to ?? "");
+    if (target === "BLOCKED" || target === "RECOVERY_REQUIRED") return "blocked";
+    if (target === "FAILED" || target === "CANCELLED") return "failed";
+    if (target === "AWAITING_APPROVAL") return "waiting";
+    if (target === "COMPLETE" || target === "DELIVERY_READY") return "succeeded";
+    return "active";
+  }
+  if (type.includes("RECOVERY_REQUIRED")) return "blocked";
   if (/(FAILED|FAILURE|BLOCKED|REJECTED|LIMIT_REACHED)$/.test(type)) return type.includes("BLOCKED") || type.includes("LIMIT_REACHED") ? "blocked" : "failed";
   if (/(COMPLETED|APPROVED|READY|ACCEPTED)$/.test(type)) return "succeeded";
   if (/(STARTED|SCHEDULED|SELECTED|ACTIVITY|STATE_CHANGED)$/.test(type)) return "active";
