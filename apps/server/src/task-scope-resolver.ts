@@ -51,7 +51,7 @@ function normalizeId(value: string | null | undefined) {
 }
 
 export function resolvePlanningTaskScope(input: PlanningTaskScopeInput): PlanningTaskScope {
-  const rawSliceAction = input.rawSliceAction || "initial";
+  const rawSliceAction = input.rawSliceAction;
   if (rawSliceAction === "retry") {
     throw new Error("Blocked tasks must be retried through their existing task continuation endpoint.");
   }
