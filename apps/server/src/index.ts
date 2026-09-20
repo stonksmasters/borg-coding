@@ -159,18 +159,56 @@ function sourceMutationSnapshot(root: string) {
   return { status, diff, paths, fingerprint };
 }
 
+function directRepairDependencies(root: string, paths: string[]) {
+  const dependencies = new Set<string>();
+  const extensions = ["", ".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".json"];
+  for (const path of paths.slice(0, 20)) {
+    const content = safeWorktreeFile(root, path);
+    if (!content) continue;
+    const imports = [
+      ...content.matchAll(/(?:from\s*|import\s*\(|require\s*\(|@import\s*)["'](\.[^"']+)["']/g),
+    ].map((match) => match[1]);
+    for (const specifier of imports.slice(0, 40)) {
+      const absoluteBase = resolve(dirname(resolve(root, path)), specifier);
+      const candidates = [
+        ...extensions.map((extension) => absoluteBase + extension),
+        ...extensions.filter(Boolean).map((extension) => resolve(absoluteBase, "index" + extension)),
+      ];
+      const match = candidates.find((candidate) => {
+        const rel = relative(resolve(root), candidate);
+        return rel !== ".."
+          && !rel.startsWith(".." + sep)
+          && existsSync(candidate)
+          && statSync(candidate).isFile()
+          && statSync(candidate).size <= 256_000;
+      });
+      if (!match) continue;
+      const rel = relative(resolve(root), match).replaceAll("\\", "/");
+      if (!rel.startsWith(".localcode/") && !rel.includes("/node_modules/")) dependencies.add(rel);
+    }
+  }
+  return [...dependencies].filter((path) => !paths.includes(path)).slice(0, 20);
+}
+
 function repairGroundingSnapshot(root: string) {
   const snapshot = sourceMutationSnapshot(root);
-  const files = snapshot.paths.slice(0, 12).map((path) => {
+  const dependencyPaths = directRepairDependencies(root, snapshot.paths);
+  const changedFiles = snapshot.paths.slice(0, 12).map((path) => {
     const content = safeWorktreeFile(root, path);
     return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 12_000)}`;
+  });
+  const dependencies = dependencyPaths.slice(0, 12).map((path) => {
+    const content = safeWorktreeFile(root, path);
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 8_000)}`;
   });
   return [
     "CURRENT WORKTREE GROUNDING. This snapshot is authoritative for the repair pass; do not rediscover or guess paths.",
     `Changed source files:\n${snapshot.paths.length ? snapshot.paths.map((path) => `- ${path}`).join("\n") : "- none"}`,
+    dependencyPaths.length ? `Direct relative dependencies automatically resolved from changed files:\n${dependencyPaths.map((path) => `- ${path}`).join("\n")}` : "",
     `Current source diff:\n${snapshot.diff.slice(0, 40_000) || "[no tracked diff]"}`,
-    files.length ? `Current changed-file contents:\n${files.join("\n\n")}` : "",
-    "Read only direct imports/dependencies of these files when needed to make the evidenced repair.",
+    changedFiles.length ? `Current changed-file contents:\n${changedFiles.join("\n\n")}` : "",
+    dependencies.length ? `Current direct-dependency contents:\n${dependencies.join("\n\n")}` : "",
+    "Use this bounded neighborhood first. Read beyond it only when a direct dependency proves another file is required for the evidenced repair.",
   ].filter(Boolean).join("\n\n");
 }
 
