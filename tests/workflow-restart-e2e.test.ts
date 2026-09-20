@@ -91,6 +91,7 @@ test("plan approval -> slice 1 -> restart -> slice 2 -> final feedback survives 
     const planned = engine.decideApproval(planningTask, approvedPlan, "project_plan");
 
     assert.equal(planned.workflow.pendingCommand?.action, "start_slice");
+    assert.equal(planned.workflow.pendingCommand?.targetSliceIndex, 0);
     const firstCommandId = planned.workflow.pendingCommand!.id;
     repository.close();
 
@@ -104,6 +105,7 @@ test("plan approval -> slice 1 -> restart -> slice 2 -> final feedback survives 
     const advanceCommandId = firstDelivery.workflow.pendingCommand?.id;
     assert.ok(advanceCommandId);
     assert.equal(firstDelivery.workflow.nextAction, "advance_slice");
+    assert.equal(firstDelivery.workflow.pendingCommand?.targetSliceIndex, 1);
     repository.close();
 
     // Simulates a crash exactly after checkpoint persistence and before the gateway launches slice 2.
@@ -111,6 +113,7 @@ test("plan approval -> slice 1 -> restart -> slice 2 -> final feedback survives 
     engine = new WorkflowEngine(repository);
     const recoveredAfterDelivery = engine.get("site");
     assert.equal(recoveredAfterDelivery?.pendingCommand?.id, advanceCommandId);
+    assert.equal(recoveredAfterDelivery?.pendingCommand?.targetSliceIndex, 1);
     assert.equal(recoveredAfterDelivery?.taskId, "slice-1");
 
     let sliceTwo = reachPlanning(engine, "slice-2", "site", "Build slice 2", advanceCommandId);
