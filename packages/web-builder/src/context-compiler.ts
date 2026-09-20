@@ -189,7 +189,7 @@ function relatedRegistry(input: InternalInput, plan: ProjectPlan) {
   const relevant = wordSet([slice.title, slice.outcome, ...slice.scope].join(" "));
   let pages = model.pages.filter((item) => overlaps(relevant, wordSet([item.name, item.purpose, ...item.sections].join(" "))));
   if (!pages.length && sliceIndex === 0 && model.pages.length) pages = [model.pages[0]];
-  let components = model.components.filter((item) =>
+  const components = model.components.filter((item) =>
     pages.some((candidate) => item.usedBy.includes(candidate.id))
     || overlaps(relevant, wordSet([item.name, item.purpose, ...item.variants].join(" "))),
   );
