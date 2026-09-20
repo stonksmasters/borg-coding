@@ -222,12 +222,12 @@ test("global styles workspace requires the approved plan but does not advance th
   assert.match(scope.workflowDetail, /global style edit/i);
 });
 
-test("backend work remains an explicit backend workflow intent", () => {
+test("backend work remains an explicit backend workflow intent after frontend completion", () => {
   const scope = resolvePlanningTaskScope({
     mode: "edit",
     rawSliceAction: "backend",
     hasWebsite: true,
-    projectPlanStatus: "approved",
+    projectPlanStatus: "frontend_complete",
     previousSliceStatus: "frontend_complete",
     hasPreviousSlice: true,
     durableHasProjectPlan: true,
