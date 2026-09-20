@@ -163,9 +163,9 @@ export class WorkflowEngine {
       planApprovalId: existing?.planApprovalId ?? null,
       planApproved: existing?.planApproved ?? false,
       projectPlan: existing?.projectPlan ?? null,
-      sliceIndex: sliceSelection?.index ?? existing?.sliceIndex ?? null,
-      sliceTotal: sliceSelection?.total ?? existing?.sliceTotal ?? null,
-      sliceTitle: sliceSelection?.title ?? existing?.sliceTitle ?? null,
+      sliceIndex: intent === "frontend_slice" ? sliceSelection!.index : intent === "backend" || intent === "general" ? null : existing?.sliceIndex ?? null,
+      sliceTotal: intent === "frontend_slice" ? sliceSelection!.total : intent === "backend" || intent === "general" ? null : existing?.sliceTotal ?? null,
+      sliceTitle: intent === "frontend_slice" ? sliceSelection!.title : intent === "backend" || intent === "general" ? null : existing?.sliceTitle ?? null,
       feedback: options.feedback?.trim() ? [...(existing?.feedback ?? []), options.feedback.trim().slice(0, 4000)] : existing?.feedback ?? [],
       handoff: existing?.handoff ?? null,
       pendingCommand: sliceSelection?.command
