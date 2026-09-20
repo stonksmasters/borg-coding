@@ -215,3 +215,64 @@ test("final slice becomes frontend_complete only after Core checkpoints delivery
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("plan coverage detects required product capabilities instead of checking pages only", () => {
+  const brief = "Build an authenticated operations app. Users must sign in, search and filter jobs, create/edit/delete jobs, and view reports.";
+  const plan = fallbackProjectPlan("Build an internal operations dashboard with Jobs and Reports.", "dashboard");
+  const report = validateProjectPlanCoverage(plan, brief);
+
+  assert.ok(report.requiredCapabilities.includes("authentication"));
+  assert.ok(report.requiredCapabilities.includes("record_mutation"));
+  assert.ok(report.requiredCapabilities.includes("search_filtering"));
+  assert.ok(report.requiredCapabilities.includes("reporting"));
+  assert.ok(report.missingCapabilities.includes("authentication"));
+  assert.equal(report.valid, false);
+});
+
+test("plan coverage rejects marketing structure when the brief explicitly requires an internal product", () => {
+  const brief = "Build an internal dispatcher application. Do not build a marketing or landing site. Required pages: Overview, Jobs, Customers, Settings.";
+  const plan = fallbackProjectPlan(brief, "dashboard");
+  const invalid = {
+    ...plan,
+    slices: [
+      {
+        id: "hero",
+        title: "Homepage hero and CTA",
+        outcome: "A polished marketing homepage introduces the product.",
+        scope: ["Hero", "Testimonials", "Call to action"],
+        acceptanceCriteria: ["CTA is visible"],
+      },
+      ...plan.slices.slice(1),
+    ],
+  };
+  const report = validateProjectPlanCoverage(invalid, brief);
+
+  assert.equal(report.valid, false);
+  assert.ok(report.contradictions.some((item) => /marketing|landing/i.test(item)));
+  assert.ok(report.issues.some((item) => /marketing|landing/i.test(item)));
+});
+
+test("persisted plans write an inspectable semantic coverage report and refuse invalid plans", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-plan-coverage-"));
+  try {
+    const brief = "Build ForgeOps. Required pages: Overview, Jobs, Customers, Settings.";
+    const validPlan = fallbackProjectPlan(brief, "dashboard");
+    persistProposedProjectPlan(root, brief, validPlan, "coverage-task");
+
+    assert.ok(existsSync(join(root, ".localcode", "build", "plan-coverage.md")));
+    assert.ok(existsSync(join(root, ".localcode", "build", "plan-coverage.json")));
+    assert.match(readProjectDocs(root).find((doc) => doc.path.endsWith("/plan-coverage.md"))?.content ?? "", /Status: \*\*pass\*\*/i);
+
+    const invalidPlan = {
+      ...validPlan,
+      sitemap: validPlan.sitemap.filter((page) => page.name !== "Jobs"),
+    };
+    assert.throws(
+      () => persistProposedProjectPlan(root, brief, invalidPlan, "invalid-coverage-task"),
+      /Cannot persist an invalid project plan/i,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
