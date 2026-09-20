@@ -39,6 +39,8 @@ function activityDetail(event: TaskEvent) {
   if (event.type === "VERIFICATION_COMPLETED") return (event.payload.verification as { passed?: boolean } | undefined)?.passed ? "Verification passed" : "Verification failed";
   if (event.type === "VISUAL_REGRESSION_COMPLETED") return `Visual regression: ${String((event.payload.report as { status?: string } | undefined)?.status ?? "completed")}`;
   if (event.type === "DESIGN_REVIEW_COMPLETED") return `Visual review: ${String((event.payload.review as { status?: string } | undefined)?.status ?? "completed")}`;
+  if (event.type === "DESIGN_REFINEMENT_LIMIT_REACHED") return "Visual review still requires structural refinement after the bounded refinement limit.";
+  if (event.type === "PLAN_REPAIR_REQUIRED") return String(event.payload.reason ?? "The approved plan cannot satisfy the current product-quality findings.");
   if (event.type === "CONTEXT_PACK_COMPILED") return `Prepared ${String((event.payload.profile as { kind?: string } | undefined)?.kind ?? "scoped")} context pack`;
   if (event.type === "MODEL_CONTEXT_RECORDED") return `Saved ${String(event.payload.role ?? "model")} input`;
   if (event.type === "IMPLEMENTATION_BUDGET_CONTINUATION") return "Implementation budget reached; continuing the same slice with compact context";
@@ -87,17 +89,37 @@ function headlineFor(stage: RunStage, slice: SliceState | null) {
 
 function latestBlocker(task: Task, events: TaskEvent[], nextAction: string, workflow: WorkflowState | null): RunView["blocker"] {
   if (!["BLOCKED", "FAILED", "RECOVERY_REQUIRED"].includes(task.state)) return null;
-  const event = [...events].reverse().find((candidate) =>
-    ["TASK_RECOVERY_REQUIRED", "REPAIR_LIMIT_REACHED", "DESIGN_REVIEW_BLOCKED", "RUNTIME_FAILED", "TOOL_FAILED", "WORKSPACE_PREFLIGHT_BLOCKED"].includes(candidate.type),
+  const reversed = [...events].reverse();
+  const authoritative = reversed.find((candidate) =>
+    [
+      "PLAN_REPAIR_REQUIRED",
+      "DESIGN_REFINEMENT_LIMIT_REACHED",
+      "REPAIR_LIMIT_REACHED",
+      "DESIGN_REVIEW_BLOCKED",
+      "TASK_RECOVERY_REQUIRED",
+      "WORKSPACE_PREFLIGHT_BLOCKED",
+      "RUNTIME_FAILED",
+    ].includes(candidate.type),
   );
+  const event = authoritative ?? reversed.find((candidate) => candidate.type === "TOOL_FAILED");
   const payload = event?.payload as Record<string, unknown> | undefined;
   const durableRecovery = workflow?.recovery.status !== "inactive" ? workflow?.recovery : null;
   const detail = durableRecovery?.reason
     || String(payload?.message ?? payload?.reason ?? payload?.detail ?? (event ? activityDetail(event) : "The current run cannot continue automatically."));
+  const planRepair = event?.type === "PLAN_REPAIR_REQUIRED" || durableRecovery?.category === "plan_repair_required";
+  const refinementLimit = event?.type === "DESIGN_REFINEMENT_LIMIT_REACHED";
   return {
-    title: task.state === "RECOVERY_REQUIRED" ? "Recovery required" : task.state === "FAILED" ? "Run failed" : "Quality gate blocked the build",
+    title: planRepair
+      ? "Plan repair required"
+      : refinementLimit
+        ? "Design refinement limit reached"
+        : task.state === "RECOVERY_REQUIRED"
+          ? "Recovery required"
+          : task.state === "FAILED"
+            ? "Run failed"
+            : "Quality gate blocked the build",
     detail,
-    action: durableRecovery?.resumeAction ?? nextAction,
+    action: planRepair ? "Replan the affected frontend scope before resuming implementation." : durableRecovery?.resumeAction ?? nextAction,
   };
 }
 
@@ -112,7 +134,12 @@ export function deriveWorkflowStatus(
   const normalizedEvents = normalizeWorkflowEvents(task, events);
   const latestActivity = events.findLast((event) => event.type === "AGENT_ACTIVITY");
   const latestVerification = events.findLast((event) => event.type === "VERIFICATION_COMPLETED");
-  const latestVisual = events.findLast((event) => event.type === "DESIGN_REVIEW_COMPLETED" || event.type === "DESIGN_REVIEW_BLOCKED" || event.type === "VISUAL_REGRESSION_COMPLETED");
+  const latestVisual = events.findLast((event) =>
+    event.type === "DESIGN_REVIEW_COMPLETED"
+    || event.type === "DESIGN_REVIEW_BLOCKED"
+    || event.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
+    || event.type === "PLAN_REPAIR_REQUIRED"
+    || event.type === "VISUAL_REGRESSION_COMPLETED");
   const completed = steps.filter((type) => events.some((event) => event.type === type));
   const terminal = ["COMPLETE", "BLOCKED", "FAILED", "DELIVERY_READY"].includes(task.state);
   const fallbackNextAction = task.state === "AWAITING_APPROVAL" ? "Review and approve the frontend plan."
@@ -143,9 +170,13 @@ export function deriveWorkflowStatus(
     : legacyVerificationPassed;
   const visualStatus = latestVisual?.type === "VISUAL_REGRESSION_COMPLETED"
     ? String((latestVisual.payload.report as { status?: string } | undefined)?.status ?? "completed")
-    : latestVisual
-      ? String((latestVisual.payload.review as { status?: string } | undefined)?.status ?? (latestVisual.type === "DESIGN_REVIEW_BLOCKED" ? "blocked" : "completed"))
-      : null;
+    : latestVisual?.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
+      ? "refinement_limit"
+      : latestVisual?.type === "PLAN_REPAIR_REQUIRED"
+        ? "plan_repair_required"
+        : latestVisual
+          ? String((latestVisual.payload.review as { status?: string } | undefined)?.status ?? (latestVisual.type === "DESIGN_REVIEW_BLOCKED" ? "blocked" : "completed"))
+          : null;
   const detail = baselineApprovalCount > 0
     ? `${baselineApprovalCount} verified screenshot baseline candidate(s) need explicit operator acceptance before delivery. BORG never updates visual baselines automatically.`
     : workflow?.recovery.status !== "inactive" && workflow?.recovery.reason
