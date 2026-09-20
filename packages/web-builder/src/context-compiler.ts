@@ -22,6 +22,7 @@ export type FocusedContextInput = {
   scope: Exclude<ContextScope, null>;
   budgetCharacters?: number;
   productContract?: string;
+  authority?: { plan: ProjectPlan };
 };
 
 const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".html"]);
@@ -115,7 +116,7 @@ export function compileFrontendContext(input: ContextInput): CompiledContext {
 
 export function compileFocusedFrontendContext(input: FocusedContextInput): CompiledContext {
   const { root, scope } = input;
-  const plan = readProjectPlan(root);
+  const plan = input.authority?.plan ?? readProjectPlan(root);
   const model = readProjectModel(root);
   if (!plan || plan.status === "proposed") throw new Error("Approved frontend project state is missing. Repair the project plan before continuing.");
   const page = scope.type === "page" ? model.pages.find((item) => item.id === scope.id) : null;
