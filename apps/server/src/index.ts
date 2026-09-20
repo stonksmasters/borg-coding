@@ -1870,7 +1870,7 @@ const server = createServer((request, response) => {
                 mode: "plan" as const,
                 role: "architect" as const,
                 disciplines: activeDisciplines,
-                phase: "planning" as const,
+                phase: "plan" as const,
                 emit,
                 limits: { toolRounds: 3, toolCalls: 4 },
                 onRequestBody: (body: string) => recordModelInput(taskId, "architect", revisionModel, `plan-revision:${projectPlan.revision + 1}`, [], body),
