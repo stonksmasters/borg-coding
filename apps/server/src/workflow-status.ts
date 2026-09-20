@@ -85,17 +85,19 @@ function headlineFor(stage: RunStage, slice: SliceState | null) {
   }
 }
 
-function latestBlocker(task: Task, events: TaskEvent[], nextAction: string): RunView["blocker"] {
+function latestBlocker(task: Task, events: TaskEvent[], nextAction: string, workflow: WorkflowState | null): RunView["blocker"] {
   if (!["BLOCKED", "FAILED", "RECOVERY_REQUIRED"].includes(task.state)) return null;
   const event = [...events].reverse().find((candidate) =>
-    ["REPAIR_LIMIT_REACHED", "DESIGN_REVIEW_BLOCKED", "RUNTIME_FAILED", "TOOL_FAILED", "WORKSPACE_PREFLIGHT_BLOCKED"].includes(candidate.type),
+    ["TASK_RECOVERY_REQUIRED", "REPAIR_LIMIT_REACHED", "DESIGN_REVIEW_BLOCKED", "RUNTIME_FAILED", "TOOL_FAILED", "WORKSPACE_PREFLIGHT_BLOCKED"].includes(candidate.type),
   );
   const payload = event?.payload as Record<string, unknown> | undefined;
-  const detail = String(payload?.message ?? payload?.reason ?? payload?.detail ?? (event ? activityDetail(event) : "The current run cannot continue automatically."));
+  const durableRecovery = workflow?.recovery.status !== "inactive" ? workflow?.recovery : null;
+  const detail = durableRecovery?.reason
+    || String(payload?.message ?? payload?.reason ?? payload?.detail ?? (event ? activityDetail(event) : "The current run cannot continue automatically."));
   return {
     title: task.state === "RECOVERY_REQUIRED" ? "Recovery required" : task.state === "FAILED" ? "Run failed" : "Quality gate blocked the build",
     detail,
-    action: nextAction,
+    action: durableRecovery?.resumeAction ?? nextAction,
   };
 }
 
@@ -171,7 +173,7 @@ export function deriveWorkflowStatus(
     nextAction,
     updatedAt: workflow?.updatedAt ?? task.updatedAt,
   };
-  run.blocker = latestBlocker(task, events, nextAction);
+  run.blocker = latestBlocker(task, events, nextAction, workflow);
 
   return {
     taskId: task.id,
