@@ -717,6 +717,59 @@ export function projectPlanRepairPrompt(result: ProjectPlanParseResult): string 
   ].filter(Boolean).join("\n\n");
 }
 
+export type ProjectPlanDelta = {
+  fromRevision: number;
+  toRevision: number;
+  addedPages: string[];
+  removedPages: string[];
+  changedPages: string[];
+  addedSlices: string[];
+  removedSlices: string[];
+  changedSlices: string[];
+};
+
+export function projectPlanDelta(previous: ProjectPlan, next: ProjectPlan): ProjectPlanDelta {
+  const previousPages = new Map(previous.sitemap.map((page) => [page.id, page]));
+  const nextPages = new Map(next.sitemap.map((page) => [page.id, page]));
+  const previousSlices = new Map(previous.slices.map((slice) => [slice.id, slice]));
+  const nextSlices = new Map(next.slices.map((slice) => [slice.id, slice]));
+  const changed = <T>(a: T, b: T) => JSON.stringify(a) !== JSON.stringify(b);
+  return {
+    fromRevision: previous.revision,
+    toRevision: next.revision,
+    addedPages: [...nextPages.keys()].filter((id) => !previousPages.has(id)),
+    removedPages: [...previousPages.keys()].filter((id) => !nextPages.has(id)),
+    changedPages: [...nextPages.keys()].filter((id) => previousPages.has(id) && changed(previousPages.get(id), nextPages.get(id))),
+    addedSlices: [...nextSlices.keys()].filter((id) => !previousSlices.has(id)),
+    removedSlices: [...previousSlices.keys()].filter((id) => !nextSlices.has(id)),
+    changedSlices: [...nextSlices.keys()].filter((id) => previousSlices.has(id) && changed(previousSlices.get(id), nextSlices.get(id))),
+  };
+}
+
+export function projectPlanRevisionPrompt(input: {
+  brief: string;
+  currentPlan: ProjectPlan;
+  currentSliceIndex: number;
+  conflictReason: string;
+  review: unknown;
+}): string {
+  const currentSlice = input.currentPlan.slices[input.currentSliceIndex] ?? null;
+  return [
+    "BOUNDED PROJECT PLAN REVISION. The current approved frontend plan cannot legally satisfy the independent product-quality review. Revise the plan; do not implement code.",
+    `Original brief:\n${input.brief.slice(0, 16_000)}`,
+    `Current approved plan revision ${input.currentPlan.revision}:\n${JSON.stringify(input.currentPlan).slice(0, 40_000)}`,
+    currentSlice ? `Current in-progress slice [${currentSlice.id}] ${currentSlice.title}: ${currentSlice.outcome}\nScope: ${currentSlice.scope.join("; ")}` : "",
+    `Scope conflict:\n${input.conflictReason.slice(0, 6_000)}`,
+    `Visual/Product review evidence:\n${JSON.stringify(input.review).slice(0, 24_000)}`,
+    "Preserve already-completed work. Do not renumber, rename, or delete slices that are before the current in-progress slice unless the brief is impossible to satisfy otherwise.",
+    currentSlice ? `Preserve the current slice id "${currentSlice.id}" when possible so Core can resume the existing worktree at the same logical boundary. You may expand its outcome/scope when the review proves that its existing boundary is invalid.` : "",
+    "Revise only the sitemap, component inventory, style system, capabilities, and current/future slices needed to resolve the demonstrated conflict.",
+    "The revised plan must still cover every explicit page and capability in the original brief. Internal applications must not regress into homepage/hero/marketing-site slice structures.",
+    "Return a complete replacement <borg-project-plan> block, not a patch or prose-only delta.",
+    projectPlanningPrompt(input.brief),
+  ].filter(Boolean).join("\n\n");
+}
+
 export function projectPlanningPrompt(brief: string): string {
   return `OUTER WEBSITE PHASE PLAN. This is the one full planning loop for the frontend phase. Inspect the brief and approved repository context, then plan the COMPLETE website before implementation. Do not implement anything.
 
