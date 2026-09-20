@@ -39,7 +39,7 @@ export interface BrowserDomElement {
   href: string | null;
   disabled: boolean;
   visible: boolean;
-  actionable: boolean | null;
+  actionable?: boolean | null;
   rect: { x: number; y: number; width: number; height: number };
 }
 
