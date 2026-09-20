@@ -219,7 +219,7 @@ test("final slice becomes frontend_complete only after Core checkpoints delivery
 
 test("plan coverage detects required product capabilities instead of checking pages only", () => {
   const brief = "Build an authenticated operations app. Users must sign in, search and filter jobs, create/edit/delete jobs, and view reports.";
-  const plan = fallbackProjectPlan("Build an internal operations dashboard with Jobs and Reports.", "dashboard");
+  const plan = fallbackProjectPlan("Build a polished company marketing website.", "saas-landing");
   const report = validateProjectPlanCoverage(plan, brief);
 
   assert.ok(report.requiredCapabilities.includes("authentication"));
