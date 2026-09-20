@@ -22,6 +22,8 @@ export interface DesignBriefView {
 export interface DesignReviewView {
   taskId: string;
   status: "pass" | "repair" | "inconclusive" | "unavailable" | "failed";
+  repairScope: "none" | "current_slice" | "cross_slice" | "project_plan";
+  scopeReason: string;
   summary: string;
   dimensions: { dimension: string; verdict: "pass" | "repair"; evidence: string; recommendation: string }[];
   findings: { severity: string; category: string; title: string; description: string; evidence?: string; remediation?: string }[];
@@ -148,6 +150,10 @@ export function DesignPanel({
           </div>
           <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${review.status === "pass" ? "bg-[#a7ff4f]/10 text-[#a7ff4f]" : review.status === "repair" ? "bg-amber-200/10 text-amber-100" : "bg-red-300/10 text-red-200"}`}>{review.status}</span>
         </div>
+        {review.status === "repair" && <div className="mt-3 rounded-md border border-amber-200/10 bg-amber-200/[0.025] px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-100/60">Repair authority · {review.repairScope.replaceAll("_", " ")}</p>
+          <p className="mt-1 text-[11px] leading-5 text-slate-400">{review.scopeReason}</p>
+        </div>}
         {review.dimensions.length > 0 && <div className="mt-4 grid gap-2">
           {review.dimensions.map((item) => <div key={item.dimension} className="grid gap-1 border-t border-white/6 pt-3 first:border-0 first:pt-0 md:grid-cols-[11rem_1fr]">
             <div className="flex items-center gap-2"><span className={`size-1.5 rounded-full ${item.verdict === "pass" ? "bg-[#a7ff4f]" : "bg-amber-200"}`} /><span className="text-[11px] font-medium capitalize text-slate-300">{item.dimension.replaceAll("-", " ")}</span></div>
