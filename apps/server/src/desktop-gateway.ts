@@ -407,6 +407,7 @@ async function coreTaskRuntime(taskId: string) {
     approval?: { status?: string } | null;
     projectPlanApproval?: boolean;
     projectPlanRevisionApproval?: boolean;
+    planRevision?: { delta?: Record<string, unknown> | null; reason?: string; repairScope?: string } | null;
     error?: string;
   };
   if (!response.ok) throw new Error(body.error ?? `Unable to read task state (${response.status}).`);
