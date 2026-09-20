@@ -453,14 +453,13 @@ async function recoverInterruptedTasks(): Promise<void> {
     try {
       if (await reconcileInterruptedDelivery(task)) continue;
       const checkpoint = createCheckpointSnapshot(task, "interrupted");
-      const recovered = workflow.transition(task, "RECOVERY_REQUIRED");
-      syncWorkflowProjection(recovered.task, recovered.workflow);
-      appendTaskEvent(task.id, "TASK_RECOVERY_REQUIRED", {
+      const recovered = workflow.markRecoveryRequired(task, {
+        category: "process_interrupted",
         checkpointId: checkpoint.id,
-        previousState: task.state,
-        workflowVersion: recovered.workflow.version,
+        resumeAction: "inspect_worktree",
         reason: "The server restarted while an active lifecycle stage was running.",
       });
+      syncWorkflowProjection(recovered.task, recovered.workflow);
     } catch (error) {
       console.error(`[workflow] startup recovery failed for task ${task.id}`, error);
     }
@@ -1323,16 +1322,29 @@ const server = createServer((request, response) => {
           specialistInstructions: specialistInstructions.verifier,
         };
         emit({ type: "tool.completed", tool: "verification_run", output: verification });
-        appendTaskEvent(taskId, "VERIFICATION_COMPLETED", { verification, attempt: task.attempts });
+        const verificationFailure = [
+          ...(verification.browserEvidence?.issues ?? []),
+          ...(verification.specialistEvidence?.failures ?? []),
+        ].filter(Boolean).join(" ") || "Deterministic verification failed.";
+        const verificationSummary = verification.passed
+          ? `${verificationProfile} verification passed for repair attempt ${task.attempts}.`
+          : verificationFailure;
+        const verifiedWorkflow = workflow.recordVerification(task, {
+          passed: verification.passed,
+          attempt: task.attempts,
+          profile: verificationProfile,
+          summary: verificationSummary,
+          browserPassed: verification.browserEvidence?.passed ?? (focusedBrowserFailure ? false : null),
+          specialistPassed: verification.specialistEvidence?.passed ?? null,
+          resultSha256: createHash("sha256").update(JSON.stringify(verification)).digest("hex"),
+          evidence: verification,
+        });
+        syncWorkflowProjection(task, verifiedWorkflow);
         if (verification.visualRegression && verification.visualRegression.status !== "disabled") {
           appendTaskEvent(taskId, "VISUAL_REGRESSION_COMPLETED", { report: verification.visualRegression, attempt: task.attempts });
           emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
         }
         if (!verification.passed) {
-          const verificationFailure = [
-            ...(verification.browserEvidence?.issues ?? []),
-            ...(verification.specialistEvidence?.failures ?? []),
-          ].filter(Boolean).join(" ") || "Deterministic verification failed.";
           finishRole(activeRoleAssignment, "completed", emit);
           recordHandoff({
             task,
