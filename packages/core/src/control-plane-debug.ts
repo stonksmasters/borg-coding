@@ -380,7 +380,7 @@ const secretPatterns: Array<[RegExp, string]> = [
   [/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]"],
   [/\b(?:sk|sk-proj|ghp|github_pat)_[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_TOKEN]"],
   [/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]"],
-  [/([?&](?:token|key|secret|password|api_key)=)[^&#\s]+/gi, "$1[REDACTED]"],
+  [/((?:[?&]|\b)(?:token|key|secret|password|api_key)=)[^&#\s]+/gi, "$1[REDACTED]"],
 ];
 
 function redactString(value: string): string {
