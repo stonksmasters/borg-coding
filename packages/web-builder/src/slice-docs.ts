@@ -852,8 +852,9 @@ export function approveProjectPlan(root: string, taskId: string, authoritativePl
   writeFileSync(join(docsDirectory(root), "plan.md"), planMarkdown(approved));
   const next = stateFromPlan(approved, state?.brief || approved.siteGoal, "ready", taskId, state);
   writeState(root, next);
-  writeFileSync(join(docsDirectory(root), "current-slice.md"), `# Current slice\n\nReady to start **${approved.slices[0].title}**.\n\nOutcome: ${approved.slices[0].outcome}\n`);
-  writeFileSync(join(docsDirectory(root), "progress.md"), `# Progress\n\nPhase: **Frontend**\n\nPlan revision: ${approved.revision}\n\nStatus: approved; ready for slice 1 of ${approved.slices.length}\n`);
+  const resumeSlice = approved.slices[next.current] ?? approved.slices[0];
+  writeFileSync(join(docsDirectory(root), "current-slice.md"), `# Current slice\n\nReady to ${next.current > 0 || approved.revision > 1 ? "resume" : "start"} **${resumeSlice.title}**.\n\nOutcome: ${resumeSlice.outcome}\n`);
+  writeFileSync(join(docsDirectory(root), "progress.md"), `# Progress\n\nPhase: **Frontend**\n\nPlan revision: ${approved.revision}\n\nStatus: approved; ready for slice ${next.current + 1} of ${approved.slices.length}\n`);
   writeFileSync(join(docsDirectory(root), "decisions.md"), `${safeRead(join(docsDirectory(root), "decisions.md"))}\n## ${new Date().toISOString()} — frontend plan approved\n\nApproved revision ${approved.revision} with ${approved.slices.length} slices.\n`);
   setFrontendWorkflowStage(root, "plan_approved", { currentSlice: 0, totalSlices: approved.slices.length, taskId, detail: "Plan approved. The server owns the transition into slice 1." });
   return { plan: approved, state: next };
