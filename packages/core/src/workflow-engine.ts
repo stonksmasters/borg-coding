@@ -591,7 +591,7 @@ export class WorkflowEngine {
       verification: continuation.resultingState === "IMPLEMENTING" || continuation.resultingState === "VERIFYING"
         ? pendingVerification(updatedTask.attempts)
         : current.verification,
-      recovery: continuation.status === "recovery_required"
+      recovery: continuation.status === "recovery_required" || continuation.resultingState === "PAUSED"
         ? {
             status: "required",
             category: current.recoveryCategory ?? "checkpoint_continuation",
