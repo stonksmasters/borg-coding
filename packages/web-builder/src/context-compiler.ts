@@ -260,8 +260,9 @@ function compileContextPack(input: InternalInput): CompiledContext {
     add("contract", "@borg/website-product-contract", "Pinned website product contract", bounded(input.productContract, 8_000), true);
   }
 
-  const projectBrief = input.projectBrief?.trim() || optionalProjection(input.root, "brief.md", 4_000);
-  if (projectBrief) add(input.projectBrief?.trim() ? "authority" : "projection", "@borg/project-brief", "Original project brief", projectBrief, Boolean(input.projectBrief?.trim()));
+  const authoritativeBrief = input.projectBrief?.trim() ? bounded(input.projectBrief, 4_000) : "";
+  const projectBrief = authoritativeBrief || optionalProjection(input.root, "brief.md", 4_000);
+  if (projectBrief) add(authoritativeBrief ? "authority" : "projection", "@borg/project-brief", "Original project brief", projectBrief, Boolean(authoritativeBrief));
 
   add("authority", "@borg/project-plan", "Durable approved project constraints", bounded(JSON.stringify({
     revision: plan.revision,
