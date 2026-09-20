@@ -2,32 +2,29 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
-import type { ProjectPlan } from "./slice-docs.ts";
+import {
+  ProjectComponentSchema,
+  ProjectEntityStatusSchema,
+  ProjectPageSchema,
+  type ProjectPlan,
+} from "../../core/src/project-domain.ts";
 
-const status = z.enum(["planned", "in_progress", "verified"]);
+const status = ProjectEntityStatusSchema;
 const relativeSource = z.string().min(1).refine((value) => !isAbsolute(value) && !value.split(/[\\/]/).some((part) => part === ".." || part === "." || !part) && !/^[a-z]:/i.test(value), "Expected a repository-relative path.");
-const page = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  route: z.string().startsWith("/").nullable(),
+const page = ProjectPageSchema.omit({ componentIds: true }).extend({
+  route: ProjectPageSchema.shape.route.nullable(),
   purpose: z.string().default(""),
   sections: z.array(z.string()).default([]),
   files: z.array(relativeSource),
   components: z.array(z.string()),
   status,
-  acceptanceCriteria: z.array(z.string()),
 });
-const component = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  kind: z.enum(["layout", "section", "ui", "feature"]).default("section"),
+const component = ProjectComponentSchema.extend({
+  kind: ProjectComponentSchema.shape.kind.default("section"),
   purpose: z.string().default(""),
   files: z.array(relativeSource),
-  usedBy: z.array(z.string()),
   dependencies: z.array(z.string()),
-  variants: z.array(z.string()),
   status,
-  acceptanceCriteria: z.array(z.string()),
 });
 const pagesSchema = z.object({ version: z.literal(1), pages: z.array(page) });
 const componentsSchema = z.object({ version: z.literal(1), components: z.array(component) });

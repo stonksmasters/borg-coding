@@ -1,5 +1,18 @@
 import { z } from "zod";
 import { permissionModes } from "./chat-session.ts";
+import {
+  ProjectComponentSchema,
+  ProjectPageSchema,
+  ProjectPlanSchema,
+  ProjectSliceSchema,
+  ProjectStyleSystemSchema,
+  projectPhases,
+  type ProjectComponent,
+  type ProjectPage,
+  type ProjectPlan,
+  type ProjectSlice,
+  type ProjectStyleSystem,
+} from "./project-domain.ts";
 
 export const taskStates = ["CREATED", "CLASSIFYING", "DISCOVERING", "PLANNING", "AWAITING_APPROVAL", "IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERY_READY", "DELIVERING", "PAUSED", "RECOVERY_REQUIRED", "COMPLETE", "BLOCKED", "FAILED", "CANCELLED"] as const;
 export const riskLevels = ["R0", "R1", "R2", "R3", "R4"] as const;
@@ -16,76 +29,24 @@ export const reviewFindingStates = ["open", "accepted", "fixed", "waived", "fals
 export const reviewDecisionActions = ["accept", "mark_fixed", "waive", "false_positive", "reopen", "supersede"] as const;
 export const reviewDecisionActors = ["operator", "reviewer", "system"] as const;
 export const reviewRunStatuses = ["running", "completed", "failed"] as const;
-export const workflowPhases = ["planning", "frontend", "backend", "delivery", "complete"] as const;
+export const workflowPhases = projectPhases;
 export const workflowStatuses = ["idle", "planning", "awaiting_approval", "running", "verifying", "reviewing", "awaiting_feedback", "recovery_required", "complete", "blocked", "failed", "cancelled"] as const;
 export const workflowActions = ["plan", "await_approval", "start_slice", "implement", "verify", "repair", "checkpoint", "advance_slice", "request_feedback", "plan_backend", "deliver", "recover", "none"] as const;
 
-export const WorkflowProjectSliceSchema = z.object({
-  id: z.string().min(1),
-  title: z.string().min(1),
-  outcome: z.string(),
-  scope: z.array(z.string()),
-  acceptanceCriteria: z.array(z.string()),
-});
-export type WorkflowProjectSlice = z.infer<typeof WorkflowProjectSliceSchema>;
+export const WorkflowProjectSliceSchema = ProjectSliceSchema;
+export type WorkflowProjectSlice = ProjectSlice;
 
-export const WorkflowSitemapPageSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  route: z.string().startsWith("/"),
-  purpose: z.string(),
-  sections: z.array(z.string()),
-  componentIds: z.array(z.string()),
-  acceptanceCriteria: z.array(z.string()),
-});
-export type WorkflowSitemapPage = z.infer<typeof WorkflowSitemapPageSchema>;
+export const WorkflowSitemapPageSchema = ProjectPageSchema;
+export type WorkflowSitemapPage = ProjectPage;
 
-export const WorkflowPlannedComponentSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  kind: z.enum(["layout", "section", "ui", "feature"]),
-  purpose: z.string(),
-  usedBy: z.array(z.string()),
-  variants: z.array(z.string()),
-  acceptanceCriteria: z.array(z.string()),
-});
-export type WorkflowPlannedComponent = z.infer<typeof WorkflowPlannedComponentSchema>;
+export const WorkflowPlannedComponentSchema = ProjectComponentSchema;
+export type WorkflowPlannedComponent = ProjectComponent;
 
-export const WorkflowStyleSystemSchema = z.object({
-  direction: z.string(),
-  colors: z.array(z.string()),
-  typography: z.array(z.string()),
-  spacing: z.array(z.string()),
-  radii: z.array(z.string()),
-  shadows: z.array(z.string()),
-  layoutPrinciples: z.array(z.string()),
-  motion: z.array(z.string()),
-  responsive: z.array(z.string()),
-  accessibility: z.array(z.string()),
-  avoid: z.array(z.string()),
-});
-export type WorkflowStyleSystem = z.infer<typeof WorkflowStyleSystemSchema>;
+export const WorkflowStyleSystemSchema = ProjectStyleSystemSchema;
+export type WorkflowStyleSystem = ProjectStyleSystem;
 
-export const WorkflowProjectPlanSchema = z.object({
-  version: z.literal(2),
-  revision: z.number().int().positive(),
-  status: z.enum(["proposed", "approved", "frontend_complete"]),
-  phase: z.literal("frontend"),
-  siteGoal: z.string(),
-  audience: z.string(),
-  pages: z.array(z.string()),
-  features: z.array(z.string()),
-  sitemap: z.array(WorkflowSitemapPageSchema).optional(),
-  components: z.array(WorkflowPlannedComponentSchema).optional(),
-  styles: WorkflowStyleSystemSchema.optional(),
-  visualDirection: z.string(),
-  backendRequired: z.boolean(),
-  slices: z.array(WorkflowProjectSliceSchema).min(1),
-  acceptanceCriteria: z.array(z.string()),
-  proposedAt: z.string().datetime(),
-  approvedAt: z.string().datetime().nullable(),
-});
-export type WorkflowProjectPlan = z.infer<typeof WorkflowProjectPlanSchema>;
+export const WorkflowProjectPlanSchema = ProjectPlanSchema;
+export type WorkflowProjectPlan = ProjectPlan;
 
 export const WorkflowCommandSchema = z.object({
   id: z.string().min(1),
