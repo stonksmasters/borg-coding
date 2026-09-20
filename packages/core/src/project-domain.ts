@@ -38,6 +38,20 @@ export const ProjectComponentSchema = z.object({
 });
 export type ProjectComponent = z.infer<typeof ProjectComponentSchema>;
 
+export const emptyProjectStyleSystem = {
+  direction: "",
+  colors: [],
+  typography: [],
+  spacing: [],
+  radii: [],
+  shadows: [],
+  layoutPrinciples: [],
+  motion: [],
+  responsive: [],
+  accessibility: [],
+  avoid: [],
+} as const;
+
 export const ProjectStyleSystemSchema = z.object({
   direction: z.string(),
   colors: z.array(z.string()),
@@ -82,9 +96,11 @@ export const ProjectPlanSchema = z.object({
   // Kept for v2 persistence compatibility. sitemap is the canonical page inventory.
   pages: z.array(z.string()),
   features: z.array(z.string()),
-  sitemap: z.array(ProjectPageSchema),
-  components: z.array(ProjectComponentSchema),
-  styles: ProjectStyleSystemSchema,
+  // Defaults preserve restart compatibility with workflow snapshots created before the
+  // sitemap/component/style inventories became first-class project state.
+  sitemap: z.array(ProjectPageSchema).default([]),
+  components: z.array(ProjectComponentSchema).default([]),
+  styles: ProjectStyleSystemSchema.default(emptyProjectStyleSystem),
   visualDirection: z.string(),
   backendRequired: z.boolean(),
   slices: z.array(ProjectSliceSchema).min(1),
