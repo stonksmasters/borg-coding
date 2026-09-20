@@ -23,6 +23,7 @@ import {
   type WorkflowState,
 } from "../../../packages/core/src/contracts.ts";
 import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
+import { normalizeWorkflowEvents } from "../../../packages/core/src/workflow-events.ts";
 import { taskRepositoryPath } from "../../../packages/core/src/task-repository-binding.ts";
 import { assertExecutionTransition, buildRepairContext, formatRepairContext, type ExecutionState } from "../../../packages/core/src/execution-state.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
@@ -332,6 +333,7 @@ function createCheckpointSnapshot(
   const plan = events.findLast((value) => value.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
   const stateIndex = checkpointStateOrder.indexOf(task.state);
   const steps = checkpointStateOrder.filter((value) => !["PAUSED", "RECOVERY_REQUIRED"].includes(value));
+  const durableWorkflow = workflow.get(task.projectId);
   const checkpoint = createTaskCheckpoint({
     id: randomUUID(),
     taskId: task.id,
@@ -353,9 +355,20 @@ function createCheckpointSnapshot(
     lastEventId: events.at(-1)?.id ?? null,
     activeRole: activeAssignment?.role ?? null,
     specialistPacks: activeAssignment?.specialistPacks ?? [],
+    workflowVersion: durableWorkflow?.version ?? null,
+    verification: durableWorkflow?.verification,
+    recovery: durableWorkflow?.recovery,
   });
   tasks.saveCheckpoint(checkpoint);
-  appendTaskEvent(task.id, "TASK_CHECKPOINT_CREATED", { checkpointId: checkpoint.id, name: checkpoint.name, kind: checkpoint.kind, state: checkpoint.taskState });
+  appendTaskEvent(task.id, "TASK_CHECKPOINT_CREATED", {
+    checkpointId: checkpoint.id,
+    name: checkpoint.name,
+    kind: checkpoint.kind,
+    state: checkpoint.taskState,
+    workflowVersion: checkpoint.workflowVersion,
+    verificationStatus: checkpoint.verification.status,
+    recoveryStatus: checkpoint.recovery.status,
+  });
   return checkpoint;
 }
 
@@ -392,6 +405,7 @@ async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, re
     completed: true,
   });
   const restored = workflow.continueFromCheckpoint(task, continuation, {
+    checkpoint,
     unresolvedReviewFindingIds: unresolvedReviewFindings.map((value) => value.id),
   });
   syncWorkflowProjection(restored.task, restored.workflow);
@@ -453,14 +467,13 @@ async function recoverInterruptedTasks(): Promise<void> {
     try {
       if (await reconcileInterruptedDelivery(task)) continue;
       const checkpoint = createCheckpointSnapshot(task, "interrupted");
-      const recovered = workflow.transition(task, "RECOVERY_REQUIRED");
-      syncWorkflowProjection(recovered.task, recovered.workflow);
-      appendTaskEvent(task.id, "TASK_RECOVERY_REQUIRED", {
+      const recovered = workflow.markRecoveryRequired(task, {
+        category: "process_interrupted",
         checkpointId: checkpoint.id,
-        previousState: task.state,
-        workflowVersion: recovered.workflow.version,
+        resumeAction: "inspect_worktree",
         reason: "The server restarted while an active lifecycle stage was running.",
       });
+      syncWorkflowProjection(recovered.task, recovered.workflow);
     } catch (error) {
       console.error(`[workflow] startup recovery failed for task ${task.id}`, error);
     }
@@ -862,6 +875,14 @@ const server = createServer((request, response) => {
       return pack ? send(response, 200, { pack }) : send(response, 404, { error: "Context pack not found." });
     }
     return send(response, 200, { packs: tasks.listContextPacks(taskId) });
+  }
+
+  const workflowEventsRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/workflow-events$/);
+  if (request.method === "GET" && workflowEventsRoute) {
+    const taskId = decodeURIComponent(workflowEventsRoute[1]);
+    const task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found." });
+    return send(response, 200, { events: normalizeWorkflowEvents(task, tasks.listEvents(taskId)) });
   }
 
   const workflowStatusRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/workflow-status$/);
@@ -1323,16 +1344,29 @@ const server = createServer((request, response) => {
           specialistInstructions: specialistInstructions.verifier,
         };
         emit({ type: "tool.completed", tool: "verification_run", output: verification });
-        appendTaskEvent(taskId, "VERIFICATION_COMPLETED", { verification, attempt: task.attempts });
+        const verificationFailure = [
+          ...(verification.browserEvidence?.issues ?? []),
+          ...(verification.specialistEvidence?.failures ?? []),
+        ].filter(Boolean).join(" ") || "Deterministic verification failed.";
+        const verificationSummary = verification.passed
+          ? `${verificationProfile} verification passed for repair attempt ${task.attempts}.`
+          : verificationFailure;
+        const verifiedWorkflow = workflow.recordVerification(task, {
+          passed: verification.passed,
+          attempt: task.attempts,
+          profile: verificationProfile,
+          summary: verificationSummary,
+          browserPassed: verification.browserEvidence?.passed ?? (focusedBrowserFailure ? false : null),
+          specialistPassed: verification.specialistEvidence?.passed ?? null,
+          resultSha256: createHash("sha256").update(JSON.stringify(verification)).digest("hex"),
+          evidence: verification,
+        });
+        syncWorkflowProjection(task, verifiedWorkflow);
         if (verification.visualRegression && verification.visualRegression.status !== "disabled") {
           appendTaskEvent(taskId, "VISUAL_REGRESSION_COMPLETED", { report: verification.visualRegression, attempt: task.attempts });
           emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
         }
         if (!verification.passed) {
-          const verificationFailure = [
-            ...(verification.browserEvidence?.issues ?? []),
-            ...(verification.specialistEvidence?.failures ?? []),
-          ].filter(Boolean).join(" ") || "Deterministic verification failed.";
           finishRole(activeRoleAssignment, "completed", emit);
           recordHandoff({
             task,

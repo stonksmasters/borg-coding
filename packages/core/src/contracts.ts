@@ -33,6 +33,53 @@ export const workflowPhases = projectPhases;
 export const workflowLoops = ["project", "slice", "backend", "general"] as const;
 export const workflowStatuses = ["idle", "planning", "awaiting_approval", "running", "verifying", "reviewing", "awaiting_feedback", "recovery_required", "complete", "blocked", "failed", "cancelled"] as const;
 export const workflowActions = ["plan", "await_approval", "start_slice", "implement", "verify", "repair", "checkpoint", "advance_slice", "request_feedback", "plan_backend", "deliver", "recover", "none"] as const;
+export const verificationStatuses = ["pending", "passed", "failed"] as const;
+export const recoveryStatuses = ["inactive", "required", "repairing", "blocked"] as const;
+export const recoveryResumeActions = ["inspect_worktree", "retry_current_scope", "await_approval", "deliver", "replan", "none"] as const;
+
+export const VerificationGateSchema = z.object({
+  status: z.enum(verificationStatuses),
+  attempt: z.number().int().nonnegative(),
+  profile: z.string().min(1).nullable(),
+  summary: z.string(),
+  browserPassed: z.boolean().nullable(),
+  specialistPassed: z.boolean().nullable(),
+  resultSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  completedAt: z.string().datetime().nullable(),
+});
+export type VerificationGate = z.infer<typeof VerificationGateSchema>;
+
+export const inactiveVerificationGate: VerificationGate = {
+  status: "pending",
+  attempt: 0,
+  profile: null,
+  summary: "",
+  browserPassed: null,
+  specialistPassed: null,
+  resultSha256: null,
+  completedAt: null,
+};
+
+export const WorkflowRecoverySchema = z.object({
+  status: z.enum(recoveryStatuses),
+  category: z.string().min(1).nullable(),
+  previousTaskState: z.enum(taskStates).nullable(),
+  checkpointId: z.string().min(1).nullable(),
+  resumeAction: z.enum(recoveryResumeActions),
+  reason: z.string(),
+  updatedAt: z.string().datetime().nullable(),
+});
+export type WorkflowRecovery = z.infer<typeof WorkflowRecoverySchema>;
+
+export const inactiveWorkflowRecovery: WorkflowRecovery = {
+  status: "inactive",
+  category: null,
+  previousTaskState: null,
+  checkpointId: null,
+  resumeAction: "none",
+  reason: "",
+  updatedAt: null,
+};
 
 export const WorkflowProjectSliceSchema = ProjectSliceSchema;
 export type WorkflowProjectSlice = ProjectSlice;
@@ -129,6 +176,8 @@ export const WorkflowStateSchema = z.object({
   sliceIndex: z.number().int().nonnegative().nullable(), sliceTotal: z.number().int().positive().nullable(), sliceTitle: z.string().nullable(),
   feedback: z.array(z.string()).default([]), handoff: z.string().nullable().default(null),
   pendingCommand: WorkflowCommandSchema.nullable().default(null), lastConsumedCommandId: z.string().nullable().default(null),
+  verification: VerificationGateSchema.default(inactiveVerificationGate),
+  recovery: WorkflowRecoverySchema.default(inactiveWorkflowRecovery),
   repairAttempt: z.number().int().nonnegative(), recoveryCategory: z.string().nullable(), detail: z.string(),
   version: z.number().int().positive(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
 });
@@ -166,6 +215,9 @@ export const TaskCheckpointSchema = z.object({
   lastEventId: z.string().nullable(),
   activeRole: z.enum(engineeringRoles).nullable(),
   specialistPacks: z.array(SpecialistPackRefSchema).default([]),
+  workflowVersion: z.number().int().positive().nullable().default(null),
+  verification: VerificationGateSchema.default(inactiveVerificationGate),
+  recovery: WorkflowRecoverySchema.default(inactiveWorkflowRecovery),
   createdAt: z.string().datetime(),
 });
 export type TaskCheckpoint = z.infer<typeof TaskCheckpointSchema>;
@@ -258,7 +310,10 @@ export function createApproval(input: Pick<Approval, "id" | "taskId">): Approval
 }
 
 
-export function createTaskCheckpoint(input: Omit<TaskCheckpoint, "createdAt">): TaskCheckpoint {
+export function createTaskCheckpoint(
+  input: Omit<TaskCheckpoint, "createdAt" | "workflowVersion" | "verification" | "recovery">
+    & Partial<Pick<TaskCheckpoint, "workflowVersion" | "verification" | "recovery">>,
+): TaskCheckpoint {
   return TaskCheckpointSchema.parse({ ...input, createdAt: new Date().toISOString() });
 }
 

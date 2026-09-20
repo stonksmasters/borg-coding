@@ -70,6 +70,15 @@ function approveExecution(engine: WorkflowEngine, task: ReturnType<typeof create
 
 function deliver(engine: WorkflowEngine, task: ReturnType<typeof createTask>, commit: string) {
   task = engine.transition(task, "VERIFYING").task;
+  engine.recordVerification(task, {
+    passed: true,
+    attempt: task.attempts,
+    profile: "quick",
+    summary: "Verification passed.",
+    browserPassed: true,
+    specialistPassed: true,
+    resultSha256: "c".repeat(64),
+  });
   task = engine.transition(task, "REVIEWING").task;
   task = engine.transition(task, "DELIVERY_READY").task;
   task = engine.beginDelivery(task, { method: "commit", expectedBaseCommit: `base-${task.id}` }).task;
@@ -102,6 +111,7 @@ test("plan approval -> slice 1 -> restart -> slice 2 -> final feedback survives 
     let sliceOne = reachPlanning(engine, "slice-1", "site", "Build slice 1", firstCommandId);
     sliceOne = approveExecution(engine, sliceOne, "slice-1-approval", 0, 2, "Hero & Navigation");
     const firstDelivery = deliver(engine, sliceOne, "slice-1-commit");
+    assert.equal(firstDelivery.workflow.verification.status, "passed");
     const advanceCommandId = firstDelivery.workflow.pendingCommand?.id;
     assert.ok(advanceCommandId);
     assert.equal(firstDelivery.workflow.nextAction, "advance_slice");
@@ -127,6 +137,7 @@ test("plan approval -> slice 1 -> restart -> slice 2 -> final feedback survives 
     repository = new SqliteTaskRepository(databasePath);
     engine = new WorkflowEngine(repository);
     const final = engine.get("site");
+    assert.equal(final?.verification.status, "passed");
     assert.equal(final?.nextAction, "request_feedback");
     assert.equal(final?.projectPlan?.status, "frontend_complete");
     assert.equal(final?.sliceIndex, 1);

@@ -360,6 +360,10 @@ test("workflow status after restart follows durable failure and verification evi
     assert.equal(restored.verificationPassed, false);
     assert.match(restored.nextAction, /Inspect the blocking evidence/);
     assert.equal(restored.activity.length, 2);
+    assert.equal(restored.activity[0].type, "activity.updated");
+    assert.equal(restored.activity[0].sourceType, "AGENT_ACTIVITY");
+    assert.equal(restored.activity[1].type, "verification.completed");
+    assert.equal(restored.activity[1].sourceType, "VERIFICATION_COMPLETED");
     reopened.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

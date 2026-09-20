@@ -27,6 +27,18 @@ class MemoryWorkflowStore implements WorkflowStore {
   }
 }
 
+function passVerification(engine: WorkflowEngine, task: Task, profile = "quick") {
+  return engine.recordVerification(task, {
+    passed: true,
+    attempt: task.attempts,
+    profile,
+    summary: "Verification passed.",
+    browserPassed: true,
+    specialistPassed: true,
+    resultSha256: "a".repeat(64),
+  });
+}
+
 function projectPlan(): WorkflowProjectPlan {
   return {
     version: 2,
@@ -140,6 +152,7 @@ test("backend planning is gated by the durable completed frontend plan", () => {
   }, "execution").task;
   engine.activateSlice(slice);
   slice = engine.transition(slice, "VERIFYING").task;
+  passVerification(engine, slice);
   slice = engine.transition(slice, "REVIEWING").task;
   slice = engine.transition(slice, "DELIVERY_READY").task;
   slice = engine.beginDelivery(slice, { method: "commit", expectedBaseCommit: "base" }).task;
@@ -149,6 +162,73 @@ test("backend planning is gated by the durable completed frontend plan", () => {
   const backend = engine.start(createTask({ id: "backend-ready", projectId: "backend-project", request: "Build backend" }), "backend");
   assert.equal(backend.loop, "backend");
   assert.equal(backend.phase, "backend");
+});
+
+test("verification is a durable gate before review and delivery", () => {
+  const store = new MemoryWorkflowStore();
+  const engine = new WorkflowEngine(store);
+  let task = createTask({ id: "verification-gate", projectId: "verification-project", request: "Verify safely" });
+  engine.start(task, "general");
+  task = engine.transition(task, "CLASSIFYING").task;
+  task = engine.transition(task, "DISCOVERING").task;
+  task = engine.transition(task, "PLANNING").task;
+  const approval = createApproval({ id: "verification-approval", taskId: task.id });
+  task = engine.requestApproval(task, approval, "execution").task;
+  task = engine.decideApproval(task, {
+    ...approval,
+    status: "APPROVED",
+    decidedAt: new Date().toISOString(),
+    worktreePath: "/tmp/verification",
+    baseCommit: "base",
+  }, "execution").task;
+  task = engine.transition(task, "VERIFYING").task;
+
+  assert.throws(() => engine.transition(task, "REVIEWING"), /passed verification gate/i);
+
+  const failed = engine.recordVerification(task, {
+    passed: false,
+    attempt: task.attempts,
+    profile: "quick",
+    summary: "Build failed.",
+    browserPassed: false,
+    specialistPassed: true,
+    resultSha256: "b".repeat(64),
+  });
+  assert.equal(failed.verification.status, "failed");
+  assert.equal(failed.nextAction, "repair");
+  assert.throws(() => engine.transition(task, "REVIEWING"), /passed verification gate/i);
+
+  const passed = passVerification(engine, task);
+  assert.equal(passed.verification.status, "passed");
+  assert.equal(passed.nextAction, "checkpoint");
+  task = engine.transition(task, "REVIEWING").task;
+  task = engine.transition(task, "DELIVERY_READY").task;
+  assert.equal(engine.get(task.projectId)?.verification.status, "passed");
+});
+
+test("verification result must match the active repair attempt", () => {
+  const store = new MemoryWorkflowStore();
+  const engine = new WorkflowEngine(store);
+  let task = createTask({ id: "verification-attempt", projectId: "verification-attempt-project", request: "Verify" });
+  engine.start(task, "general");
+  task = engine.transition(task, "CLASSIFYING").task;
+  task = engine.transition(task, "DISCOVERING").task;
+  task = engine.transition(task, "PLANNING").task;
+  const approval = createApproval({ id: "verification-attempt-approval", taskId: task.id });
+  task = engine.requestApproval(task, approval, "execution").task;
+  task = engine.decideApproval(task, {
+    ...approval,
+    status: "APPROVED",
+    decidedAt: new Date().toISOString(),
+    worktreePath: "/tmp/verification-attempt",
+    baseCommit: "base",
+  }, "execution").task;
+  task = engine.transition(task, "VERIFYING").task;
+  assert.throws(() => engine.recordVerification(task, {
+    passed: true,
+    attempt: task.attempts + 1,
+    summary: "Wrong attempt.",
+  }), /does not match task repair attempt/i);
 });
 
 test("WorkflowEngine rejects a stale task from taking project ownership", () => {
@@ -189,6 +269,7 @@ test("verified delivered slice schedules one durable advance command", () => {
   task = engine.decideApproval(task, sliceApproved, "execution").task;
   engine.activateSlice(task);
   task = engine.transition(task, "VERIFYING").task;
+  passVerification(engine, task);
   task = engine.transition(task, "REVIEWING").task;
   task = engine.transition(task, "DELIVERY_READY").task;
   task = engine.beginDelivery(task, { method: "commit", expectedBaseCommit: "abc" }).task;
@@ -270,6 +351,7 @@ test("slice revision cannot start before the verified slice is checkpointed", ()
   }, "execution").task;
   engine.activateSlice(slice);
   slice = engine.transition(slice, "VERIFYING").task;
+  passVerification(engine, slice);
   slice = engine.transition(slice, "REVIEWING").task;
   slice = engine.transition(slice, "DELIVERY_READY").task;
 
@@ -318,6 +400,7 @@ test("general edits are never treated as frontend slice delivery", () => {
     baseCommit: "base",
   }, "execution").task;
   task = engine.transition(task, "VERIFYING").task;
+  passVerification(engine, task);
   task = engine.transition(task, "REVIEWING").task;
   task = engine.transition(task, "DELIVERY_READY").task;
   task = engine.beginDelivery(task, { method: "commit", expectedBaseCommit: "base" }).task;
@@ -352,6 +435,7 @@ test("slice revision stays on the selected slice and invalidates the pending adv
   slice = engine.decideApproval(slice, { ...sliceApproval, status: "APPROVED", decidedAt: new Date().toISOString(), worktreePath: "/tmp/revision", baseCommit: "base" }, "execution").task;
   engine.activateSlice(slice);
   slice = engine.transition(slice, "VERIFYING").task;
+  passVerification(engine, slice);
   slice = engine.transition(slice, "REVIEWING").task;
   slice = engine.transition(slice, "DELIVERY_READY").task;
   slice = engine.beginDelivery(slice, { method: "commit", expectedBaseCommit: "base" }).task;

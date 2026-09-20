@@ -1,8 +1,9 @@
 import type { Task, TaskEvent, WorkflowState } from "../../../packages/core/src/contracts.ts";
+import { normalizeWorkflowEvents } from "../../../packages/core/src/workflow-events.ts";
 import type { ProjectPlan, SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 
 const steps = ["IMPLEMENTATION_RESPONSE_COMPLETED", "VERIFICATION_COMPLETED", "REVIEW_COMPLETED", "FRONTEND_SLICE_READY", "DELIVERY_READY"];
-const visibleEvents = new Set(["AGENT_ACTIVITY", "TOOL_STARTED", "TOOL_COMPLETED", "TOOL_FAILED", "VERIFICATION_COMPLETED", "VISUAL_REGRESSION_COMPLETED", "DESIGN_REVIEW_COMPLETED", "DESIGN_REVIEW_BLOCKED", "FRONTEND_SLICE_READY", "RUNTIME_FAILED", "REPAIR_LIMIT_REACHED", "MODEL_CONTEXT_RECORDED", "CONTEXT_PACK_COMPILED", "IMPLEMENTATION_BUDGET_CONTINUATION", "IMPLEMENTATION_BUDGET_EXHAUSTED", "EXECUTION_STATE_CHANGED", "REPAIR_CONTEXT_CREATED"]);
+const visibleCategories = new Set(["lifecycle", "approval", "verification", "recovery", "delivery", "context", "review", "tool", "checkpoint", "activity"]);
 
 export type RunStage =
   | "planning"
@@ -25,6 +26,7 @@ export interface RunView {
   detail: string;
   currentAction: string;
   verification: { status: "pending" | "passed" | "failed"; visualStatus: string | null };
+  recovery: { status: string; category: string | null; previousTaskState: string | null; checkpointId: string | null; resumeAction: string; reason: string } | null;
   repair: { attempt: number; maximum: number | null } | null;
   blocker: { title: string; detail: string; action: string } | null;
   nextAction: string;
@@ -83,17 +85,19 @@ function headlineFor(stage: RunStage, slice: SliceState | null) {
   }
 }
 
-function latestBlocker(task: Task, events: TaskEvent[], nextAction: string): RunView["blocker"] {
+function latestBlocker(task: Task, events: TaskEvent[], nextAction: string, workflow: WorkflowState | null): RunView["blocker"] {
   if (!["BLOCKED", "FAILED", "RECOVERY_REQUIRED"].includes(task.state)) return null;
   const event = [...events].reverse().find((candidate) =>
-    ["REPAIR_LIMIT_REACHED", "DESIGN_REVIEW_BLOCKED", "RUNTIME_FAILED", "TOOL_FAILED", "WORKSPACE_PREFLIGHT_BLOCKED"].includes(candidate.type),
+    ["TASK_RECOVERY_REQUIRED", "REPAIR_LIMIT_REACHED", "DESIGN_REVIEW_BLOCKED", "RUNTIME_FAILED", "TOOL_FAILED", "WORKSPACE_PREFLIGHT_BLOCKED"].includes(candidate.type),
   );
   const payload = event?.payload as Record<string, unknown> | undefined;
-  const detail = String(payload?.message ?? payload?.reason ?? payload?.detail ?? (event ? activityDetail(event) : "The current run cannot continue automatically."));
+  const durableRecovery = workflow?.recovery.status !== "inactive" ? workflow?.recovery : null;
+  const detail = durableRecovery?.reason
+    || String(payload?.message ?? payload?.reason ?? payload?.detail ?? (event ? activityDetail(event) : "The current run cannot continue automatically."));
   return {
     title: task.state === "RECOVERY_REQUIRED" ? "Recovery required" : task.state === "FAILED" ? "Run failed" : "Quality gate blocked the build",
     detail,
-    action: nextAction,
+    action: durableRecovery?.resumeAction ?? nextAction,
   };
 }
 
@@ -105,6 +109,7 @@ export function deriveWorkflowStatus(
   workflow: WorkflowState | null = null,
   options: { baselineApprovalCount?: number } = {},
 ) {
+  const normalizedEvents = normalizeWorkflowEvents(task, events);
   const latestActivity = events.findLast((event) => event.type === "AGENT_ACTIVITY");
   const latestVerification = events.findLast((event) => event.type === "VERIFICATION_COMPLETED");
   const latestVisual = events.findLast((event) => event.type === "DESIGN_REVIEW_COMPLETED" || event.type === "DESIGN_REVIEW_BLOCKED" || event.type === "VISUAL_REGRESSION_COMPLETED");
@@ -128,7 +133,14 @@ export function deriveWorkflowStatus(
       : (latestActivity?.payload.activity as { title?: string } | undefined)?.title ?? task.state.toLowerCase().replaceAll("_", " ");
   const stage = baselineApprovalCount > 0 ? "awaiting_approval" as const : stageFor(task, events, slice);
   const activeSlice = plan && slice ? plan.slices[slice.current] ?? null : null;
-  const verificationPassed = (latestVerification?.payload.verification as { passed?: boolean } | undefined)?.passed ?? null;
+  const legacyVerificationPassed = (latestVerification?.payload.verification as { passed?: boolean } | undefined)?.passed ?? null;
+  const verificationPassed = workflow
+    ? workflow.verification.status === "passed"
+      ? true
+      : workflow.verification.status === "failed"
+        ? false
+        : null
+    : legacyVerificationPassed;
   const visualStatus = latestVisual?.type === "VISUAL_REGRESSION_COMPLETED"
     ? String((latestVisual.payload.report as { status?: string } | undefined)?.status ?? "completed")
     : latestVisual
@@ -136,9 +148,11 @@ export function deriveWorkflowStatus(
       : null;
   const detail = baselineApprovalCount > 0
     ? `${baselineApprovalCount} verified screenshot baseline candidate(s) need explicit operator acceptance before delivery. BORG never updates visual baselines automatically.`
-    : workflow?.detail
-      ?? (latestActivity?.payload.activity as { detail?: string } | undefined)?.detail
-      ?? (stage === "ready" ? "The current product boundary has passed its required checks." : "BORG is continuing the current persisted workflow.");
+    : workflow?.recovery.status !== "inactive" && workflow?.recovery.reason
+      ? workflow.recovery.reason
+      : workflow?.detail
+        ?? (latestActivity?.payload.activity as { detail?: string } | undefined)?.detail
+        ?? (stage === "ready" ? "The current product boundary has passed its required checks." : "BORG is continuing the current persisted workflow.");
   const run: RunView = {
     phase: workflow?.phase ?? "frontend",
     slice: slice ? {
@@ -155,12 +169,13 @@ export function deriveWorkflowStatus(
       status: verificationPassed === null ? "pending" : verificationPassed ? "passed" : "failed",
       visualStatus,
     },
+    recovery: workflow && workflow.recovery.status !== "inactive" ? workflow.recovery : null,
     repair: task.attempts > 0 ? { attempt: task.attempts, maximum: null } : null,
     blocker: null,
     nextAction,
     updatedAt: workflow?.updatedAt ?? task.updatedAt,
   };
-  run.blocker = latestBlocker(task, events, nextAction);
+  run.blocker = latestBlocker(task, events, nextAction, workflow);
 
   return {
     taskId: task.id,
@@ -180,11 +195,16 @@ export function deriveWorkflowStatus(
     repairAttempt: workflow?.repairAttempt ?? task.attempts,
     nextAction,
     detail: workflow?.detail ?? null,
+    recovery: workflow?.recovery ?? null,
     run,
-    activity: events.filter((event) => visibleEvents.has(event.type)).slice(-80).map((event) => ({
-      type: event.type,
+    activity: normalizedEvents.filter((event) => visibleCategories.has(event.category)).slice(-80).map((event) => ({
+      type: event.kind,
+      sourceType: event.sourceType,
+      category: event.category,
+      status: event.status,
+      title: event.title,
       occurredAt: event.occurredAt,
-      detail: activityDetail(event),
+      detail: event.detail,
     })),
   };
 }
