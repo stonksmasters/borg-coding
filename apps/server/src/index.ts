@@ -1037,7 +1037,8 @@ const server = createServer((request, response) => {
         env: { HOST: "127.0.0.1", BROWSER: "none" },
         startupTimeoutMs: 60_000,
       });
-      return send(response, 200, { preview: { url, status: "running", processId: process.id, pid: process.pid }, process });
+      const previewUrl = process.url ?? url;
+      return send(response, 200, { preview: { url: previewUrl, status: "running", processId: process.id, pid: process.pid }, process });
     })().catch((error) => send(response, 502, { error: error instanceof Error ? error.message : "Unable to start task preview." }));
     return;
   }
