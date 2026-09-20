@@ -54,6 +54,7 @@ export const WorkflowCommandSchema = z.object({
   action: z.enum(workflowActions),
   workflowVersion: z.number().int().positive(),
   createdAt: z.string().datetime(),
+  targetSliceIndex: z.number().int().nonnegative().nullable().default(null),
   claimedByTaskId: z.string().min(1).nullable().default(null),
   claimedAt: z.string().datetime().nullable().default(null),
 });
