@@ -102,6 +102,14 @@ Durable state includes:
 - approvals;
 - checkpoints and continuations.
 
+## Context artifacts
+
+Model context is not assembled by replaying chat history or rereading the repository wholesale. The Context Compiler produces a typed `ContextPack` for the active slice, page, component, or global Styles workspace.
+
+A ContextPack contains the durable project constraints, current-work boundary, relevant entity registry entries, bounded handoff/decision projections, and selected source files with hashes. Registered source mappings are preferred; repository-memory symbol/import paths provide ranked hints; known frontend entrypoints are only a final fallback. The compiler itself does not perform a broad source-tree content scan.
+
+ContextPacks are persisted in SQLite before model execution and have deterministic fingerprints. Exact provider request bodies remain a separate audit artifact. This makes project knowledge reusable and inspectable without making provider-specific prompt serialization part of project state.
+
 ## Generated project documentation
 
 Each website project may maintain runtime-generated documentation under .localcode/build/.
