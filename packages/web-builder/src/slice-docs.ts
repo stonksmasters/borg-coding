@@ -592,11 +592,11 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
 export function parseProjectPlanResult(answer: string, brief: string, template = ""): ProjectPlanParseResult {
   const fallback = fallbackProjectPlan(brief, template);
   const fallbackValidation = validateProjectPlanCoverage(fallback, brief);
-  const useFallback = (reason: string): ProjectPlanParseResult => ({
+  const useFallback = (reason: string, candidateValidation: ProjectPlanValidation = fallbackValidation): ProjectPlanParseResult => ({
     plan: fallback,
     source: "fallback",
     fallbackReason: reason,
-    validation: fallbackValidation,
+    validation: candidateValidation,
     retryRecommended: complexApplicationBrief(brief),
   });
   const match = answer.match(planMarker);
@@ -695,7 +695,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
     const validation = validateProjectPlanCoverage(candidate, brief);
-    if (!validation.valid) return useFallback(validation.issues.join(" "));
+    if (!validation.valid) return useFallback(validation.issues.join(" "), validation);
     return { plan: candidate, source: "model", fallbackReason: null, validation, retryRecommended: false };
   } catch (error) {
     return useFallback(`Planner project-plan JSON could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
