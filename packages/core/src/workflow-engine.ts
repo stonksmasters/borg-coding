@@ -430,6 +430,8 @@ export class WorkflowEngine {
     const state = WorkflowStateSchema.parse({
       ...current,
       verification: gate,
+      recovery: input.passed ? inactiveWorkflowRecovery : current.recovery,
+      recoveryCategory: input.passed ? null : current.recoveryCategory,
       status: "verifying",
       nextAction: input.passed ? "checkpoint" : "repair",
       detail: gate.summary || (input.passed ? "Verification passed." : "Verification failed."),
