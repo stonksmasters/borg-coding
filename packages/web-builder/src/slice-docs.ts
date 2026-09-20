@@ -840,7 +840,7 @@ export function persistProposedProjectPlan(
     projected.currentTitle = proposed.slices[projected.current]?.title ?? projected.currentTitle;
   }
   writeState(root, projected);
-  setFrontendWorkflowStage(root, "planning", { currentSlice: 0, totalSlices: proposed.slices.length, taskId, detail: "Frontend phase plan is proposed and waiting for approval." });
+  setFrontendWorkflowStage(root, "planning", { currentSlice: projected.current, totalSlices: proposed.slices.length, taskId, detail: options.currentSlice === undefined ? "Frontend phase plan is proposed and waiting for approval." : `Plan revision ${proposed.revision} is proposed for the preserved slice ${projected.current + 1} boundary and waiting for approval.` });
   return proposed;
 }
 
@@ -857,7 +857,7 @@ export function approveProjectPlan(root: string, taskId: string, authoritativePl
   writeFileSync(join(docsDirectory(root), "current-slice.md"), `# Current slice\n\nReady to ${next.current > 0 || approved.revision > 1 ? "resume" : "start"} **${resumeSlice.title}**.\n\nOutcome: ${resumeSlice.outcome}\n`);
   writeFileSync(join(docsDirectory(root), "progress.md"), `# Progress\n\nPhase: **Frontend**\n\nPlan revision: ${approved.revision}\n\nStatus: approved; ready for slice ${next.current + 1} of ${approved.slices.length}\n`);
   writeFileSync(join(docsDirectory(root), "decisions.md"), `${safeRead(join(docsDirectory(root), "decisions.md"))}\n## ${new Date().toISOString()} — frontend plan approved\n\nApproved revision ${approved.revision} with ${approved.slices.length} slices.\n`);
-  setFrontendWorkflowStage(root, "plan_approved", { currentSlice: 0, totalSlices: approved.slices.length, taskId, detail: "Plan approved. The server owns the transition into slice 1." });
+  setFrontendWorkflowStage(root, "plan_approved", { currentSlice: next.current, totalSlices: approved.slices.length, taskId, detail: next.current > 0 || approved.revision > 1 ? `Plan revision ${approved.revision} approved. The server will resume slice ${next.current + 1} in the existing workflow boundary.` : "Plan approved. The server owns the transition into slice 1." });
   return { plan: approved, state: next };
 }
 
