@@ -233,6 +233,13 @@ function buildDebugSnapshot(taskId: string): DebugSnapshot | null {
     characters: record.pack.characters,
     budgetCharacters: record.pack.budgetCharacters,
     manifestCount: record.pack.manifest.length,
+    manifest: record.pack.manifest.map((item) => ({
+      kind: item.kind,
+      path: item.path,
+      reason: item.reason,
+      characters: item.characters,
+      required: item.required,
+    })),
     createdAt: record.createdAt,
   }));
   const modelContexts = tasks.listModelContexts(taskId).slice(0, 20).map((record) => ({
