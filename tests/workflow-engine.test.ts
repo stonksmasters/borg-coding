@@ -85,7 +85,7 @@ test("WorkflowEngine owns project-plan revisions instead of trusting caller revi
   task = engine.transition(task, "DISCOVERING").task;
   task = engine.transition(task, "PLANNING").task;
   const first = engine.setProjectPlan(task, { ...projectPlan(), revision: 77 });
-  assert.equal(first.projectPlan?.revision, 77);
+  assert.equal(first.projectPlan?.revision, 1);
 
   const approval = createApproval({ id: "revision-reject", taskId: task.id });
   task = engine.requestApproval(task, approval, "project_plan").task;
@@ -97,38 +97,55 @@ test("WorkflowEngine owns project-plan revisions instead of trusting caller revi
   revisionTask = engine.transition(revisionTask, "DISCOVERING").task;
   revisionTask = engine.transition(revisionTask, "PLANNING").task;
   const second = engine.setProjectPlan(revisionTask, { ...projectPlan(), revision: 999 });
-  assert.equal(second.projectPlan?.revision, 78);
+  assert.equal(second.projectPlan?.revision, 2);
   assert.equal(second.projectPlan?.status, "proposed");
 });
 
 test("backend planning is gated by the durable completed frontend plan", () => {
   const store = new MemoryWorkflowStore();
   const engine = new WorkflowEngine(store);
-  const task = createTask({ id: "backend-too-early", projectId: "backend-project", request: "Build backend" });
-  assert.throws(() => engine.start(task, "backend"), /completed frontend plan/i);
+  assert.throws(
+    () => engine.start(createTask({ id: "backend-too-early", projectId: "backend-project", request: "Build backend" }), "backend"),
+    /completed frontend plan/i,
+  );
 
   let planning = createTask({ id: "backend-plan", projectId: "backend-project", request: "Plan site" });
   engine.start(planning, "project_plan");
   planning = engine.transition(planning, "CLASSIFYING").task;
   planning = engine.transition(planning, "DISCOVERING").task;
   planning = engine.transition(planning, "PLANNING").task;
-  engine.setProjectPlan(planning, { ...projectPlan(), backendRequired: true });
+  const oneSlice = { ...projectPlan(), backendRequired: true, slices: [projectPlan().slices[0]] };
+  engine.setProjectPlan(planning, oneSlice);
   const approval = createApproval({ id: "backend-plan-approval", taskId: planning.id });
   planning = engine.requestApproval(planning, approval, "project_plan").task;
-  const decided = engine.decideApproval(planning, { ...approval, status: "APPROVED", decidedAt: new Date().toISOString() }, "project_plan");
+  const planned = engine.decideApproval(planning, { ...approval, status: "APPROVED", decidedAt: new Date().toISOString() }, "project_plan");
   assert.throws(
     () => engine.start(createTask({ id: "backend-before-slices", projectId: "backend-project", request: "Build backend" }), "backend"),
     /completed frontend plan/i,
   );
 
-  // The backend gate is based on Core's durable project-plan state.
-  store.workflows.set("backend-project", {
-    ...decided.workflow,
-    taskId: "frontend-complete",
-    projectPlan: { ...decided.workflow.projectPlan!, status: "frontend_complete" },
-    pendingCommand: null,
-    nextAction: "request_feedback",
-  });
+  let slice = createTask({ id: "backend-frontend-slice", projectId: "backend-project", request: "Build frontend slice" });
+  engine.startFrontendSlice(slice, "initial", "Start only slice", { commandId: planned.workflow.pendingCommand!.id });
+  slice = engine.transition(slice, "CLASSIFYING").task;
+  slice = engine.transition(slice, "DISCOVERING").task;
+  slice = engine.transition(slice, "PLANNING").task;
+  const sliceApproval = createApproval({ id: "backend-slice-approval", taskId: slice.id });
+  slice = engine.requestApproval(slice, sliceApproval, "execution").task;
+  slice = engine.decideApproval(slice, {
+    ...sliceApproval,
+    status: "APPROVED",
+    decidedAt: new Date().toISOString(),
+    worktreePath: "/tmp/backend-slice",
+    baseCommit: "base",
+  }, "execution").task;
+  engine.activateSlice(slice);
+  slice = engine.transition(slice, "VERIFYING").task;
+  slice = engine.transition(slice, "REVIEWING").task;
+  slice = engine.transition(slice, "DELIVERY_READY").task;
+  slice = engine.beginDelivery(slice, { method: "commit", expectedBaseCommit: "base" }).task;
+  const delivered = engine.completeDelivery(slice, { commit: "frontend-complete" });
+  assert.equal(delivered.workflow.projectPlan?.status, "frontend_complete");
+
   const backend = engine.start(createTask({ id: "backend-ready", projectId: "backend-project", request: "Build backend" }), "backend");
   assert.equal(backend.loop, "backend");
   assert.equal(backend.phase, "backend");
