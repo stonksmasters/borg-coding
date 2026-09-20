@@ -173,6 +173,7 @@ export const WorkflowStateSchema = z.object({
   phase: z.enum(workflowPhases), status: z.enum(workflowStatuses), nextAction: z.enum(workflowActions),
   planApprovalId: z.string().min(1).nullable(), planApproved: z.boolean(),
   projectPlan: WorkflowProjectPlanSchema.nullable().default(null),
+  planRevisionResumeIndex: z.number().int().nonnegative().nullable().default(null),
   sliceIndex: z.number().int().nonnegative().nullable(), sliceTotal: z.number().int().positive().nullable(), sliceTitle: z.string().nullable(),
   feedback: z.array(z.string()).default([]), handoff: z.string().nullable().default(null),
   pendingCommand: WorkflowCommandSchema.nullable().default(null), lastConsumedCommandId: z.string().nullable().default(null),
