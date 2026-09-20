@@ -23,6 +23,7 @@ import {
   type WorkflowState,
 } from "../../../packages/core/src/contracts.ts";
 import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
+import { normalizeWorkflowEvents } from "../../../packages/core/src/workflow-events.ts";
 import { taskRepositoryPath } from "../../../packages/core/src/task-repository-binding.ts";
 import { assertExecutionTransition, buildRepairContext, formatRepairContext, type ExecutionState } from "../../../packages/core/src/execution-state.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
@@ -861,6 +862,14 @@ const server = createServer((request, response) => {
       return pack ? send(response, 200, { pack }) : send(response, 404, { error: "Context pack not found." });
     }
     return send(response, 200, { packs: tasks.listContextPacks(taskId) });
+  }
+
+  const workflowEventsRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/workflow-events$/);
+  if (request.method === "GET" && workflowEventsRoute) {
+    const taskId = decodeURIComponent(workflowEventsRoute[1]);
+    const task = tasks.findTask(taskId);
+    if (!task) return send(response, 404, { error: "Task not found." });
+    return send(response, 200, { events: normalizeWorkflowEvents(task, tasks.listEvents(taskId)) });
   }
 
   const workflowStatusRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/workflow-status$/);
