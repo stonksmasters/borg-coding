@@ -476,7 +476,9 @@ function latestDesignBrief(taskId: string): DesignBrief | null {
 }
 
 function designRefinementCount(taskId: string): number {
-  return tasks.listEvents(taskId).filter((event) => event.type === "DESIGN_REFINEMENT_SCHEDULED").length;
+  const events = tasks.listEvents(taskId);
+  const latestRevision = events.findLastIndex((event) => event.type === "PROJECT_PLAN_REVISION_APPROVED");
+  return events.slice(latestRevision + 1).filter((event) => event.type === "DESIGN_REFINEMENT_SCHEDULED").length;
 }
 
 function recordMemoryNote(root: string, note: MemoryNote) {
@@ -555,7 +557,9 @@ function createCheckpointSnapshot(
   const approval = tasks.findApproval(task.id);
   const assignments = tasks.listRoleAssignments(task.id);
   const activeAssignment = assignments.findLast((value) => value.status === "active") ?? assignments.at(-1) ?? null;
-  const plan = events.findLast((value) => value.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+  const plan = events.findLast((value) =>
+    value.type === "PLAN_REVISION_MODEL_RESPONSE_COMPLETED" || value.type === "MODEL_RESPONSE_COMPLETED"
+  )?.payload.answer;
   const stateIndex = checkpointStateOrder.indexOf(task.state);
   const steps = checkpointStateOrder.filter((value) => !["PAUSED", "RECOVERY_REQUIRED"].includes(value));
   const durableWorkflow = workflow.get(task.projectId);
@@ -1343,7 +1347,9 @@ const server = createServer((request, response) => {
       }
       return report;
     };
-    const savedPlan = tasks.listEvents(taskId).findLast((event) => event.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
+    const savedPlan = tasks.listEvents(taskId).findLast((event) =>
+      event.type === "PLAN_REVISION_MODEL_RESPONSE_COMPLETED" || event.type === "MODEL_RESPONSE_COMPLETED"
+    )?.payload.answer;
     const websiteProject = websiteInfo(approvedWorktreePath);
     const persistedDesignBrief = websiteProject ? readPersistedDesignBrief(approvedWorktreePath) : null;
     const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
