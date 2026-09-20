@@ -47,8 +47,8 @@ function selectFrontendSlice(
   if (action === "revise") {
     if (commandId) throw new Error("Slice revision must not claim a start/advance command.");
     if (existing.sliceIndex === null) throw new Error("No frontend slice exists to revise.");
-    if (existing.status !== "awaiting_feedback" && existing.nextAction !== "request_feedback" && existing.nextAction !== "advance_slice") {
-      throw new Error("Only a verified slice awaiting feedback may be revised.");
+    if (existing.nextAction !== "request_feedback" && existing.nextAction !== "advance_slice") {
+      throw new Error("Only a checkpointed slice awaiting feedback may be revised.");
     }
     const slice = existing.projectPlan.slices[existing.sliceIndex];
     if (!slice) throw new Error(`Frontend slice ${existing.sliceIndex + 1} is outside the approved plan.`);
@@ -127,6 +127,12 @@ export class WorkflowEngine {
     options: { commandId?: string | null; feedback?: string; sliceAction?: FrontendSliceAction } = {},
   ): WorkflowState {
     const existing = this.store.findWorkflow(task.projectId);
+    if (intent === "project_plan" && existing?.projectPlan && existing.projectPlan.status !== "proposed") {
+      throw new Error("An approved project plan is frozen; use the active project workflow instead of silently replanning it.");
+    }
+    if (intent === "general" && existing?.pendingCommand) {
+      throw new Error(`Project workflow command ${existing.pendingCommand.id} must be consumed before unrelated project work can take ownership.`);
+    }
     if (intent === "backend") {
       if (!existing?.projectPlan || existing.projectPlan.status !== "frontend_complete" || !existing.projectPlan.backendRequired) {
         throw new Error("Backend planning requires a completed frontend plan that explicitly requires backend work.");
@@ -513,7 +519,7 @@ export class WorkflowEngine {
     const current = this.requireTask(task);
     const now = new Date().toISOString();
     const updatedTask = { ...task, state: "COMPLETE" as const, updatedAt: now };
-    const frontend = current.phase === "frontend" && current.projectPlan && current.sliceIndex !== null;
+    const frontend = current.loop === "slice" && current.phase === "frontend" && current.projectPlan && current.sliceIndex !== null;
     const last = frontend ? current.sliceIndex! + 1 >= current.projectPlan!.slices.length : false;
     const nextVersion = current.version + 1;
     const nextAction: WorkflowState["nextAction"] = frontend ? (last ? "request_feedback" : "advance_slice") : "none";
