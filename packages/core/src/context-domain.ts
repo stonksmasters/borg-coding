@@ -9,6 +9,7 @@ export const ContextScopeSchema = z.discriminatedUnion("type", [
 export const ContextProfileSchema = z.object({
   version: z.literal(1),
   kind: z.enum(["slice", "page", "component", "styles"]),
+  stage: z.enum(["planning", "execution", "repair"]),
   id: z.string().min(1),
   phase: z.literal("frontend"),
   planRevision: z.number().int().positive(),
