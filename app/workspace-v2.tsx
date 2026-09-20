@@ -14,6 +14,7 @@ import { EvidencePanel } from "@/components/workspace/evidence-panel";
 import { RunStatusCard, type RunView } from "@/components/workspace/run-status-card";
 import { ProjectBrowser, type ProjectEntry } from "@/components/workspace/project-browser";
 import { EnvironmentPanel, type EnvironmentVariable } from "@/components/workspace/environment-panel";
+import { DebugPanel, type DebugSnapshotView } from "@/components/workspace/debug-panel";
 import { isUnsupportedLanguageTool, toolProgress } from "./agent-progress";
 import { executionIsRunning, taskIsRunning, taskNeedsAttention } from "./task-activity";
 import { previewChangeFingerprint, shouldRefreshPreview } from "./preview-refresh";
@@ -160,7 +161,7 @@ export function BorgWorkspaceV2() {
   const [contextRecords, setContextRecords] = useState<ContextRecord[]>([]);
   const [selectedContext, setSelectedContext] = useState<(ContextRecord & { inputText: string }) | null>(null);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
-  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "sitemap" | "components" | "styles" | "files" | "environment" | "changes" | "evidence" | "logs" | "memory">("preview");
+  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "sitemap" | "components" | "styles" | "files" | "environment" | "changes" | "evidence" | "logs" | "memory" | "debug">("preview");
   const [buildDocs, setBuildDocs] = useState<BuildDoc[]>([]);
   const [sliceState, setSliceState] = useState<SliceState | null>(null);
   const [sliceFeedback, setSliceFeedback] = useState("");
@@ -200,6 +201,10 @@ export function BorgWorkspaceV2() {
   const [environmentVariables, setEnvironmentVariables] = useState<EnvironmentVariable[]>([]);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [environmentError, setEnvironmentError] = useState("");
+  const [debugSnapshot, setDebugSnapshot] = useState<DebugSnapshotView | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [debugError, setDebugError] = useState("");
+  const [debugStreamState, setDebugStreamState] = useState<"disconnected" | "connecting" | "live">("disconnected");
   const [styleBusy, setStyleBusy] = useState(false);
   const [focusBusy, setFocusBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -236,10 +241,11 @@ export function BorgWorkspaceV2() {
     const message = [...messages].reverse().find((item) => item.role === "assistant" && item.kind === "plan");
     return message?.text?.trim() || escalation?.planText?.trim() || null;
   }, [escalation, messages]);
-  const panelGroup = rightPanel === "sitemap" || rightPanel === "components" || rightPanel === "styles" ? "structure"
-    : rightPanel === "files" || rightPanel === "environment" || rightPanel === "memory" ? "project"
-      : rightPanel === "changes" || rightPanel === "evidence" || rightPanel === "logs" ? "review"
-        : rightPanel;
+  const panelGroup = rightPanel === "debug" ? "debug"
+    : rightPanel === "sitemap" || rightPanel === "components" || rightPanel === "styles" ? "structure"
+      : rightPanel === "files" || rightPanel === "environment" || rightPanel === "memory" ? "project"
+        : rightPanel === "changes" || rightPanel === "evidence" || rightPanel === "logs" ? "review"
+          : rightPanel;
   const runningProcesses = useMemo(() => processes.filter((process) => process.status === "starting" || process.status === "running"), [processes]);
   const previewProcess = useMemo(() => processes.find((process) => process.kind === "dev_server" && (process.status === "starting" || process.status === "running")) ?? processes.findLast((process) => process.kind === "dev_server") ?? null, [processes]);
   const activatePreview = useCallback(async (sessionId: string) => {
@@ -266,6 +272,41 @@ export function BorgWorkspaceV2() {
     setActivities(result.activities ?? []);
   }, []);
 
+  const refreshDebugSnapshot = useCallback(async (taskId: string) => {
+    setDebugLoading(true);
+    setDebugError("");
+    try {
+      const response = await fetch(`${API}/api/control/tasks/${encodeURIComponent(taskId)}/snapshot`);
+      const body = await response.json().catch(() => ({})) as { snapshot?: DebugSnapshotView; error?: string };
+      if (!response.ok || !body.snapshot) throw new Error(body.error ?? "Unable to build debug snapshot.");
+      if (activeTaskRef.current === taskId) setDebugSnapshot(body.snapshot);
+    } catch (error) {
+      if (activeTaskRef.current === taskId) setDebugError(error instanceof Error ? error.message : "Unable to build debug snapshot.");
+    } finally {
+      if (activeTaskRef.current === taskId) setDebugLoading(false);
+    }
+  }, []);
+
+  const exportDebugBundle = useCallback(async () => {
+    if (!activeTaskId) return;
+    try {
+      const response = await fetch(`${API}/api/control/tasks/${encodeURIComponent(activeTaskId)}/export`);
+      const body = await response.json().catch(() => ({})) as { bundle?: { filename?: string; [key: string]: unknown }; error?: string };
+      if (!response.ok || !body.bundle) throw new Error(body.error ?? "Unable to export debug bundle.");
+      const blob = new Blob([JSON.stringify(body.bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = body.bundle.filename ?? `borg-debug-${activeTaskId}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setDebugError(error instanceof Error ? error.message : "Unable to export debug bundle.");
+    }
+  }, [activeTaskId]);
+
   useEffect(() => {
     if (!activeTaskId || !isWebsite) { setWorkflowStatus(null); setBaselineCandidates([]); setContextRecords([]); setSelectedContext(null); return; }
     setSelectedContext(null);
@@ -287,6 +328,27 @@ export function BorgWorkspaceV2() {
     const timer = setInterval(() => { void refresh().catch(() => {}); }, 3000);
     return () => { active = false; clearInterval(timer); };
   }, [activeTaskId, isWebsite]);
+
+  useEffect(() => {
+    if (!activeTaskId || rightPanel !== "debug") {
+      setDebugStreamState("disconnected");
+      return;
+    }
+    const taskId = activeTaskId;
+    setDebugStreamState("connecting");
+    void refreshDebugSnapshot(taskId);
+    const source = new EventSource(`${API}/api/control/tasks/${encodeURIComponent(taskId)}/stream`);
+    const markLive = () => setDebugStreamState("live");
+    const refresh = () => { markLive(); void refreshDebugSnapshot(taskId); };
+    source.addEventListener("ready", markLive);
+    source.addEventListener("workflow", refresh);
+    source.addEventListener("heartbeat", markLive);
+    source.onerror = () => setDebugStreamState("disconnected");
+    return () => {
+      source.close();
+      setDebugStreamState("disconnected");
+    };
+  }, [activeTaskId, rightPanel, refreshDebugSnapshot]);
 
   async function openModelContext(id: string) {
     if (!activeTaskId) return;
@@ -1389,6 +1451,7 @@ export function BorgWorkspaceV2() {
             <div className="absolute right-0 z-50 mt-2 w-48 rounded-lg border border-white/10 bg-[#11161e] p-2 shadow-2xl">
               <button type="button" disabled={!activeTaskId} onClick={() => setReviewOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"><ShieldAlert className="size-3.5" />Review history{blockingFindingIds.length ? ` (${blockingFindingIds.length})` : ""}</button>
               <button type="button" disabled={!activeTaskId} onClick={() => setCheckpointOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"><History className="size-3.5" />Checkpoints</button>
+              <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("debug")} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"><Bot className="size-3.5" />Control plane debug</button>
               <button type="button" onClick={() => setAccessOpen(true)} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200"><FolderGit2 className="size-3.5" />Repository access</button>
             </div>
           </details>
@@ -1434,12 +1497,13 @@ export function BorgWorkspaceV2() {
           </div>
         </div></div>{(activeTaskId || previewUrl || previewError || latestPlan || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden overscroll-contain border-t border-white/8 lg:min-h-0 lg:basis-[65%] lg:flex-none lg:border-l lg:border-t-0">
           <div className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-2">
-            <nav aria-label="Workspace views" className="grid min-w-0 flex-1 grid-cols-5 gap-1 rounded-lg border border-white/8 bg-black/20 p-1">
+            <nav aria-label="Workspace views" className="grid min-w-0 flex-1 grid-cols-6 gap-1 rounded-lg border border-white/8 bg-black/20 p-1">
               <button type="button" disabled={!isWebsite} onClick={() => { setRightPanel("preview"); if (activeSession && !previewUrl) void activatePreview(activeSession.id); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "preview" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
               <button type="button" disabled={!latestPlan && !designBrief} onClick={() => setRightPanel("plan")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "plan" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
               <button type="button" disabled={!activeTaskId} onClick={() => { setRightPanel("sitemap"); if (activeTaskId) void refreshDocs(activeTaskId); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "structure" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Structure</button>
               <button type="button" disabled={!activeTaskId} onClick={() => { setRightPanel("files"); if (activeTaskId) void refreshProject(activeTaskId); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "project" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Project</button>
               <button type="button" onClick={() => setRightPanel("changes")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "review" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300"}`}>Review{changes.files.length || blockingFindingIds.length ? ` (${changes.files.length + blockingFindingIds.length})` : ""}</button>
+              <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("debug")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "debug" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Debug</button>
             </nav>
           </div>
           {panelGroup === "structure" && <nav aria-label="Structure views" className="flex h-10 shrink-0 items-center gap-1 border-b border-white/8 bg-[#0c1016] px-3">
@@ -1469,8 +1533,10 @@ export function BorgWorkspaceV2() {
             <a href={previewUrl} target="_blank" rel="noreferrer" aria-label="Open preview in a new window" className="rounded p-1 text-slate-600 hover:text-slate-300"><ExternalLink className="size-3.5" /></a>
           </div>}
           <div className="flex min-h-0 flex-1 overflow-hidden">
-            {rightPanel === "plan"
-              ? <PlanPanel plan={latestPlan} designBrief={designBrief} />
+            {rightPanel === "debug"
+              ? <DebugPanel snapshot={debugSnapshot} loading={debugLoading} error={debugError} streamState={debugStreamState} onRefresh={() => { if (activeTaskId) void refreshDebugSnapshot(activeTaskId); }} onExport={() => void exportDebugBundle()} />
+              : rightPanel === "plan"
+                ? <PlanPanel plan={latestPlan} designBrief={designBrief} />
               : rightPanel === "sitemap"
                 ? <StructurePanel view="sitemap" docs={buildDocs} focusBusy={focusBusy || taskBusy} onOpenPage={(page) => void openFocusedWorkspace("page", page.id)} />
               : rightPanel === "components"
