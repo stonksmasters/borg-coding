@@ -1058,7 +1058,7 @@ const server = createServer((request, response) => {
     const backendHandoff = websiteProject && tasks.listEvents(taskId).some((event) => event.type === "BACKEND_PHASE_SELECTED")
       ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
     const styleExecutionContext = styleWorkspace && websiteProject
-      ? `GLOBAL STYLE WORKSPACE. Preserve sitemap, routes, page purposes, component responsibilities, content hierarchy, interactions, and data behavior. Change shared visual primitives first: theme/tokens, typography, spacing, radii, shadows, layout rhythm, responsive styling, motion, and accessibility presentation. Avoid one-off component patches when a shared rule can solve the request. Verify representative pages at mobile and desktop widths.\n\n${readProjectDocs(approvedWorktreePath).filter((doc) => /\/(styles|design-brief|site-map|components)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 5000)}`).join("\n\n").slice(0, 24_000)}`
+      ? "GLOBAL STYLE WORKSPACE. Preserve sitemap, routes, page purposes, component responsibilities, content hierarchy, interactions, and data behavior. Change shared visual primitives first: theme/tokens, typography, spacing, radii, shadows, layout rhythm, responsive styling, motion, and accessibility presentation. Avoid one-off component patches when a shared rule can solve the request. Verify representative pages at mobile and desktop widths."
       : "";
     const teamPolicy = teamPolicies.load(taskProjectRepository(taskId));
     const activeDisciplines = (task.disciplines.length ? task.disciplines : [teamPolicy.defaultDiscipline]) as EngineeringDiscipline[];
@@ -1094,23 +1094,50 @@ const server = createServer((request, response) => {
       let implementationBudgetExhausted = false;
       appendTaskEvent(taskId, "EXECUTION_STATE_CHANGED", { state: executionState, repairAttempt: task.attempts });
       performPreflight("execution_start");
-      const compiledSlice = sliceState && projectPlan ? compileFrontendContext({
+      const contextHintRoot = taskProjectRepository(taskId) ?? approvedWorktreePath;
+      const contextWorkflowVersion = authorityWorkflow?.version ?? ownedTaskWorkflow?.version ?? null;
+      const selectedSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
+      const focusedEntity = focusedExecutionScope && projectPlan
+        ? (focusedExecutionScope.type === "page"
+            ? projectPlan.sitemap.find((item) => item.id === focusedExecutionScope.id)
+            : projectPlan.components.find((item) => item.id === focusedExecutionScope.id))
+        : null;
+      const compiledSlice = sliceState && projectPlan && selectedSlice ? compileFrontendContext({
         root: approvedWorktreePath,
         phase: "frontend",
         sliceIndex: sliceState.current,
-        authority: { plan: projectPlan, state: sliceState },
+        authority: { plan: projectPlan, state: sliceState, workflowVersion: contextWorkflowVersion },
         productContract: websiteContext,
+        projectBrief: websiteProject?.originalBrief,
+        sourceHints: contextSourceHints(contextHintRoot, [task.request, selectedSlice.title, selectedSlice.outcome, ...selectedSlice.scope].join(" ")),
+        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
       }) : null;
       const compiledFocus = focusedExecutionScope && projectPlan ? compileFocusedFrontendContext({
         root: approvedWorktreePath,
         scope: focusedExecutionScope,
         productContract: websiteContext,
-        authority: { plan: projectPlan },
+        projectBrief: websiteProject?.originalBrief,
+        sourceHints: contextSourceHints(contextHintRoot, [task.request, focusedEntity?.name ?? "", focusedEntity?.purpose ?? ""].join(" ")),
+        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
+        authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
       }) : null;
+      const compiledStyle = styleWorkspace && projectPlan ? compileStyleFrontendContext({
+        root: approvedWorktreePath,
+        productContract: websiteContext,
+        projectBrief: websiteProject?.originalBrief,
+        sourceHints: contextSourceHints(contextHintRoot, `global styles theme typography spacing color layout responsive motion ${task.request}`),
+        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
+        authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
+      }) : null;
+      const compiledExecutionContext = compiledFocus ?? compiledStyle ?? compiledSlice;
+      if (compiledExecutionContext) recordContextPack(taskId, authorityProjectId, compiledExecutionContext);
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       const focusedExecutionPrompt = compiledFocus
         ? `FOCUSED ${focusedExecutionScope!.type.toUpperCase()} WORKSPACE [${focusedExecutionScope!.id}]. Modify only the selected ${focusedExecutionScope!.type} and direct dependencies represented in the focused context. Preserve unrelated pages/components and the approved global style system. Do not perform repository-wide redesign or planning.\n\n${compiledFocus.text}`
         : "";
+      const styleExecutionPrompt = compiledStyle
+        ? `${styleExecutionContext}\n\n${compiledStyle.text}`
+        : styleExecutionContext;
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
@@ -1123,10 +1150,10 @@ const server = createServer((request, response) => {
           implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
           limits: sliceState || focusedExecutionScope || styleWorkspace ? { toolRounds: 12, toolCalls: 28 } : undefined,
-          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, compiledFocus?.manifest ?? compiledSlice?.manifest ?? [], body) : undefined,
+          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledExecutionContext?.sliceId ?? null, compiledExecutionContext?.manifest ?? [], body) : undefined,
           messages: [
             ...(taskContext.executionState === "REPAIR" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
-            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionContext ? styleExecutionContext + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext && !compiledExecutionContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
           });
