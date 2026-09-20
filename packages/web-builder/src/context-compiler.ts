@@ -1,196 +1,388 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
+import {
+  ContextPackSchema,
+  type ContextManifestItem,
+  type ContextPack,
+  type ContextScope,
+} from "../../core/src/context-domain.ts";
 import { readPersistedDesignBrief, readProjectPlan, readSliceState, type ProjectPlan, type SliceState } from "./slice-docs.ts";
 import { readProjectModel, validateProjectSource } from "./project-model.ts";
 
-export type ContextScope = { type: "page" | "component"; id: string } | null;
-export type ContextInput = {
+export type ContextItem = ContextManifestItem;
+export type CompiledContext = ContextPack;
+
+type ContextAuthority = {
+  plan: ProjectPlan;
+  state?: SliceState;
+  workflowVersion?: number | null;
+};
+
+type ContextSourceHint = string | { path: string; reason?: string };
+
+type ContextBaseInput = {
   root: string;
+  budgetCharacters?: number;
+  productContract?: string;
+  projectBrief?: string;
+  sourceHints?: ContextSourceHint[];
+  stage?: "planning" | "execution" | "repair";
+};
+
+export type ContextInput = ContextBaseInput & {
   phase: "frontend";
   sliceIndex: number;
-  scope?: ContextScope;
-  budgetCharacters?: number;
-  authority?: { plan: ProjectPlan; state: SliceState };
-  productContract?: string;
-};
-export type ContextItem = { kind: "document" | "registry" | "source"; path: string; reason: string; characters: number; sha256: string };
-export type CompiledContext = { text: string; manifest: ContextItem[]; characters: number; budgetCharacters: number; sliceId: string };
-
-export type FocusedContextInput = {
-  root: string;
-  scope: Exclude<ContextScope, null>;
-  budgetCharacters?: number;
-  productContract?: string;
-  authority?: { plan: ProjectPlan };
+  scope?: Extract<ContextScope, { type: "page" | "component" }> | null;
+  authority?: ContextAuthority;
 };
 
-const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".html"]);
-const ignored = new Set([".git", ".borg", ".localcode", "node_modules", "dist", "build", ".next", ".vinext", ".wrangler", "coverage"]);
-function hash(text: string) { return createHash("sha256").update(text).digest("hex"); }
-function tokens(text: string) { return new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 3 && !["frontend", "website", "working", "current", "slice", "page", "component", "review"].includes(word))); }
+export type FocusedContextInput = ContextBaseInput & {
+  scope: Extract<ContextScope, { type: "page" | "component" }>;
+  authority?: { plan: ProjectPlan; workflowVersion?: number | null };
+};
+
+export type StyleContextInput = ContextBaseInput & {
+  authority?: { plan: ProjectPlan; workflowVersion?: number | null };
+};
+
+type InternalInput = ContextBaseInput & {
+  profileKind: "slice" | "page" | "component" | "styles";
+  sliceIndex?: number | null;
+  scope?: ContextScope | null;
+  authority?: ContextAuthority;
+};
+
+const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".scss", ".sass", ".less", ".html"]);
+const entrypoints = ["src/App.tsx", "src/App.jsx", "src/main.tsx", "src/main.jsx", "src/style.css", "src/styles.css", "app/page.tsx", "app/layout.tsx", "app/globals.css"];
+
+function hash(text: string) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
 function bounded(text: string, maximum: number) {
   const value = text.trim();
-  return value.length <= maximum ? value : `${value.slice(0, maximum)}\n[Content compacted for the slice context.]`;
+  return value.length <= maximum ? value : `${value.slice(0, maximum)}\n[Content compacted for this context pack.]`;
 }
 
-function sourceCandidates(root: string, relevant: Set<string>) {
-  const found: string[] = [];
-  const walk = (directory: string, prefix: string) => {
-    if (found.length >= 500) return;
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (found.length >= 500 || entry.isSymbolicLink() || ignored.has(entry.name)) continue;
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) { walk(join(directory, entry.name), relative); continue; }
-      if (!entry.isFile() || !sourceExtensions.has(extname(entry.name).toLowerCase())) continue;
-      if (statSync(join(directory, entry.name)).size > 100_000) continue;
-      try { found.push(validateProjectSource(root, relative)); } catch { /* Excluded source. */ }
+function wordSet(text: string) {
+  return new Set(
+    text.toLowerCase()
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length > 3 && !["frontend", "website", "working", "current", "slice", "page", "component", "review", "build"].includes(word)),
+  );
+}
+
+function overlaps(left: Set<string>, right: Set<string>) {
+  for (const word of left) if (right.has(word)) return true;
+  return false;
+}
+
+function optionalProjection(root: string, name: string, maximum: number, tail = false) {
+  const path = join(root, ".localcode", "build", name);
+  if (!existsSync(path) || !lstatSync(path).isFile()) return null;
+  const content = readFileSync(path, "utf8");
+  return bounded(tail ? content.slice(-maximum) : content.slice(0, maximum), maximum);
+}
+
+function normalizeHints(root: string, hints: ContextSourceHint[] | undefined) {
+  const values: Array<{ path: string; reason: string }> = [];
+  for (const hint of hints ?? []) {
+    const raw = typeof hint === "string" ? hint : hint.path;
+    try {
+      const path = validateProjectSource(root, raw);
+      if (!sourceExtensions.has(extname(path).toLowerCase())) continue;
+      if (!values.some((item) => item.path === path)) {
+        values.push({
+          path,
+          reason: typeof hint === "string" ? "Repository-memory dependency or symbol hint" : hint.reason?.trim() || "Repository-memory dependency or symbol hint",
+        });
+      }
+    } catch {
+      // Invalid or escaped source hints are excluded rather than widening context.
     }
-  };
-  for (const directory of ["src", "app", "components"]) if (existsSync(join(root, directory)) && lstatSync(join(root, directory)).isDirectory()) walk(join(root, directory), directory);
-  return found.map((path) => {
-    const pathWords = tokens(path.replace(/([a-z])([A-Z])/g, "$1 $2"));
-    let contentWords = new Set<string>();
-    try { contentWords = tokens(readFileSync(join(root, path), "utf8").slice(0, 16_000)); } catch { /* Candidate may disappear between scan and read. */ }
-    const score = [...relevant].reduce((total, word) => total + (pathWords.has(word) ? 3 : 0) + (contentWords.has(word) ? 1 : 0), 0);
-    return { path, score };
-  }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, 10).map((item) => item.path);
+  }
+  return values.slice(0, 12);
 }
 
-export function compileFrontendContext(input: ContextInput): CompiledContext {
-  const { root } = input;
-  const plan = input.authority?.plan ?? readProjectPlan(root);
-  const state = input.authority?.state ?? readSliceState(root);
-  if (!plan || !state || plan.status === "proposed") throw new Error("Approved frontend project state is missing. Repair the project plan before continuing.");
-  const slice = plan.slices[input.sliceIndex];
-  if (!slice) throw new Error(`Frontend slice ${input.sliceIndex + 1} is not in the approved plan.`);
-  const model = readProjectModel(root);
-  const design = readPersistedDesignBrief(root);
-  const budgetCharacters = Math.max(4_000, Math.min(80_000, input.budgetCharacters ?? 64_000));
-  const manifest: ContextItem[] = [];
+function contextAuthority(input: InternalInput) {
+  const plan = input.authority?.plan ?? readProjectPlan(input.root);
+  const state = input.authority?.state ?? (input.profileKind === "slice" ? readSliceState(input.root) : undefined);
+  if (!plan || plan.status === "proposed") throw new Error("Approved frontend project state is missing. Repair the durable project plan before continuing.");
+  if (input.profileKind === "slice" && !state) throw new Error("Durable frontend slice state is missing.");
+  return {
+    plan,
+    state,
+    authority: input.authority ? "workflow" as const : "legacy_projection" as const,
+    workflowVersion: input.authority?.workflowVersion ?? null,
+  };
+}
+
+function relatedRegistry(input: InternalInput, plan: ProjectPlan) {
+  const model = readProjectModel(input.root);
+  const scope = input.scope ?? null;
+  const page = scope?.type === "page" ? model.pages.find((item) => item.id === scope.id) ?? null : null;
+  const component = scope?.type === "component" ? model.components.find((item) => item.id === scope.id) ?? null : null;
+  if (scope?.type === "page" && !page) throw new Error(`Unknown page scope: ${scope.id}`);
+  if (scope?.type === "component" && !component) throw new Error(`Unknown component scope: ${scope.id}`);
+
+  if (scope?.type === "styles") {
+    const pages = model.pages.map((item) => ({
+      id: item.id,
+      name: item.name,
+      route: item.route,
+      purpose: item.purpose,
+      components: item.components,
+      status: item.status,
+    }));
+    const components = model.components.map((item) => ({
+      id: item.id,
+      name: item.name,
+      kind: item.kind,
+      purpose: item.purpose,
+      usedBy: item.usedBy,
+      variants: item.variants,
+      status: item.status,
+    }));
+    const files = [...new Set([
+      ...model.pages.flatMap((item) => item.files),
+      ...model.components.flatMap((item) => item.files),
+    ])].filter((path) => /(?:^|\/)(?:app|layout|theme|styles?|tokens?|globals?)(?:[./_-]|$)|\.(?:css|scss|sass|less)$/i.test(path));
+    return { model, pages, components, explicitFiles: files };
+  }
+
+  if (page) {
+    const direct = model.components.filter((item) => page.components.includes(item.id) || item.usedBy.includes(page.id));
+    const dependencyIds = new Set(direct.flatMap((item) => item.dependencies));
+    const components = [...direct];
+    for (const candidate of model.components) {
+      if (dependencyIds.has(candidate.id) && !components.some((item) => item.id === candidate.id)) components.push(candidate);
+    }
+    return {
+      model,
+      pages: [page],
+      components,
+      explicitFiles: [...new Set([...page.files, ...components.flatMap((item) => item.files)])],
+    };
+  }
+
+  if (component) {
+    const direct = [component, ...model.components.filter((item) => component.dependencies.includes(item.id))];
+    const dependencyIds = new Set(direct.flatMap((item) => item.dependencies));
+    const components = [...direct];
+    for (const candidate of model.components) {
+      if (dependencyIds.has(candidate.id) && !components.some((item) => item.id === candidate.id)) components.push(candidate);
+    }
+    const pages = model.pages.filter((item) => component.usedBy.includes(item.id) || item.components.includes(component.id));
+    return {
+      model,
+      pages,
+      components,
+      explicitFiles: [...new Set([...pages.flatMap((item) => item.files), ...components.flatMap((item) => item.files)])],
+    };
+  }
+
+  const sliceIndex = input.sliceIndex ?? 0;
+  const slice = plan.slices[sliceIndex];
+  if (!slice) throw new Error(`Frontend slice ${sliceIndex + 1} is not in the approved plan.`);
+  const relevant = wordSet([slice.title, slice.outcome, ...slice.scope].join(" "));
+  let pages = model.pages.filter((item) => overlaps(relevant, wordSet([item.name, item.purpose, ...item.sections].join(" "))));
+  if (!pages.length && sliceIndex === 0 && model.pages.length) pages = [model.pages[0]];
+  let components = model.components.filter((item) =>
+    pages.some((candidate) => item.usedBy.includes(candidate.id))
+    || overlaps(relevant, wordSet([item.name, item.purpose, ...item.variants].join(" "))),
+  );
+  const dependencyIds = new Set(components.flatMap((item) => item.dependencies));
+  for (const candidate of model.components) {
+    if (dependencyIds.has(candidate.id) && !components.some((item) => item.id === candidate.id)) components.push(candidate);
+  }
+  return {
+    model,
+    pages,
+    components,
+    explicitFiles: [...new Set([...pages.flatMap((item) => item.files), ...components.flatMap((item) => item.files)])],
+  };
+}
+
+function compileContextPack(input: InternalInput): CompiledContext {
+  const { plan, state, authority, workflowVersion } = contextAuthority(input);
+  const registry = relatedRegistry(input, plan);
+  const sliceIndex = input.profileKind === "slice" ? input.sliceIndex ?? state?.current ?? null : null;
+  const slice = sliceIndex === null ? null : plan.slices[sliceIndex] ?? null;
+  if (input.profileKind === "slice" && !slice) throw new Error("The selected frontend slice is missing from the approved plan.");
+
+  const scope = input.scope ?? null;
+  const profileId = input.profileKind === "slice"
+    ? slice!.id
+    : scope?.type === "styles"
+      ? "styles:global"
+      : `${scope!.type}:${scope!.id}`;
+  const profile = {
+    version: 1 as const,
+    kind: input.profileKind,
+    stage: input.stage ?? "planning",
+    id: profileId,
+    phase: "frontend" as const,
+    planRevision: plan.revision,
+    workflowVersion,
+    sliceIndex,
+    sliceId: slice?.id ?? null,
+    scope,
+  };
+
+  const budgetCharacters = Math.max(8_000, Math.min(64_000, input.budgetCharacters ?? 48_000));
+  const manifest: ContextManifestItem[] = [];
   const sections: string[] = [];
   let characters = 0;
-  const add = (kind: ContextItem["kind"], path: string, reason: string, content: string, required = false) => {
-    const section = `--- ${path} (${reason}) ---\n${content.trim()}\n`;
+
+  const add = (
+    kind: ContextManifestItem["kind"],
+    path: string,
+    reason: string,
+    content: string,
+    required = false,
+  ) => {
+    const clean = content.trim();
+    if (!clean) return false;
+    const section = `--- ${path} (${reason}) ---\n${clean}\n`;
     if (characters + section.length > budgetCharacters) {
       if (required) throw new Error(`Context budget is too small for required project state: ${path}.`);
       return false;
     }
     sections.push(section);
     characters += section.length;
-    manifest.push({ kind, path, reason, characters: section.length, sha256: hash(section) });
-    return true;
-  };
-  if (input.productContract?.trim()) add("document", "@borg/website-product-contract", "Pinned global website product contract", bounded(input.productContract, 12_000), true);
-  const briefPath = join(root, ".localcode", "build", "brief.md");
-  if (!existsSync(briefPath)) throw new Error("Project brief is missing. Repair the project model before continuing.");
-  add("document", ".localcode/build/brief.md", "Approved project brief", bounded(readFileSync(briefPath, "utf8"), 8_000), true);
-  add("document", ".localcode/build/plan.md", "Approved frontend phase and slice", bounded(JSON.stringify({ siteGoal: plan.siteGoal, audience: plan.audience, visualDirection: plan.visualDirection, acceptanceCriteria: plan.acceptanceCriteria, slice }, null, 2), 10_000), true);
-  if (design) add("document", ".localcode/build/design-brief.md", "Approved design direction", bounded(JSON.stringify(design, null, 2), 8_000), true);
-  const stylesPath = join(root, ".localcode", "build", "styles.md");
-  if (existsSync(stylesPath) && lstatSync(stylesPath).isFile()) add("document", ".localcode/build/styles.md", "Approved global style system", bounded(readFileSync(stylesPath, "utf8"), 8_000), true);
-  const page = input.scope?.type === "page" ? model.pages.find((item) => item.id === input.scope?.id) : null;
-  const component = input.scope?.type === "component" ? model.components.find((item) => item.id === input.scope?.id) : null;
-  if (input.scope && !page && !component) throw new Error(`Unknown ${input.scope.type} scope: ${input.scope.id}`);
-  const relevantWords = tokens([slice.title, slice.outcome, ...slice.scope, page?.name ?? "", component?.name ?? ""].join(" "));
-  const relatedPages = page ? [page] : model.pages.filter((item) => [...tokens(item.name)].some((word) => relevantWords.has(word)));
-  const relatedComponents = component ? [component, ...model.components.filter((item) => component.dependencies.includes(item.id))] : model.components.filter((item) => relatedPages.some((candidate) => item.usedBy.includes(candidate.id)) || [...tokens(item.name)].some((word) => relevantWords.has(word)));
-  add("registry", ".localcode/build/pages.json", "Relevant page definitions", bounded(JSON.stringify(relatedPages, null, 2), 8_000), true);
-  add("registry", ".localcode/build/components.json", "Relevant components and direct dependencies", bounded(JSON.stringify(relatedComponents, null, 2), 8_000), true);
-  for (const [name, reason] of [["decisions.md", "Recent project decisions"], ["handoff.md", "Latest slice handoff"], ["current-plan.md", "Current slice execution notes"]] as const) {
-    const path = join(root, ".localcode", "build", name);
-    if (existsSync(path) && lstatSync(path).isFile()) add("document", `.localcode/build/${name}`, reason, readFileSync(path, "utf8").slice(-4_000));
-  }
-  const explicit = [...new Set([...relatedPages.flatMap((item) => item.files), ...relatedComponents.flatMap((item) => item.files)])];
-  const discovered = input.scope ? [] : sourceCandidates(root, relevantWords);
-  const entrypoints = explicit.length || discovered.length ? [] : ["src/App.tsx", "src/style.css", "src/main.tsx"].filter((path) => existsSync(join(root, path)));
-  for (const path of [...new Set([...explicit, ...discovered, ...entrypoints])]) {
-    const safe = validateProjectSource(root, path);
-    const absolute = join(root, safe);
-    if (!existsSync(absolute) || !lstatSync(absolute).isFile()) continue;
-    add("source", safe, explicit.includes(path) ? "Registered source for selected object" : entrypoints.includes(path) ? "Existing frontend entrypoint" : "Source path matches current slice", readFileSync(absolute, "utf8").slice(0, 12_000));
-  }
-  return { text: sections.join("\n"), manifest, characters, budgetCharacters, sliceId: slice.id };
-}
-
-
-export function compileFocusedFrontendContext(input: FocusedContextInput): CompiledContext {
-  const { root, scope } = input;
-  const plan = input.authority?.plan ?? readProjectPlan(root);
-  const model = readProjectModel(root);
-  if (!plan || plan.status === "proposed") throw new Error("Approved frontend project state is missing. Repair the project plan before continuing.");
-  const page = scope.type === "page" ? model.pages.find((item) => item.id === scope.id) : null;
-  const component = scope.type === "component" ? model.components.find((item) => item.id === scope.id) : null;
-  if (!page && !component) throw new Error(`Unknown ${scope.type} scope: ${scope.id}`);
-
-  const directlyRelatedComponents = page
-    ? model.components.filter((item) => page.components.includes(item.id) || item.usedBy.includes(page.id))
-    : component
-      ? [component, ...model.components.filter((item) => component.dependencies.includes(item.id))]
-      : [];
-  const dependencyIds = new Set(directlyRelatedComponents.flatMap((item) => item.dependencies));
-  const relatedComponents = [...directlyRelatedComponents];
-  for (const candidate of model.components) if (dependencyIds.has(candidate.id) && !relatedComponents.some((item) => item.id === candidate.id)) relatedComponents.push(candidate);
-  const relatedPages = page
-    ? [page]
-    : component
-      ? model.pages.filter((item) => component.usedBy.includes(item.id) || item.components.includes(component.id))
-      : [];
-
-  const budgetCharacters = Math.max(6_000, Math.min(80_000, input.budgetCharacters ?? 64_000));
-  const manifest: ContextItem[] = [];
-  const sections: string[] = [];
-  let characters = 0;
-  const add = (kind: ContextItem["kind"], path: string, reason: string, content: string, required = false) => {
-    const section = `--- ${path} (${reason}) ---\n${content.trim()}\n`;
-    if (characters + section.length > budgetCharacters) {
-      if (required) throw new Error(`Context budget is too small for required focused state: ${path}.`);
-      return false;
-    }
-    sections.push(section);
-    characters += section.length;
-    manifest.push({ kind, path, reason, characters: section.length, sha256: hash(section) });
+    manifest.push({ kind, path, reason, characters: section.length, sha256: hash(section), required });
     return true;
   };
 
-  if (input.productContract?.trim()) add("document", "@borg/website-product-contract", "Pinned global website product contract", bounded(input.productContract, 12_000), true);
-  const briefPath = join(root, ".localcode", "build", "brief.md");
-  if (existsSync(briefPath) && lstatSync(briefPath).isFile()) add("document", ".localcode/build/brief.md", "Approved project brief", readFileSync(briefPath, "utf8").slice(0, 8_000), true);
-  add("document", ".localcode/build/plan.md", "Approved website-level constraints", bounded(JSON.stringify({
+  if (input.productContract?.trim()) {
+    add("contract", "@borg/website-product-contract", "Pinned website product contract", bounded(input.productContract, 10_000), true);
+  }
+
+  const projectBrief = input.projectBrief?.trim() || optionalProjection(input.root, "brief.md", 6_000);
+  if (projectBrief) add(input.projectBrief?.trim() ? "authority" : "projection", "@borg/project-brief", "Original project brief", projectBrief, Boolean(input.projectBrief?.trim()));
+
+  add("authority", "@borg/project-plan", "Durable approved project constraints", bounded(JSON.stringify({
+    revision: plan.revision,
     siteGoal: plan.siteGoal,
     audience: plan.audience,
+    pages: plan.pages,
+    features: plan.features,
     visualDirection: plan.visualDirection,
     acceptanceCriteria: plan.acceptanceCriteria,
-  }, null, 2), 10_000), true);
-  const design = readPersistedDesignBrief(root);
-  if (design) add("document", ".localcode/build/design-brief.md", "Approved design direction", bounded(JSON.stringify(design, null, 2), 8_000), true);
-  const stylesPath = join(root, ".localcode", "build", "styles.md");
-  if (existsSync(stylesPath) && lstatSync(stylesPath).isFile()) add("document", ".localcode/build/styles.md", "Approved global style system", bounded(readFileSync(stylesPath, "utf8"), 8_000), true);
-  add("registry", ".localcode/build/pages.json", page ? "Selected page definition" : "Pages using selected component", bounded(JSON.stringify(relatedPages, null, 2), 8_000), true);
-  add("registry", ".localcode/build/components.json", component ? "Selected component and direct dependencies" : "Components used by selected page", bounded(JSON.stringify(relatedComponents, null, 2), 8_000), true);
+    backendRequired: plan.backendRequired,
+  }, null, 2), 9_000), true);
 
-  for (const [name, reason] of [["decisions.md", "Recent project decisions"], ["handoff.md", "Latest project handoff"]] as const) {
-    const path = join(root, ".localcode", "build", name);
-    if (existsSync(path) && lstatSync(path).isFile()) add("document", `.localcode/build/${name}`, reason, readFileSync(path, "utf8").slice(-4_000));
+  add("authority", "@borg/style-system", "Durable global style system", bounded(JSON.stringify(plan.styles, null, 2), 7_000), true);
+
+  if (input.profileKind === "slice") {
+    add("authority", "@borg/current-work", "Core-selected frontend slice", bounded(JSON.stringify({
+      index: sliceIndex,
+      total: plan.slices.length,
+      slice,
+      status: state?.status ?? "working",
+      feedback: state?.feedback ?? [],
+    }, null, 2), 8_000), true);
+  } else if (scope?.type === "page") {
+    add("authority", "@borg/current-work", "Selected page workspace boundary", bounded(JSON.stringify(
+      plan.sitemap.find((item) => item.id === scope.id) ?? registry.pages[0] ?? { id: scope.id },
+      null,
+      2,
+    ), 6_000), true);
+  } else if (scope?.type === "component") {
+    add("authority", "@borg/current-work", "Selected component workspace boundary", bounded(JSON.stringify(
+      plan.components.find((item) => item.id === scope.id) ?? registry.components[0] ?? { id: scope.id },
+      null,
+      2,
+    ), 6_000), true);
+  } else {
+    add("authority", "@borg/current-work", "Global style workspace boundary", bounded(JSON.stringify({
+      scope: "global styles",
+      allowed: ["color", "typography", "spacing", "radii", "shadows", "layout rhythm", "responsive styling", "motion", "accessibility styling"],
+      preserve: ["routes", "page responsibilities", "component responsibilities", "product behavior", "data contracts"],
+    }, null, 2), 4_000), true);
   }
 
-  const explicit = [...new Set([...relatedPages.flatMap((item) => item.files), ...relatedComponents.flatMap((item) => item.files)])];
-  const relevantWords = tokens([
-    page?.name ?? "",
-    page?.purpose ?? "",
-    ...(page?.sections ?? []),
-    component?.name ?? "",
-    component?.purpose ?? "",
-    ...(component?.variants ?? []),
-  ].join(" "));
-  const discovered = explicit.length ? [] : sourceCandidates(root, relevantWords);
-  const entrypoints = explicit.length || discovered.length ? [] : ["src/App.tsx", "src/style.css", "src/main.tsx", "app/page.tsx"].filter((path) => existsSync(join(root, path)));
-  for (const path of [...new Set([...explicit, ...discovered, ...entrypoints])]) {
-    const safe = validateProjectSource(root, path);
-    const absolute = join(root, safe);
+  const design = readPersistedDesignBrief(input.root);
+  if (design) add("projection", ".localcode/build/design-brief.md", "Persisted approved design direction", bounded(JSON.stringify(design, null, 2), 6_000));
+
+  add("registry", ".localcode/build/pages.json", input.profileKind === "styles" ? "Project page inventory" : "Pages relevant to this context", bounded(JSON.stringify(registry.pages, null, 2), 6_000), true);
+  add("registry", ".localcode/build/components.json", input.profileKind === "styles" ? "Project component inventory" : "Components relevant to this context", bounded(JSON.stringify(registry.components, null, 2), 7_000), true);
+
+  const decisions = optionalProjection(input.root, "decisions.md", 3_500, true);
+  if (decisions) add("projection", ".localcode/build/decisions.md", "Recent durable project decisions", decisions);
+  const handoff = optionalProjection(input.root, "handoff.md", 3_500, true);
+  if (handoff) add("projection", ".localcode/build/handoff.md", "Latest checkpoint handoff", handoff);
+  if ((input.stage ?? "planning") !== "planning") {
+    const currentPlan = optionalProjection(input.root, "current-plan.md", 4_500, false);
+    if (currentPlan) add("projection", ".localcode/build/current-plan.md", "Approved mini-plan execution notes", currentPlan);
+  }
+
+  const explicit = [...new Set(registry.explicitFiles)].map((path) => {
+    try { return validateProjectSource(input.root, path); } catch { return null; }
+  }).filter((path): path is string => Boolean(path));
+
+  const hints = normalizeHints(input.root, input.sourceHints);
+  const sourceCandidates = [
+    ...explicit.map((path) => ({ path, reason: "Registered source for selected project entities" })),
+    ...hints,
+  ];
+  for (const path of entrypoints) {
+    if (sourceCandidates.length) break;
+    if (existsSync(join(input.root, path))) sourceCandidates.push({ path, reason: "Frontend entrypoint fallback; no registered or indexed source matched" });
+  }
+
+  for (const candidate of sourceCandidates.filter((item, index, values) => values.findIndex((other) => other.path === item.path) === index).slice(0, 16)) {
+    const safe = validateProjectSource(input.root, candidate.path);
+    const absolute = join(input.root, safe);
     if (!existsSync(absolute) || !lstatSync(absolute).isFile()) continue;
-    add("source", safe, explicit.includes(path) ? "Registered source for focused object" : entrypoints.includes(path) ? "Frontend entrypoint needed to locate focused object" : "Source matched focused object", readFileSync(absolute, "utf8").slice(0, 12_000));
+    add("source", safe, candidate.reason, bounded(readFileSync(absolute, "utf8"), 10_000));
   }
 
-  return { text: sections.join("\n"), manifest, characters, budgetCharacters, sliceId: `${scope.type}:${scope.id}` };
+  const text = sections.join("\n");
+  const pack = {
+    version: 1 as const,
+    profile,
+    authority,
+    sliceId: profileId,
+    text,
+    manifest,
+    characters,
+    budgetCharacters,
+    fingerprint: hash(JSON.stringify({
+      profile,
+      authority,
+      manifest: manifest.map(({ path, sha256, required }) => ({ path, sha256, required })),
+      textSha256: hash(text),
+    })),
+  };
+  return ContextPackSchema.parse(pack);
+}
+
+export function compileFrontendContext(input: ContextInput): CompiledContext {
+  return compileContextPack({
+    ...input,
+    profileKind: input.scope?.type ?? "slice",
+    sliceIndex: input.sliceIndex,
+    scope: input.scope ?? null,
+  });
+}
+
+export function compileFocusedFrontendContext(input: FocusedContextInput): CompiledContext {
+  return compileContextPack({
+    ...input,
+    profileKind: input.scope.type,
+    sliceIndex: null,
+    scope: input.scope,
+  });
+}
+
+export function compileStyleFrontendContext(input: StyleContextInput): CompiledContext {
+  return compileContextPack({
+    ...input,
+    profileKind: "styles",
+    sliceIndex: null,
+    scope: { type: "styles", id: "global" },
+  });
 }
