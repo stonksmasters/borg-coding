@@ -45,6 +45,7 @@ function Get-BorgOwnedProcesses {
         ($_.Name -eq "node.exe" -and $_.CommandLine -and (
             $_.CommandLine -match "apps[\\/]server[\\/]src[\\/]index\.ts" -or
             $_.CommandLine -match "apps[\\/]server[\\/]src[\\/]desktop-gateway\.ts" -or
+            $_.CommandLine -match "apps[\\/]server[\\/]src[\\/]remote-gateway\.ts" -or
             ($_.CommandLine -match "vinext" -and $_.CommandLine -match $escapedRoot)
         ))
     }
