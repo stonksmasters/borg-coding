@@ -65,7 +65,7 @@ import { ensurePreviewDependencies } from "../../../packages/web-builder/src/pre
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFocusedFrontendContext, compileFrontendContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -405,6 +405,7 @@ async function reconcileInterruptedDelivery(task: Task): Promise<boolean> {
     });
     syncWorkflowProjection(completed.task, completed.workflow);
     syncDeliveredWorkflowProjection(completed.task, completed.workflow, recordedRoot);
+    projectDeliveredFrontendCheckpoint(recordedRoot, completed.workflow);
     appendTaskEvent(task.id, "DELIVERY_RECONCILED_AFTER_RESTART", {
       commit: reconciled.commit,
       detail: reconciled.detail,
@@ -897,6 +898,7 @@ const server = createServer((request, response) => {
         syncWorkflowProjection(task, completed.workflow);
         if (isFrontendSlice && repositoryPath && method === "commit") {
           syncDeliveredWorkflowProjection(task, completed.workflow, repositoryPath);
+          projectDeliveredFrontendCheckpoint(repositoryPath, completed.workflow);
         }
         return send(response, 200, { task, workflow: completed.workflow, delivery: result });
       } catch (error) {
