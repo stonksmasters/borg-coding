@@ -196,6 +196,16 @@ function gitRead(root: string | null, args: string[]): string | null {
   catch { return null; }
 }
 
+function gitIsAncestor(root: string | null, ancestor: string | null, descendant = "HEAD"): boolean | null {
+  if (!root || !ancestor || !existsSync(root)) return null;
+  try {
+    execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore", windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function buildDebugSnapshot(taskId: string): DebugSnapshot | null {
   const task = tasks.findTask(taskId);
   if (!task) return null;
@@ -258,9 +268,16 @@ function buildDebugSnapshot(taskId: string): DebugSnapshot | null {
     workflow: ownedWorkflow,
     approval,
     latestContextWorkflowVersion: contextPacks[0]?.workflowVersion ?? null,
+    latestContextKind: contextPacks[0]?.kind ?? null,
+    latestContextManifestCount: contextPacks[0]?.manifestCount ?? null,
+    latestContextCharacters: contextPacks[0]?.characters ?? null,
+    latestContextBudgetCharacters: contextPacks[0]?.budgetCharacters ?? null,
     worktreeExists: worktreePath ? existsSync(worktreePath) : null,
+    baseCommitAncestorOfHead: gitIsAncestor(root, approval?.baseCommit ?? null),
     activeRoleCount: roleAssignments.filter((assignment) => assignment.status === "active").length,
+    activeProcessCount: processes.filter((process) => process.status === "starting" || process.status === "running").length,
     failedProcessCount: processes.filter((process) => process.status === "failed").length,
+    latestEventAt: events.at(-1)?.occurredAt ?? null,
   });
 
   const snapshot = {
