@@ -333,6 +333,7 @@ function createCheckpointSnapshot(
   const plan = events.findLast((value) => value.type === "MODEL_RESPONSE_COMPLETED")?.payload.answer;
   const stateIndex = checkpointStateOrder.indexOf(task.state);
   const steps = checkpointStateOrder.filter((value) => !["PAUSED", "RECOVERY_REQUIRED"].includes(value));
+  const durableWorkflow = workflow.get(task.projectId);
   const checkpoint = createTaskCheckpoint({
     id: randomUUID(),
     taskId: task.id,
@@ -354,9 +355,20 @@ function createCheckpointSnapshot(
     lastEventId: events.at(-1)?.id ?? null,
     activeRole: activeAssignment?.role ?? null,
     specialistPacks: activeAssignment?.specialistPacks ?? [],
+    workflowVersion: durableWorkflow?.version ?? null,
+    verification: durableWorkflow?.verification,
+    recovery: durableWorkflow?.recovery,
   });
   tasks.saveCheckpoint(checkpoint);
-  appendTaskEvent(task.id, "TASK_CHECKPOINT_CREATED", { checkpointId: checkpoint.id, name: checkpoint.name, kind: checkpoint.kind, state: checkpoint.taskState });
+  appendTaskEvent(task.id, "TASK_CHECKPOINT_CREATED", {
+    checkpointId: checkpoint.id,
+    name: checkpoint.name,
+    kind: checkpoint.kind,
+    state: checkpoint.taskState,
+    workflowVersion: checkpoint.workflowVersion,
+    verificationStatus: checkpoint.verification.status,
+    recoveryStatus: checkpoint.recovery.status,
+  });
   return checkpoint;
 }
 
@@ -393,6 +405,7 @@ async function continueFromCheckpoint(task: Task, checkpoint: TaskCheckpoint, re
     completed: true,
   });
   const restored = workflow.continueFromCheckpoint(task, continuation, {
+    checkpoint,
     unresolvedReviewFindingIds: unresolvedReviewFindings.map((value) => value.id),
   });
   syncWorkflowProjection(restored.task, restored.workflow);
