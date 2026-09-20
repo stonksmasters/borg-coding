@@ -5,6 +5,7 @@ import {
   inactiveWorkflowRecovery,
   type Approval,
   type Task,
+  type TaskCheckpoint,
   type TaskContinuation,
   type TaskEvent,
   type TaskState,
@@ -573,14 +574,21 @@ export class WorkflowEngine {
   continueFromCheckpoint(
     task: Task,
     continuation: TaskContinuation,
-    options: { unresolvedReviewFindingIds?: string[]; resetAttempts?: boolean } = {},
+    options: { checkpoint?: TaskCheckpoint; unresolvedReviewFindingIds?: string[]; resetAttempts?: boolean } = {},
   ): { task: Task; workflow: WorkflowState } {
     if (continuation.taskId !== task.id) throw new Error("Continuation does not belong to this task.");
     if (continuation.previousState !== task.state) {
       throw new Error(`Continuation expected task state ${continuation.previousState}, but task is ${task.state}.`);
     }
+    if (options.checkpoint && options.checkpoint.id !== continuation.checkpointId) {
+      throw new Error("Continuation checkpoint metadata does not match the requested checkpoint.");
+    }
     const current = this.requireTask(task);
-    if ((continuation.resultingState === "REVIEWING" || continuation.resultingState === "DELIVERY_READY") && current.verification.status !== "passed") {
+    const checkpointVerification = options.checkpoint?.verification ?? current.verification;
+    if (
+      (continuation.resultingState === "REVIEWING" || continuation.resultingState === "DELIVERY_READY")
+      && checkpointVerification.status !== "passed"
+    ) {
       throw new Error("Checkpoint continuation cannot restore a post-verification state without a durable passed verification gate.");
     }
     const now = new Date().toISOString();
@@ -592,7 +600,9 @@ export class WorkflowEngine {
       pendingCommand: null,
       verification: continuation.resultingState === "IMPLEMENTING" || continuation.resultingState === "VERIFYING"
         ? pendingVerification(updatedTask.attempts)
-        : current.verification,
+        : continuation.resultingState === "REVIEWING" || continuation.resultingState === "DELIVERY_READY"
+          ? checkpointVerification
+          : current.verification,
       recovery: continuation.status === "recovery_required" || continuation.resultingState === "PAUSED"
         ? {
             status: "required",
@@ -628,6 +638,8 @@ export class WorkflowEngine {
         repositoryState: continuation.repositoryState,
         resumeAction: continuation.resumeAction,
         unresolvedReviewFindingIds: options.unresolvedReviewFindingIds ?? [],
+        checkpointWorkflowVersion: options.checkpoint?.workflowVersion ?? null,
+        verificationStatus: workflow.verification.status,
         workflowVersion: workflow.version,
       }, now)],
     });
