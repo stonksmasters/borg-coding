@@ -157,7 +157,7 @@ function fallbackComponents(sitemap: ProjectSitemapPage[]): PlannedComponent[] {
 function writeState(root: string, state: SliceState) {
   const dir = docsDirectory(root);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(statePath(root), `# BORG build state\n\n\`\`\`json\n${JSON.stringify(state, null, 2)}\n\`\`\`\n`);
+  writeFileSync(statePath(root), `# BORG build state\n\n> Generated projection only. SQLite WorkflowEngine state owns progression.\n\n\`\`\`json\n${JSON.stringify(state, null, 2)}\n\`\`\`\n`);
 }
 
 export function setFrontendWorkflowStage(root: string, stage: FrontendWorkflowStage, input: { currentSlice?: number; totalSlices?: number; taskId?: string | null; detail?: string } = {}): FrontendWorkflowState {
@@ -173,7 +173,7 @@ export function setFrontendWorkflowStage(root: string, stage: FrontendWorkflowSt
   };
   const dir = docsDirectory(root);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(workflowPath(root), `# Frontend workflow\n\nStage: **${state.stage.replaceAll("_", " ")}**\n\n\`\`\`json\n${JSON.stringify(state, null, 2)}\n\`\`\`\n`);
+  writeFileSync(workflowPath(root), `# Frontend workflow\n\n> Generated projection only. SQLite WorkflowEngine state owns progression.\n\nStage: **${state.stage.replaceAll("_", " ")}**\n\n\`\`\`json\n${JSON.stringify(state, null, 2)}\n\`\`\`\n`);
   return state;
 }
 
