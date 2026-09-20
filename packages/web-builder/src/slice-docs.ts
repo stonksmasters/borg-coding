@@ -203,7 +203,7 @@ export type ProjectPlanValidation = PlanCoverageReport;
 
 export function extractRequiredCapabilities(brief: string): PlanCapability[] {
   const required = new Set<PlanCapability>();
-  if (/\b(?:auth(?:entication)?|log\s?in|sign\s?in|roles?|permissions?|protected\s+(?:routes?|pages?|areas?))\b/i.test(brief)) required.add("authentication");
+  if (/\b(?:auth(?:entication)?|authenticated|unauthenticated|log\s?in|login|sign\s?in|signin|roles?|permissions?|protected\s+(?:routes?|pages?|areas?))\b/i.test(brief)) required.add("authentication");
   if (/\b(?:crud|(?:create|add)\s*(?:\/|,|and)?\s*(?:edit|update)(?:\s*(?:\/|,|and)?\s*(?:delete|remove))?|edit\s*(?:\/|,|and)?\s*(?:delete|remove)|manage\s+(?:jobs?|customers?|users?|records?|inventory|orders?))\b/i.test(brief)) required.add("record_mutation");
   if (/\b(?:search|filter(?:ing)?|sort(?:ing)?)\b/i.test(brief)) required.add("search_filtering");
   if (/\b(?:reports?|reporting|analytics|insights|metrics dashboard)\b/i.test(brief)) required.add("reporting");
