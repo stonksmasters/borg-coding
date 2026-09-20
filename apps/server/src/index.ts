@@ -139,6 +139,7 @@ const planningOrchestrator = new PlanningOrchestrator({
   designDirector,
   ollamaUrl,
   model,
+  runAgent: runOllamaAgent,
   appendTaskEvent,
   syncWorkflowProjection,
   transitionTask,
