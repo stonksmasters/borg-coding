@@ -474,10 +474,11 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
         ? session.workflowRole
         : sliceAction;
     const scopeId = session.workflowRole === "page" || session.workflowRole === "component" ? session.focusId : null;
+    const authorityProjectId = rootWorkflowSession(session).workspaceId;
     const upstream = await fetch(`${coreUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId: session.workspaceId, request: prompt, mode: session.activeMode, sliceAction: focusedAction, scopeId, workflowCommandId }),
+      body: JSON.stringify({ projectId: session.workspaceId, authorityProjectId, request: prompt, mode: session.activeMode, sliceAction: focusedAction, scopeId, workflowCommandId }),
       signal: controller.signal,
     });
     if (!upstream.ok || !upstream.body) throw new Error(`Planning stream failed (${upstream.status}).`);
