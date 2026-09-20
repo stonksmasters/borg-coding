@@ -180,18 +180,48 @@ function applicationSlices(sitemap: ProjectSitemapPage[]): ProjectSlice[] {
   return slices;
 }
 
-export type ProjectPlanValidation = {
+export type PlanCapability =
+  | "authentication"
+  | "record_mutation"
+  | "search_filtering"
+  | "reporting"
+  | "realtime_updates";
+
+export type PlanCoverageReport = {
   valid: boolean;
   explicitRequiredPages: string[];
   missingPages: string[];
   missingSliceCoverage: string[];
+  requiredCapabilities: PlanCapability[];
+  missingCapabilities: PlanCapability[];
+  contradictions: string[];
   issues: string[];
 };
 
-export function validateProjectPlanCoverage(plan: ProjectPlan, brief: string): ProjectPlanValidation {
+export type ProjectPlanValidation = PlanCoverageReport;
+
+export function extractRequiredCapabilities(brief: string): PlanCapability[] {
+  const required = new Set<PlanCapability>();
+  if (/\b(?:auth(?:entication)?|log\s?in|sign\s?in|roles?|permissions?|protected\s+(?:routes?|pages?|areas?))\b/i.test(brief)) required.add("authentication");
+  if (/\b(?:crud|create\s+(?:and|\/)?\s*(?:edit|update)|edit\s+(?:and|\/)?\s*(?:delete|remove)|add\/edit|create,?\s*edit,?\s*(?:and\s*)?delete|manage\s+(?:jobs?|customers?|users?|records?|inventory|orders?))\b/i.test(brief)) required.add("record_mutation");
+  if (/\b(?:search|filter(?:ing)?|sort(?:ing)?)\b/i.test(brief)) required.add("search_filtering");
+  if (/\b(?:reports?|reporting|analytics|insights|metrics dashboard)\b/i.test(brief)) required.add("reporting");
+  if (/\b(?:real[- ]?time|live\s+updates?|websocket|streaming updates?)\b/i.test(brief)) required.add("realtime_updates");
+  return [...required];
+}
+
+export function validateProjectPlanCoverage(plan: ProjectPlan, brief: string): PlanCoverageReport {
   const explicitRequiredPages = extractExplicitPageRequirements(brief);
   const pageCorpus = plan.sitemap.map((page) => [page.name, page.route, page.purpose].join(" ")).map(normalizedRequirement);
-  const sliceCorpus = plan.slices.map((slice) => [slice.title, slice.outcome, ...slice.scope].join(" ")).map(normalizedRequirement);
+  const sliceCorpus = plan.slices.map((slice) => [slice.title, slice.outcome, ...slice.scope, ...slice.acceptanceCriteria].join(" ")).map(normalizedRequirement);
+  const fullCorpus = normalizedRequirement([
+    ...plan.pages,
+    ...plan.features,
+    ...plan.sitemap.flatMap((page) => [page.name, page.route, page.purpose, ...page.sections, ...page.acceptanceCriteria]),
+    ...plan.components.flatMap((component) => [component.name, component.purpose, ...component.variants, ...component.acceptanceCriteria]),
+    ...plan.slices.flatMap((slice) => [slice.title, slice.outcome, ...slice.scope, ...slice.acceptanceCriteria]),
+    ...plan.acceptanceCriteria,
+  ].join(" "));
   const covered = (corpus: string[], requirement: string) => {
     const required = normalizedRequirement(requirement);
     const tokens = required.split(" ").filter((token) => token.length > 1);
@@ -199,16 +229,47 @@ export function validateProjectPlanCoverage(plan: ProjectPlan, brief: string): P
   };
   const missingPages = explicitRequiredPages.filter((item) => !covered(pageCorpus, item));
   const missingSliceCoverage = explicitRequiredPages.filter((item) => !covered(sliceCorpus, item));
+  const requiredCapabilities = extractRequiredCapabilities(brief);
+  const capabilityPatterns: Record<PlanCapability, RegExp> = {
+    authentication: /\b(?:auth|authentication|login|log in|sign in|role|roles|permission|permissions|protected)\b/i,
+    record_mutation: /\b(?:create|add|edit|update|delete|remove|manage|management|form|actions?)\b/i,
+    search_filtering: /\b(?:search|filter|filtering|sort|sorting)\b/i,
+    reporting: /\b(?:report|reports|reporting|analytics|insights|metrics|export|charts?)\b/i,
+    realtime_updates: /\b(?:real time|realtime|live updates|websocket|stream|streaming)\b/i,
+  };
+  const missingCapabilities = requiredCapabilities.filter((capability) => !capabilityPatterns[capability].test(fullCorpus));
+
   const dashboard = /dashboard|portal|admin|operations|internal\s+(?:app|tool)|control\s+center|dispatcher/i.test(brief);
+  const explicitlyNotMarketing = /do\s+not\s+(?:build|make|create).{0,30}(?:marketing|landing)|not\s+a\s+(?:marketing|landing)\s+(?:site|page)|do\s+not\s+create\s+a\s+landing[- ]page/i.test(brief);
   const marketingSlices = dashboard
-    ? plan.slices.filter((slice) => /homepage|hero|marketing|calls? to action/i.test([slice.title, slice.outcome, ...slice.scope].join(" "))).map((slice) => slice.title)
+    ? plan.slices.filter((slice) => /homepage|hero|marketing|calls? to action|testimonials?|pricing section/i.test([slice.title, slice.outcome, ...slice.scope].join(" "))).map((slice) => slice.title)
     : [];
+  const marketingPlanText = [
+    ...plan.sitemap.flatMap((page) => [page.name, ...page.sections]),
+    ...plan.slices.flatMap((slice) => [slice.title, slice.outcome, ...slice.scope]),
+  ].join(" ");
+  const contradictions = [
+    ...(marketingSlices.length ? [`Internal application brief received marketing-site slices: ${marketingSlices.join(", ")}.`] : []),
+    ...(explicitlyNotMarketing && /\b(?:hero|testimonial|marketing|landing page|call to action|cta)\b/i.test(marketingPlanText)
+      ? ["The brief explicitly rejects a marketing/landing-site composition, but the plan still contains marketing-site structure."]
+      : []),
+  ];
   const issues = [
     ...(missingPages.length ? [`Missing required sitemap pages: ${missingPages.join(", ")}.`] : []),
     ...(missingSliceCoverage.length ? [`Required pages are not explicitly assigned to an implementation slice: ${missingSliceCoverage.join(", ")}.`] : []),
-    ...(marketingSlices.length ? [`Application brief received marketing-site slices: ${marketingSlices.join(", ")}.`] : []),
+    ...(missingCapabilities.length ? [`Missing required product capabilities: ${missingCapabilities.join(", ")}.`] : []),
+    ...contradictions,
   ];
-  return { valid: issues.length === 0, explicitRequiredPages, missingPages, missingSliceCoverage, issues };
+  return {
+    valid: issues.length === 0,
+    explicitRequiredPages,
+    missingPages,
+    missingSliceCoverage,
+    requiredCapabilities,
+    missingCapabilities,
+    contradictions,
+    issues,
+  };
 }
 
 export type ProjectPlanParseResult = {
@@ -531,11 +592,11 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
 export function parseProjectPlanResult(answer: string, brief: string, template = ""): ProjectPlanParseResult {
   const fallback = fallbackProjectPlan(brief, template);
   const fallbackValidation = validateProjectPlanCoverage(fallback, brief);
-  const useFallback = (reason: string, candidateValidation: ProjectPlanValidation = fallbackValidation): ProjectPlanParseResult => ({
+  const useFallback = (reason: string): ProjectPlanParseResult => ({
     plan: fallback,
     source: "fallback",
     fallbackReason: reason,
-    validation: candidateValidation,
+    validation: fallbackValidation,
     retryRecommended: complexApplicationBrief(brief),
   });
   const match = answer.match(planMarker);
@@ -634,7 +695,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
     const validation = validateProjectPlanCoverage(candidate, brief);
-    if (!validation.valid) return useFallback(validation.issues.join(" "), validation);
+    if (!validation.valid) return useFallback(validation.issues.join(" "));
     return { plan: candidate, source: "model", fallbackReason: null, validation, retryRecommended: false };
   } catch (error) {
     return useFallback(`Planner project-plan JSON could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
@@ -672,12 +733,40 @@ End your response with exactly one machine-readable block using this shape:
 The only project files authorized during PLAN are planning documents under .localcode/build/**/*.md, persisted by BORG after your response. Do not create source, component, style, asset, configuration, backend, API, auth, or database files; do not run builds, tests, previews, or verification. Brief: ${brief}`;
 }
 
-export function persistProposedProjectPlan(root: string, brief: string, plan: ProjectPlan, taskId: string) {
+export function persistProposedProjectPlan(
+  root: string,
+  brief: string,
+  plan: ProjectPlan,
+  taskId: string,
+  options: { coverage?: PlanCoverageReport; currentSlice?: number; revisionReason?: string } = {},
+) {
   const dir = docsDirectory(root);
   mkdirSync(dir, { recursive: true });
   const proposed = { ...plan, status: "proposed" as const, approvedAt: null };
-  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Planned components](components.md)\n- [Global style system](styles.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are a generated knowledge projection of the durable SQLite workflow state. SQLite owns progression; these files provide portable, inspectable context for slice sessions and may be rebuilt from the workflow record. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
+  const coverage = options.coverage ?? validateProjectPlanCoverage(proposed, brief);
+  if (!coverage.valid) throw new Error(`Cannot persist an invalid project plan: ${coverage.issues.join(" ")}`);
+  writeFileSync(join(dir, "README.md"), "# Build docs\n\n- [Product brief](brief.md)\n- [Plan coverage report](plan-coverage.md)\n- [Approved design brief](design-brief.md)\n- [Site map](site-map.md)\n- [Planned components](components.md)\n- [Global style system](styles.md)\n- [Pages registry](pages.json)\n- [Components registry](components.json)\n- [Frontend phase plan](plan.md)\n- [Frontend workflow state](workflow.md)\n- [Current slice](current-slice.md)\n- [Current slice plan](current-plan.md)\n- [Decisions and feedback](decisions.md)\n- [Progress](progress.md)\n- [Verification evidence](verification.md)\n- [Known issues](known-issues.md)\n- [Data and action contract](data-contract.md)\n- [Next-session handoff](handoff.md)\n- [Completed session history](history.md)\n\nThese documents are a generated knowledge projection of the durable SQLite workflow state. SQLite owns progression; these files provide portable, inspectable context for slice sessions and may be rebuilt from the workflow record. Slice sessions inherit the approved design brief and phase plan, then load only targeted handoff and source context instead of replaying prior conversations.\n");
   writeFileSync(join(dir, "brief.md"), `# Product brief\n\n${brief.trim()}\n`);
+  writeFileSync(join(dir, "plan-coverage.json"), JSON.stringify(coverage, null, 2) + "\n");
+  writeFileSync(join(dir, "plan-coverage.md"), [
+    "# Plan coverage report",
+    "",
+    `Status: **${coverage.valid ? "pass" : "fail"}**`,
+    "",
+    `Explicit required pages: ${coverage.explicitRequiredPages.join(", ") || "None extracted"}`,
+    `Missing pages: ${coverage.missingPages.join(", ") || "None"}`,
+    `Missing slice coverage: ${coverage.missingSliceCoverage.join(", ") || "None"}`,
+    `Required capabilities: ${coverage.requiredCapabilities.join(", ") || "None extracted"}`,
+    `Missing capabilities: ${coverage.missingCapabilities.join(", ") || "None"}`,
+    "",
+    "## Contradictions",
+    ...(coverage.contradictions.length ? coverage.contradictions.map((item) => `- ${item}`) : ["- None"]),
+    "",
+    "## Issues",
+    ...(coverage.issues.length ? coverage.issues.map((item) => `- ${item}`) : ["- None"]),
+    "",
+    ...(options.revisionReason ? ["## Revision reason", "", options.revisionReason.slice(0, 4_000), ""] : []),
+  ].join("\n"));
   writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.sitemap.map((page) => `## ${page.name}\n\n- ID: \`${page.id}\`\n- Route: \`${page.route}\`\n- Purpose: ${page.purpose}\n- Sections: ${page.sections.join("; ") || "To be resolved during implementation"}\n- Components: ${page.componentIds.join(", ") || "None assigned"}\n- Acceptance: ${page.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
   writeFileSync(join(dir, "components.md"), `# Planned components\n\n${proposed.components.map((component) => `## ${component.name}\n\n- ID: \`${component.id}\`\n- Kind: ${component.kind}\n- Purpose: ${component.purpose}\n- Used by: ${component.usedBy.join(", ") || "shared/global"}\n- Variants: ${component.variants.join(", ") || "default"}\n- Acceptance: ${component.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
   writeFileSync(join(dir, "styles.md"), `# Global style system\n\n## Direction\n\n${proposed.styles.direction}\n\n## Colors\n${proposed.styles.colors.map((item) => `- ${item}`).join("\n")}\n\n## Typography\n${proposed.styles.typography.map((item) => `- ${item}`).join("\n")}\n\n## Spacing\n${proposed.styles.spacing.map((item) => `- ${item}`).join("\n")}\n\n## Radii\n${proposed.styles.radii.map((item) => `- ${item}`).join("\n")}\n\n## Shadows\n${proposed.styles.shadows.map((item) => `- ${item}`).join("\n")}\n\n## Layout principles\n${proposed.styles.layoutPrinciples.map((item) => `- ${item}`).join("\n")}\n\n## Motion\n${proposed.styles.motion.map((item) => `- ${item}`).join("\n")}\n\n## Responsive\n${proposed.styles.responsive.map((item) => `- ${item}`).join("\n")}\n\n## Accessibility\n${proposed.styles.accessibility.map((item) => `- ${item}`).join("\n")}\n\n## Avoid\n${proposed.styles.avoid.map((item) => `- ${item}`).join("\n")}\n`);
@@ -691,7 +780,12 @@ export function persistProposedProjectPlan(root: string, brief: string, plan: Pr
   if (!existsSync(join(dir, "data-contract.md"))) writeFileSync(join(dir, "data-contract.md"), "# Data and action contract\n\nRecord frontend entities, fields, state transitions, actions, and persistence needs as screens are built.\n");
   if (!existsSync(join(dir, "history.md"))) writeFileSync(join(dir, "history.md"), "# Completed session history\n");
   writeFileSync(join(dir, "handoff.md"), `# Next-session handoff\n\nPlanning task: ${taskId}\n\nThe frontend phase plan is proposed and waiting for user approval. No implementation is authorized yet.\n`);
-  writeState(root, stateFromPlan(proposed, brief, "plan_pending", taskId));
+  const projected = stateFromPlan(proposed, brief, "plan_pending", taskId);
+  if (Number.isInteger(options.currentSlice)) {
+    projected.current = Math.max(0, Math.min(options.currentSlice!, Math.max(0, proposed.slices.length - 1)));
+    projected.currentTitle = proposed.slices[projected.current]?.title ?? projected.currentTitle;
+  }
+  writeState(root, projected);
   setFrontendWorkflowStage(root, "planning", { currentSlice: 0, totalSlices: proposed.slices.length, taskId, detail: "Frontend phase plan is proposed and waiting for approval." });
   return proposed;
 }
