@@ -114,9 +114,17 @@ export interface DebugInvariantInput {
   workflow: WorkflowState | null;
   approval: Approval | null;
   latestContextWorkflowVersion: number | null;
+  latestContextKind: string | null;
+  latestContextManifestCount: number | null;
+  latestContextCharacters: number | null;
+  latestContextBudgetCharacters: number | null;
   worktreeExists: boolean | null;
+  baseCommitAncestorOfHead: boolean | null;
   activeRoleCount: number;
+  activeProcessCount: number;
   failedProcessCount: number;
+  latestEventAt: string | null;
+  nowMs?: number;
 }
 
 function finding(
@@ -213,6 +221,17 @@ export function evaluateDebugInvariants(input: DebugInvariantInput): DebugDiagno
     ));
   }
 
+  if (approval?.status === "APPROVED" && approval.baseCommit && input.baseCommitAncestorOfHead === false) {
+    diagnostics.push(finding(
+      "repository.base_not_ancestor",
+      "error",
+      "repository",
+      "Approved base commit is not an ancestor of worktree HEAD",
+      "The current worktree history no longer descends from the commit that was approved for mutation.",
+      "Stop automatic delivery and inspect worktree divergence before continuing.",
+    ));
+  }
+
   if (workflow.pendingCommand?.claimedByTaskId && workflow.pendingCommand.claimedByTaskId !== workflow.taskId) {
     diagnostics.push(finding(
       "workflow.command_claim_mismatch",
@@ -222,6 +241,20 @@ export function evaluateDebugInvariants(input: DebugInvariantInput): DebugDiagno
       `Pending command is claimed by ${workflow.pendingCommand.claimedByTaskId}, but workflow ownership is ${workflow.taskId ?? "unassigned"}.`,
       "Release or reconcile the command claim before launching another slice.",
     ));
+  }
+
+  if (workflow.pendingCommand && !workflow.pendingCommand.claimedByTaskId) {
+    const ageMs = (input.nowMs ?? Date.now()) - new Date(workflow.pendingCommand.createdAt).getTime();
+    if (ageMs >= 30_000) {
+      diagnostics.push(finding(
+        "workflow.command_unclaimed",
+        "warning",
+        "workflow",
+        "Workflow command has not been claimed",
+        `${workflow.pendingCommand.action} has remained unclaimed for ${Math.floor(ageMs / 1000)} seconds (command ${workflow.pendingCommand.id}).`,
+        "Inspect the desktop workflow driver and confirm it is polling/consuming the durable pending command.",
+      ));
+    }
   }
 
   if (
@@ -238,6 +271,52 @@ export function evaluateDebugInvariants(input: DebugInvariantInput): DebugDiagno
     ));
   }
 
+  if (
+    input.latestContextWorkflowVersion !== null
+    && workflow.version - input.latestContextWorkflowVersion >= 3
+    && ["IMPLEMENTING", "VERIFYING", "REVIEWING"].includes(task.state)
+  ) {
+    diagnostics.push(finding(
+      "context.stale_workflow_version",
+      "warning",
+      "context",
+      "ContextPack may be stale",
+      `Latest ContextPack was compiled for workflow v${input.latestContextWorkflowVersion}, while the durable workflow is v${workflow.version}.`,
+      "Confirm the active scope still matches the persisted ContextPack before another model call.",
+    ));
+  }
+
+  if (
+    input.latestContextKind
+    && ["slice", "page", "component", "styles"].includes(input.latestContextKind)
+    && (input.latestContextManifestCount ?? 0) > 30
+  ) {
+    diagnostics.push(finding(
+      "context.scope_too_broad",
+      "warning",
+      "context",
+      "Scoped ContextPack is unusually broad",
+      `${input.latestContextKind} context contains ${input.latestContextManifestCount} manifest items.`,
+      "Inspect the manifest for unrelated files before allowing future scoped model calls.",
+    ));
+  }
+
+  if (
+    input.latestContextCharacters !== null
+    && input.latestContextBudgetCharacters !== null
+    && input.latestContextBudgetCharacters > 0
+    && input.latestContextCharacters / input.latestContextBudgetCharacters >= 0.95
+  ) {
+    diagnostics.push(finding(
+      "context.near_budget_limit",
+      "warning",
+      "context",
+      "ContextPack is near its character budget",
+      `Latest ContextPack uses ${input.latestContextCharacters} of ${input.latestContextBudgetCharacters} characters.`,
+      "Inspect lower-priority context sources before the next compile grows beyond the bounded profile.",
+    ));
+  }
+
   if (input.activeRoleCount > 1) {
     diagnostics.push(finding(
       "runtime.multiple_active_roles",
@@ -247,6 +326,21 @@ export function evaluateDebugInvariants(input: DebugInvariantInput): DebugDiagno
       `${input.activeRoleCount} role assignments are simultaneously marked active for one task.`,
       "Inspect role handoff completion and close stale active assignments.",
     ));
+  }
+
+  const progressStates = ["IMPLEMENTING", "VERIFYING", "REVIEWING", "DELIVERING"];
+  if (progressStates.includes(task.state) && input.activeProcessCount === 0 && input.latestEventAt) {
+    const idleMs = (input.nowMs ?? Date.now()) - new Date(input.latestEventAt).getTime();
+    if (idleMs >= 300_000) {
+      diagnostics.push(finding(
+        "runtime.no_progress",
+        "warning",
+        "runtime",
+        "Workflow may be stalled",
+        `Task has remained ${task.state} without a managed process or persisted activity for ${Math.floor(idleMs / 60_000)} minutes.`,
+        "Inspect the latest model/tool event and workflow command before retrying or mutating state.",
+      ));
+    }
   }
 
   if (input.failedProcessCount > 0 && ["VERIFYING", "REVIEWING", "DELIVERING"].includes(task.state)) {
