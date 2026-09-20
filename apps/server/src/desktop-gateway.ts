@@ -954,7 +954,8 @@ const server = createServer((request, response) => {
 
       const workflowState = body.workflow as CoreWorkflowState | undefined;
       const projectPlanApproved = body.projectPlanApproved === true;
-      const escalated = decision === "approve" && session.activeMode === "plan" && !projectPlanApproved;
+      const projectPlanRevisionApproved = body.projectPlanRevisionApproved === true;
+      const escalated = decision === "approve" && session.activeMode === "plan" && !projectPlanApproved && !projectPlanRevisionApproved;
       const updatedSession = escalated ? chats.updateSession(session.id, { activeMode: "edit" }) ?? session : session;
       chats.deleteModeEscalation(taskId);
       appendMessage({
@@ -962,13 +963,15 @@ const server = createServer((request, response) => {
         taskId,
         role: "system",
         kind: decision === "approve" ? "status" : "plan",
-        text: projectPlanApproved
-          ? "Frontend phase plan approved. The server is starting slice 1 automatically; each slice will plan, implement, verify, review, and checkpoint before feedback."
-          : escalated
-            ? "Mode escalated from PLAN to EDIT for the approved slice."
-            : decision === "reject"
-              ? "Stayed in PLAN. No mutation authorization was granted."
-              : `${updatedSession.activeMode.toUpperCase()} authorization was confirmed.`,
+        text: projectPlanRevisionApproved
+          ? "Project plan revision approved. BORG is resuming the current slice in the existing isolated worktree under the repaired scope."
+          : projectPlanApproved
+            ? "Frontend phase plan approved. The server is starting slice 1 automatically; each slice will plan, implement, verify, review, and checkpoint before feedback."
+            : escalated
+              ? "Mode escalated from PLAN to EDIT for the approved slice."
+              : decision === "reject"
+                ? "Stayed in PLAN. No mutation authorization was granted."
+                : `${updatedSession.activeMode.toUpperCase()} authorization was confirmed.`,
       });
       const startedSession = projectPlanApproved && decision === "approve"
         ? await driveWorkflow(updatedSession, workflowState)
