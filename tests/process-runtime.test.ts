@@ -137,3 +137,47 @@ test("process runtime cannot stop a different task by task-scoped lookup", async
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("concurrent preview starts for one task/worktree converge on a single managed server", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-process-concurrent-server-"));
+  const events: ProcessRuntimeEvent[] = [];
+  try {
+    const runtime = new ProcessRuntime({ onEvent: (event) => events.push(event) });
+    const firstPort = await findAvailableLoopbackPort();
+    const secondPort = await findAvailableLoopbackPort();
+    const firstUrl = `http://127.0.0.1:${firstPort}`;
+    const secondUrl = `http://127.0.0.1:${secondPort}`;
+
+    const first = runtime.ensureServer({
+      taskId: "task-concurrent-server",
+      kind: "dev_server",
+      label: "preview",
+      command: "node",
+      args: ["-e", `setTimeout(() => require('http').createServer((req,res)=>res.end('ok')).listen(${firstPort},'127.0.0.1'), 250)`],
+      cwd: root,
+      url: firstUrl,
+      startupTimeoutMs: 10_000,
+    });
+    const second = runtime.ensureServer({
+      taskId: "task-concurrent-server",
+      kind: "dev_server",
+      label: "preview",
+      command: "node",
+      args: ["-e", `require('http').createServer((req,res)=>res.end('other')).listen(${secondPort},'127.0.0.1')`],
+      cwd: root,
+      url: secondUrl,
+      startupTimeoutMs: 10_000,
+    });
+
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.id, b.id);
+    assert.equal(a.url, firstUrl);
+    assert.equal(b.url, firstUrl);
+    assert.equal(runtime.list("task-concurrent-server").filter((process) => ["starting", "running"].includes(process.status)).length, 1);
+    assert.equal(events.filter((event) => event.type === "process.started").length, 1);
+    await runtime.stop(a.id);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
