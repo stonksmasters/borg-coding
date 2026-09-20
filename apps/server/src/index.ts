@@ -406,6 +406,7 @@ async function reconcileInterruptedDelivery(task: Task): Promise<boolean> {
     syncWorkflowProjection(completed.task, completed.workflow);
     syncDeliveredWorkflowProjection(completed.task, completed.workflow, recordedRoot);
     projectDeliveredFrontendCheckpoint(recordedRoot, completed.workflow);
+    commitBuildDocs(recordedRoot, "Project BORG frontend workflow checkpoint");
     appendTaskEvent(task.id, "DELIVERY_RECONCILED_AFTER_RESTART", {
       commit: reconciled.commit,
       detail: reconciled.detail,
@@ -899,6 +900,7 @@ const server = createServer((request, response) => {
         if (isFrontendSlice && repositoryPath && method === "commit") {
           syncDeliveredWorkflowProjection(task, completed.workflow, repositoryPath);
           projectDeliveredFrontendCheckpoint(repositoryPath, completed.workflow);
+          commitBuildDocs(repositoryPath, "Project BORG frontend workflow checkpoint");
         }
         return send(response, 200, { task, workflow: completed.workflow, delivery: result });
       } catch (error) {
