@@ -399,3 +399,36 @@ test("workflow status exposes plan repair as the recovery action", () => {
   assert.match(status.run.blocker?.action ?? "", /Replan/i);
   assert.equal(status.run.verification.visualStatus, "plan_repair_required");
 });
+
+
+test("workflow status exposes the proposed plan revision and structural delta", () => {
+  const base = createTask({ id: "status-plan-revision", projectId: "status-plan-revision-project", request: "Build ForgeOps" });
+  const awaiting = { ...base, state: "AWAITING_APPROVAL" as const };
+  const events = [{
+    id: "plan-revision-proposed",
+    taskId: awaiting.id,
+    type: "PROJECT_PLAN_REVISION_PROPOSED",
+    payload: {
+      repairScope: "project_plan",
+      reason: "The approved hero slice cannot satisfy the required operational dashboard structure.",
+      delta: {
+        fromRevision: 1,
+        toRevision: 2,
+        addedPages: ["jobs"],
+        removedPages: [],
+        changedPages: ["overview"],
+        addedSlices: ["jobs-workspace"],
+        removedSlices: ["hero"],
+        changedSlices: ["application-foundation"],
+      },
+    },
+    occurredAt: new Date().toISOString(),
+  }];
+  const status = deriveWorkflowStatus(awaiting, events as never[], null, null);
+  assert.equal(status.run.stage, "awaiting_approval");
+  assert.match(status.run.headline, /revision 1 → 2/i);
+  assert.equal(status.run.planRevision?.repairScope, "project_plan");
+  assert.deepEqual(status.run.planRevision?.delta.addedPages, ["jobs"]);
+  assert.deepEqual(status.run.planRevision?.delta.removedSlices, ["hero"]);
+  assert.match(status.run.planRevision?.reason ?? "", /operational dashboard/i);
+});
