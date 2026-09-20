@@ -45,7 +45,6 @@ import {
   DisciplineRouter,
   TeamPolicyService,
   evaluateSpecialistEvidence,
-  minimumRiskFor,
   roleCapabilities,
   selectSpecialistPacks,
   specialistPackRefs,
@@ -53,7 +52,6 @@ import {
   verificationProfileFor,
   type SpecialistCapabilityPack,
 } from "../../../packages/orchestration/src/index.ts";
-import { assertArchitectOutput, architectRepairPrompt, validateArchitectOutput } from "./architect-output.ts";
 import { runFreshReview } from "./fresh-review.ts";
 import { deriveWorkflowStatus } from "./workflow-status.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
@@ -66,16 +64,15 @@ import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap
 import { preflightFailureMessage, runWorkspacePreflight } from "../../../packages/web-builder/src/workspace-preflight.ts";
 import { projectWorkflowState } from "../../../packages/web-builder/src/workflow-projection.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
-import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
+import { websiteGenerationContext } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext, type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
-import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanDelta, projectPlanRepairPrompt, projectPlanRevisionPrompt, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanDelta, projectPlanRepairPrompt, projectPlanRevisionPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePrompt, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
   VisualDirectorService,
   designBriefPrompt,
-  requiresDesignDirection,
   type DesignBrief,
   type DesignReviewResult,
 } from "../../../packages/design-intelligence/src/index.ts";
