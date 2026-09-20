@@ -853,6 +853,17 @@ const server = createServer((request, response) => {
     return send(response, 200, { contexts: tasks.listModelContexts(taskId) });
   }
 
+  const contextPackRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/context-packs(?:\/([^/?]+))?$/);
+  if (request.method === "GET" && contextPackRoute) {
+    const taskId = decodeURIComponent(contextPackRoute[1]);
+    if (!tasks.findTask(taskId)) return send(response, 404, { error: "Task not found." });
+    if (contextPackRoute[2]) {
+      const pack = tasks.findContextPack(taskId, decodeURIComponent(contextPackRoute[2]));
+      return pack ? send(response, 200, { pack }) : send(response, 404, { error: "Context pack not found." });
+    }
+    return send(response, 200, { packs: tasks.listContextPacks(taskId) });
+  }
+
   const workflowStatusRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/workflow-status$/);
   if (request.method === "GET" && workflowStatusRoute) {
     const taskId = decodeURIComponent(workflowStatusRoute[1]);
