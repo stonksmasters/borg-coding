@@ -2,7 +2,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import {
   createApproval,
   createHandoff,
@@ -67,7 +67,7 @@ import { ensurePreviewDependencies } from "../../../packages/web-builder/src/pre
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext, type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
 import { ensureProjectModel, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlan, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistDesignBrief, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanRepairPrompt, projectPlanningPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePlanningPrompt, slicePrompt, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
@@ -125,6 +125,72 @@ const disciplineRouter = new DisciplineRouter();
 const teamPolicies = new TeamPolicyService();
 const maxRepairAttempts = 2;
 const maxDesignRefinements = 3;
+
+function changedSourcePaths(status: string) {
+  return status.split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.slice(3).trim())
+    .map((value) => value.includes(" -> ") ? value.split(" -> ").at(-1)!.trim() : value)
+    .filter((value) => value && !value.startsWith(".localcode/build/"));
+}
+
+function safeWorktreeFile(root: string, path: string) {
+  const candidate = resolve(root, path);
+  const rel = relative(resolve(root), candidate);
+  if (rel === ".." || rel.startsWith(".." + sep)) return null;
+  try {
+    if (!existsSync(candidate) || !statSync(candidate).isFile() || statSync(candidate).size > 256_000) return null;
+    return readFileSync(candidate, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function sourceMutationSnapshot(root: string) {
+  const status = gitRead(root, ["status", "--porcelain", "--untracked-files=all"]) ?? "";
+  const diff = gitRead(root, ["diff", "--no-ext-diff", "--binary"]) ?? "";
+  const paths = changedSourcePaths(status);
+  const fileHashes = paths.map((path) => {
+    const content = safeWorktreeFile(root, path);
+    return [path, content === null ? null : createHash("sha256").update(content).digest("hex")];
+  });
+  const fingerprint = createHash("sha256").update(JSON.stringify({ status: status.split(/\r?\n/).filter((line) => !line.includes(".localcode/build/")), diff, fileHashes })).digest("hex");
+  return { status, diff, paths, fingerprint };
+}
+
+function repairGroundingSnapshot(root: string) {
+  const snapshot = sourceMutationSnapshot(root);
+  const files = snapshot.paths.slice(0, 12).map((path) => {
+    const content = safeWorktreeFile(root, path);
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 12_000)}`;
+  });
+  return [
+    "CURRENT WORKTREE GROUNDING. This snapshot is authoritative for the repair pass; do not rediscover or guess paths.",
+    `Changed source files:\n${snapshot.paths.length ? snapshot.paths.map((path) => `- ${path}`).join("\n") : "- none"}`,
+    `Current source diff:\n${snapshot.diff.slice(0, 40_000) || "[no tracked diff]"}`,
+    files.length ? `Current changed-file contents:\n${files.join("\n\n")}` : "",
+    "Read only direct imports/dependencies of these files when needed to make the evidenced repair.",
+  ].filter(Boolean).join("\n\n");
+}
+
+function designReviewScopeConflict(review: DesignReviewResult, activeSlice: { title: string; outcome: string; scope: string[] } | null, plan: ProjectPlan | null) {
+  if (review.status !== "repair" || !activeSlice || !plan) return null;
+  const reviewText = [review.summary, ...review.findings.flatMap((finding) => [finding.title, finding.description, finding.remediation])].join(" ").toLowerCase();
+  const sliceText = [activeSlice.title, activeSlice.outcome, ...activeSlice.scope].join(" ").toLowerCase();
+  const structuralDemand = /\b(?:missing|placeholder|not implemented|actual|dense|data density|metrics?|alerts?|table|queue|workflow|workspace|control center|operational|screen|page|section)\b/.test(reviewText);
+  const narrowMarketingSlice = /\b(?:homepage|hero|marketing|call to action|cta)\b/.test(sliceText);
+  const requestedOutsidePages = plan.sitemap
+    .filter((page) => reviewText.includes(page.name.toLowerCase()) && !sliceText.includes(page.name.toLowerCase()))
+    .map((page) => page.name);
+  const explicitOutsideDemand = requestedOutsidePages.length > 0 && /\b(?:add|include|implement|build|surface|show|missing|needs?)\b/.test(reviewText);
+  if (!(explicitOutsideDemand || (narrowMarketingSlice && structuralDemand))) return null;
+  return {
+    reason: requestedOutsidePages.length
+      ? `Visual review requires work on pages outside the current slice: ${requestedOutsidePages.join(", ")}.`
+      : `Visual review requires application structure that materially exceeds the current slice "${activeSlice.title}".`,
+    requestedOutsidePages,
+  };
+}
 
 async function visionRuntimeStatus() {
   const policy = vision.status();
@@ -1319,7 +1385,11 @@ const server = createServer((request, response) => {
       const taskEvents = tasks.listEvents(taskId);
       const blockedRetry = taskEvents.findLast((event) => event.type === "BLOCKED_RETRY_REQUESTED");
       const blockedFailure = blockedRetry
-        ? taskEvents.findLast((event) => event.type === "REPAIR_LIMIT_REACHED" || event.type === "DESIGN_REVIEW_BLOCKED")
+        ? taskEvents.findLast((event) =>
+            event.type === "REPAIR_LIMIT_REACHED"
+            || event.type === "DESIGN_REVIEW_BLOCKED"
+            || event.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
+            || event.type === "PLAN_REPAIR_REQUIRED")
         : null;
       let repairEvidence = blockedRetry
         ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
@@ -1383,10 +1453,13 @@ const server = createServer((request, response) => {
         : styleExecutionContext;
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
+        const attemptStartedInRepair = taskContext.executionState === "REPAIR";
+        const preAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
+        const repairGrounding = attemptStartedInRepair ? repairGroundingSnapshot(approvedWorktreePath) : "";
         const repairPrompt = repairEvidence
-          ? repairEvidence
+          ? [repairEvidence, repairGrounding].filter(Boolean).join("\n\n")
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
         let implementationResult: Awaited<ReturnType<typeof runOllamaAgent>>;
         try {
@@ -1418,7 +1491,14 @@ const server = createServer((request, response) => {
         implementationBudgetExhausted = Boolean(budgetExhausted);
         if (sliceState || focusedExecutionScope || styleWorkspace) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
-          const sourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
+          const postAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
+          const initialSourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
+          const repairDelta = preAttemptSnapshot.fingerprint !== postAttemptSnapshot.fingerprint;
+          const explainedNoMutation = /\b(?:no (?:source )?(?:change|mutation) (?:is )?required because|no mutation needed because|already resolved and no (?:source )?change is required)\b/i.test(answer);
+          const sourceProgress = attemptStartedInRepair ? repairDelta || explainedNoMutation : initialSourceProgress;
+          if (attemptStartedInRepair && !repairDelta && explainedNoMutation) {
+            appendTaskEvent(taskId, "REPAIR_NO_MUTATION_EXPLAINED", { attempt: task.attempts, answer: answer.slice(0, 4_000) });
+          }
           if (!sourceProgress) {
             if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
             activeRoleAssignment = null;
@@ -1429,9 +1509,17 @@ const server = createServer((request, response) => {
                 const payload = event.payload as Record<string, unknown>;
                 return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
               });
-            const failure = toolFailures.at(-1) ?? "The implementation attempt completed without any source-file progress.";
+            const failure = toolFailures.at(-1) ?? (attemptStartedInRepair
+              ? "The repair attempt completed without changing the source diff relative to the start of this repair pass."
+              : "The implementation attempt completed without any source-file progress.");
             const decision = classifyImplementationFailure(failure, task.attempts, maxRepairAttempts, { noProgress: true });
-            appendTaskEvent(taskId, "IMPLEMENTATION_NO_PROGRESS", { attempt: task.attempts, toolFailures, decision });
+            appendTaskEvent(taskId, attemptStartedInRepair ? "REPAIR_NO_PROGRESS" : "IMPLEMENTATION_NO_PROGRESS", {
+              attempt: task.attempts,
+              toolFailures,
+              decision,
+              preAttemptFingerprint: preAttemptSnapshot.fingerprint,
+              postAttemptFingerprint: postAttemptSnapshot.fingerprint,
+            });
             appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
             if (decision.disposition === "fatal") {
               syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
@@ -1704,13 +1792,33 @@ const server = createServer((request, response) => {
               response.end();
               return;
             }
+            const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
+            const scopeConflict = designReviewScopeConflict(designReview, activeSlice, projectPlan);
+            if (scopeConflict) {
+              setExecutionState("BLOCKED");
+              const checkpoint = createCheckpointSnapshot(task, "pre_repair");
+              const recovered = workflow.markRecoveryRequired(task, {
+                category: "plan_repair_required",
+                checkpointId: checkpoint.id,
+                resumeAction: "replan",
+                reason: scopeConflict.reason,
+              });
+              task = recovered.task;
+              syncWorkflowProjection(task, recovered.workflow);
+              appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", { review: designReview, ...scopeConflict });
+              appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", { reason: scopeConflict.reason, review: designReview, checkpointId: checkpoint.id });
+              emit({ type: "stream.blocked", message: `The Visual Director found a scope conflict: ${scopeConflict.reason} Repairing CSS inside the current slice would not satisfy the product brief, so BORG stopped and requires a plan repair.` });
+              response.end();
+              return;
+            }
             repairEvidence = `VISUAL DIRECTOR REFINEMENT REQUIRED. This is not a functional bug repair. Rework the visual design against the persisted Design Brief and the screenshot evidence below. Preserve working behavior, then recapture responsive browser evidence.
 
-Work from the actual repository and rendered page:
-- Use worktree_list first, then read the real files before editing. Do not guess paths, components, or CSS selectors.
+Work from the authoritative repair grounding that BORG injects automatically:
+- Start from the supplied changed-file list, current source diff, and current changed-file contents. Do not guess paths, components, or CSS selectors.
+- Read only direct dependencies/imports when they are necessary to repair an implicated file.
 - Trace every style change to markup that actually uses it. Remove or avoid selectors that are not present in the rendered DOM.
 - Address the highest-severity visible findings with a material composition change, not small token or spacing adjustments.
-- Stay within the current approved slice. Do not add future sections solely to satisfy a full-site critique.
+- Stay within the current approved slice only when the requested repair is actually satisfiable inside that slice.
 - Capture mobile, tablet, and desktop evidence after editing and inspect whether the cited visual problem visibly changed before finishing.
 
 ${JSON.stringify(designReview).slice(0, 70000)}`;
@@ -2416,7 +2524,40 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         appendTaskEvent(task.id, "MODEL_RESPONSE_COMPLETED", { runtime: "ollama", model: architectModel, role: "architect", answer, usedTools });
         let proposedProjectPlan: ProjectPlan | null = null;
         if (projectPlanning && websiteProject) {
-          const parsedPlan = parseProjectPlan(answer, websiteProject.originalBrief || requestText, websiteProject.template);
+          const planningBrief = websiteProject.originalBrief || requestText;
+          let parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+          if (parseResult.source === "fallback" && parseResult.retryRecommended) {
+            appendTaskEvent(task.id, "PROJECT_PLAN_SEMANTIC_RETRY", {
+              reason: parseResult.fallbackReason,
+              validation: parseResult.validation,
+            });
+            emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The first project plan missed required product scope. Regenerating it from the explicit brief requirements." });
+            const repaired = await runOllamaAgent({
+              ...architectRequest,
+              messages: [
+                architectRequest.messages[0],
+                architectRequest.messages[1],
+                { role: "assistant", content: answer },
+                { role: "user", content: projectPlanRepairPrompt(parseResult) },
+              ],
+              limits: { toolRounds: 3, toolCalls: 2 },
+            });
+            answer = repaired.answer;
+            usedTools ||= repaired.usedTools;
+            parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+            appendTaskEvent(task.id, "PROJECT_PLAN_SEMANTIC_RETRY_COMPLETED", {
+              source: parseResult.source,
+              fallbackReason: parseResult.fallbackReason,
+              validation: parseResult.validation,
+            });
+          }
+          if (parseResult.source === "fallback") {
+            appendTaskEvent(task.id, "PROJECT_PLAN_FALLBACK_USED", {
+              reason: parseResult.fallbackReason,
+              validation: parseResult.validation,
+            });
+          }
+          const parsedPlan = parseResult.plan;
           const planWorkflow = workflow.setProjectPlan(task, parsedPlan);
           syncWorkflowProjection(task, planWorkflow);
           proposedProjectPlan = planWorkflow.projectPlan as ProjectPlan;
