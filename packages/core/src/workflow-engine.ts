@@ -127,6 +127,11 @@ export class WorkflowEngine {
     options: { commandId?: string | null; feedback?: string; sliceAction?: FrontendSliceAction } = {},
   ): WorkflowState {
     const existing = this.store.findWorkflow(task.projectId);
+    if (intent === "backend") {
+      if (!existing?.projectPlan || existing.projectPlan.status !== "frontend_complete" || !existing.projectPlan.backendRequired) {
+        throw new Error("Backend planning requires a completed frontend plan that explicitly requires backend work.");
+      }
+    }
     const sliceSelection = intent === "frontend_slice"
       ? selectFrontendSlice(existing, options.sliceAction, options.commandId)
       : null;
@@ -200,11 +205,20 @@ export class WorkflowEngine {
   setProjectPlan(task: Task, plan: WorkflowProjectPlan): WorkflowState {
     const current = this.requireTask(task);
     if (current.loop !== "project" || current.phase !== "planning") throw new Error("Only the outer project planning loop may replace the project plan.");
+    const proposedPlan = {
+      ...plan,
+      revision: current.projectPlan ? current.projectPlan.revision + 1 : Math.max(1, plan.revision),
+      status: "proposed" as const,
+      approvedAt: null,
+    };
     return this.update(task, current, {
-      projectPlan: plan,
-      sliceTotal: plan.slices.length,
-      detail: `Frontend phase plan revision ${plan.revision} is persisted in SQLite.`,
-    }, "PROJECT_PLAN_SNAPSHOT_UPDATED", { revision: plan.revision, status: plan.status, sliceTotal: plan.slices.length });
+      projectPlan: proposedPlan,
+      sliceIndex: null,
+      sliceTotal: proposedPlan.slices.length,
+      sliceTitle: null,
+      planApproved: false,
+      detail: `Frontend phase plan revision ${proposedPlan.revision} is persisted in SQLite.`,
+    }, "PROJECT_PLAN_SNAPSHOT_UPDATED", { revision: proposedPlan.revision, status: proposedPlan.status, sliceTotal: proposedPlan.slices.length });
   }
 
   setHandoff(task: Task, handoff: string): WorkflowState {
