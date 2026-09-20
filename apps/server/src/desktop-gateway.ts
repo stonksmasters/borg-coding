@@ -236,7 +236,7 @@ function toolStatus() {
 async function loadSessionRuntime(session: ChatSession) {
   const latestTaskId = chats.latestTaskId(session.id);
   const runtimeActive = activeStreams.has(session.id);
-  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, projectPlanApproval: false, runtimeAvailable: true, runtimeActive };
+  if (!latestTaskId) return { session, latestTaskId: null, task: null, approval: null, escalation: null, projectPlanApproval: false, projectPlanRevisionApproval: false, runtimeAvailable: true, runtimeActive };
   try {
     const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(latestTaskId)}/approval`, { signal: AbortSignal.timeout(5_000) });
     if (!upstream.ok) throw new Error(`Core task state returned ${upstream.status}.`);
@@ -244,6 +244,7 @@ async function loadSessionRuntime(session: ChatSession) {
       task?: { id: string; state: string };
       approval?: { id: string; taskId: string; status: "REQUESTED" | "APPROVED" | "REJECTED"; worktreePath: string | null; baseCommit: string | null } | null;
       projectPlanApproval?: boolean;
+      projectPlanRevisionApproval?: boolean;
     };
     let restoredSession = session;
     let escalation = chats.findModeEscalation(latestTaskId);
@@ -262,11 +263,12 @@ async function loadSessionRuntime(session: ChatSession) {
       approval: body.approval ?? null,
       escalation: pending ? escalation : null,
       projectPlanApproval: pending && body.projectPlanApproval === true,
+      projectPlanRevisionApproval: pending && body.projectPlanRevisionApproval === true,
       runtimeAvailable: true,
       runtimeActive,
     };
   } catch {
-    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), projectPlanApproval: false, runtimeAvailable: false, runtimeActive };
+    return { session, latestTaskId, task: null, approval: null, escalation: chats.findModeEscalation(latestTaskId), projectPlanApproval: false, projectPlanRevisionApproval: false, runtimeAvailable: false, runtimeActive };
   }
 }
 
@@ -389,6 +391,7 @@ async function coreTaskRuntime(taskId: string) {
     workflow?: CoreWorkflowState | null;
     approval?: { status?: string } | null;
     projectPlanApproval?: boolean;
+    projectPlanRevisionApproval?: boolean;
     error?: string;
   };
   if (!response.ok) throw new Error(body.error ?? `Unable to read task state (${response.status}).`);
@@ -542,10 +545,20 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
         if (event.type === "project.plan.approval.requested") {
           coreApproval = event.approval as Record<string, unknown> | null;
           projectPlanApproval = true;
+          const planRevision = event.planRevision === true;
           const plan = event.projectPlan as ProjectPlan | undefined;
           if (plan?.version === 2 && Array.isArray(plan.slices) && plan.slices.length) structuredProjectPlanText = formatProjectPlan(plan);
           if (taskId && coreApproval) {
-            appendMessage({ sessionId: session.id, taskId, role: "system", kind: "status", text: "Frontend phase plan is ready for approval. Approving it freezes the slice roadmap and authorizes the bounded frontend slice workflow.", metadata: { approval: coreApproval, projectPlan: event.projectPlan } });
+            appendMessage({
+              sessionId: session.id,
+              taskId,
+              role: "system",
+              kind: "status",
+              text: planRevision
+                ? "A product-quality finding exceeded the current slice authority. BORG prepared a bounded project-plan revision; approval resumes the existing isolated worktree at the repaired slice boundary."
+                : "Frontend phase plan is ready for approval. Approving it freezes the slice roadmap and authorizes the bounded frontend slice workflow.",
+              metadata: { approval: coreApproval, projectPlan: event.projectPlan, planRevision, planDelta: event.planDelta },
+            });
           }
           emitToClient(event);
           continue;
