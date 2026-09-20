@@ -1987,6 +1987,7 @@ const server = createServer((request, response) => {
                 projectPlan: proposedPlan,
                 planRevision: true,
                 planDelta: delta,
+                planRevisionReason: revisionReason,
                 message: `Plan revision ${proposedPlan.revision} resolves a ${designReview.repairScope.replaceAll("_", " ")} quality conflict. Approve it to resume the current worktree at the repaired slice boundary.`,
               });
               writeEvent(response, { type: "stream.completed", taskId });
@@ -2310,14 +2311,22 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
     const task = tasks.findTask(taskId);
     if (!task) return send(response, 404, { error: "Task not found" });
     const currentApproval = tasks.findApproval(taskId);
+    const taskEvents = tasks.listEvents(taskId);
+    const revisionEvent = taskEvents.findLast((event) => event.type === "PROJECT_PLAN_REVISION_PROPOSED");
+    const pendingRevisionApproval = task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && Boolean(revisionEvent);
     return send(response, 200, {
       task,
       workflow: workflow.get(task.projectId)?.taskId === task.id ? workflow.get(task.projectId) : null,
       approval: currentApproval,
-      projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_PROPOSED" || event.type === "PROJECT_PLAN_REVISION_PROPOSED"),
-      projectPlanRevisionApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && tasks.listEvents(taskId).some((event) => event.type === "PROJECT_PLAN_REVISION_PROPOSED"),
+      projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && taskEvents.some((event) => event.type === "PROJECT_PLAN_PROPOSED" || event.type === "PROJECT_PLAN_REVISION_PROPOSED"),
+      projectPlanRevisionApproval: pendingRevisionApproval,
+      planRevision: pendingRevisionApproval ? {
+        delta: revisionEvent?.payload.delta ?? null,
+        reason: String(revisionEvent?.payload.reason ?? ""),
+        repairScope: String(revisionEvent?.payload.repairScope ?? ""),
+      } : null,
       findings: tasks.listFindings(taskId),
-      events: tasks.listEvents(taskId),
+      events: taskEvents,
       roleAssignments: tasks.listRoleAssignments(taskId),
       handoffs: tasks.listHandoffs(taskId),
     });
