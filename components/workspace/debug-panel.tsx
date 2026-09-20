@@ -20,13 +20,15 @@ export type DebugSnapshotView = {
   workflow: null | {
     phase: string; loop: string; status: string; nextAction: string; version: number;
     sliceIndex: number | null; sliceTotal: number | null; sliceTitle: string | null;
+    pendingCommand: null | { id: string; action: string; createdAt: string; targetSliceIndex: number | null; claimedByTaskId: string | null; claimedAt: string | null };
+    lastConsumedCommandId: string | null;
     verification: { status: string; attempt: number };
     recovery: { status: string; category: string | null; resumeAction: string; reason: string };
   };
   approval: null | { status: string; worktreePath: string | null; baseCommit: string | null };
   events: Array<{ id: string; kind: string; category: string; status: string; detail: string; occurredAt: string }>;
-  contextPacks: Array<{ id: string; profileId: string; kind: string; stage: string; workflowVersion: number | null; authority: string; characters: number; budgetCharacters: number; manifestCount: number; fingerprint: string }>;
-  modelContexts: unknown[];
+  contextPacks: Array<{ id: string; profileId: string; kind: string; stage: string; workflowVersion: number | null; authority: string; characters: number; budgetCharacters: number; manifestCount: number; fingerprint: string; manifest: Array<{ kind: string; path: string; reason: string; characters: number; required: boolean }> }>;
+  modelContexts: Array<{ id: string; role: string; model: string; sliceId: string | null; inputSha256: string; manifestCount: number; createdAt: string }>;
   processes: Array<{ id: string; kind: string; label: string; command: string; args: string[]; cwd: string; status: string; exitCode: number | null; stdout: string; stderr: string }>;
   git: { repositoryPath: string | null; worktreePath: string | null; baseCommit: string | null; headCommit: string | null; status: string; worktreeExists: boolean | null };
   checkpoints: unknown[];
@@ -70,9 +72,10 @@ export function DebugPanel({ snapshot, loading, error, streamState, onRefresh, o
   const slice = snapshot.workflow?.sliceIndex !== null && snapshot.workflow?.sliceIndex !== undefined
     ? String(snapshot.workflow.sliceIndex + 1) + "/" + String(snapshot.workflow.sliceTotal ?? "?") + " · " + (snapshot.workflow.sliceTitle ?? "untitled")
     : "—";
-  const recovery = snapshot.workflow?.recovery.status !== "inactive"
-    ? (snapshot.workflow?.recovery.category ?? "recovery") + " → " + snapshot.workflow?.recovery.resumeAction
+  const recovery = snapshot.workflow && snapshot.workflow.recovery.status !== "inactive"
+    ? (snapshot.workflow.recovery.category ?? "recovery") + " → " + snapshot.workflow.recovery.resumeAction
     : "inactive";
+  const pendingCommand = snapshot.workflow?.pendingCommand ?? null;
 
   return <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#0b0f14] p-4 sm:p-5">
     <div className="mx-auto max-w-6xl space-y-4">
@@ -95,6 +98,17 @@ export function DebugPanel({ snapshot, loading, error, streamState, onRefresh, o
         <Cell label="Runtime" value={activeProcesses ? String(activeProcesses) + " active process(es)" : "no active managed process"} />
       </section>
 
+      {pendingCommand && <section className="rounded-xl border border-white/8 bg-white/[0.015] p-4">
+        <p className="text-xs font-semibold text-slate-200">Pending workflow command</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <Cell label="Action" value={pendingCommand.action} />
+          <Cell label="Command" value={pendingCommand.id} />
+          <Cell label="Target slice" value={pendingCommand.targetSliceIndex === null ? "—" : String(pendingCommand.targetSliceIndex + 1)} />
+          <Cell label="Claim" value={pendingCommand.claimedByTaskId ? "claimed by " + pendingCommand.claimedByTaskId : "unclaimed"} />
+        </div>
+        <p className="mt-2 text-[10px] text-slate-600">Created {new Date(pendingCommand.createdAt).toLocaleString()}{pendingCommand.claimedAt ? " · claimed " + new Date(pendingCommand.claimedAt).toLocaleString() : ""}</p>
+      </section>}
+
       <section className="rounded-xl border border-white/8 bg-white/[0.015] p-4">
         <p className="text-xs font-semibold text-slate-200">Invariant diagnostics</p>
         <p className="mt-1 text-[10px] text-slate-600">{errors} errors · {warnings} warnings · {snapshot.diagnostics.length} reported</p>
@@ -103,7 +117,12 @@ export function DebugPanel({ snapshot, loading, error, streamState, onRefresh, o
 
       <section className="grid gap-3 lg:grid-cols-2">
         <div className="rounded-xl border border-white/8 bg-white/[0.015] p-4"><p className="text-xs font-semibold text-slate-200">Repository</p><div className="mt-3 space-y-2 text-[11px] text-slate-500"><p><span className="text-slate-300">Repository:</span> {snapshot.git.repositoryPath ?? "—"}</p><p><span className="text-slate-300">Worktree:</span> {snapshot.git.worktreePath ?? "—"} {snapshot.git.worktreeExists === false && <span className="text-red-300">missing</span>}</p><p><span className="text-slate-300">HEAD:</span> {snapshot.git.headCommit?.slice(0, 12) ?? "—"} · <span className="text-slate-300">Base:</span> {snapshot.git.baseCommit?.slice(0, 12) ?? "—"}</p><pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-[10px]">{snapshot.git.status || "Working tree clean or unavailable."}</pre></div></div>
-        <div className="rounded-xl border border-white/8 bg-white/[0.015] p-4"><p className="text-xs font-semibold text-slate-200">Context</p>{snapshot.contextPacks[0] ? <div className="mt-3 space-y-2 text-[11px] text-slate-500"><p><span className="text-slate-300">Latest:</span> {snapshot.contextPacks[0].kind} / {snapshot.contextPacks[0].stage}</p><p><span className="text-slate-300">Profile:</span> {snapshot.contextPacks[0].profileId}</p><p><span className="text-slate-300">Authority:</span> {snapshot.contextPacks[0].authority} · workflow {snapshot.contextPacks[0].workflowVersion ? "v" + snapshot.contextPacks[0].workflowVersion : "legacy"}</p><p><span className="text-slate-300">Budget:</span> {snapshot.contextPacks[0].characters.toLocaleString()} / {snapshot.contextPacks[0].budgetCharacters.toLocaleString()} chars</p><p>{snapshot.contextPacks.length} ContextPack(s) · {snapshot.modelContexts.length} model context(s)</p></div> : <p className="mt-3 text-xs text-slate-600">No persisted ContextPack.</p>}</div>
+        <div className="rounded-xl border border-white/8 bg-white/[0.015] p-4"><p className="text-xs font-semibold text-slate-200">Context</p>{snapshot.contextPacks[0] ? <div className="mt-3 space-y-2 text-[11px] text-slate-500"><p><span className="text-slate-300">Latest:</span> {snapshot.contextPacks[0].kind} / {snapshot.contextPacks[0].stage}</p><p><span className="text-slate-300">Profile:</span> {snapshot.contextPacks[0].profileId}</p><p><span className="text-slate-300">Authority:</span> {snapshot.contextPacks[0].authority} · workflow {snapshot.contextPacks[0].workflowVersion ? "v" + snapshot.contextPacks[0].workflowVersion : "legacy"}</p><p><span className="text-slate-300">Budget:</span> {snapshot.contextPacks[0].characters.toLocaleString()} / {snapshot.contextPacks[0].budgetCharacters.toLocaleString()} chars</p><p>{snapshot.contextPacks.length} ContextPack(s) · {snapshot.modelContexts.length} model context(s)</p><details className="rounded border border-white/8 p-2"><summary className="cursor-pointer text-slate-400">Included context ({snapshot.contextPacks[0].manifestCount})</summary><div className="mt-2 max-h-40 space-y-1 overflow-y-auto">{snapshot.contextPacks[0].manifest.map((item) => <p key={item.path} className="break-all text-[10px]"><span className="text-slate-300">{item.path}</span> — {item.reason}</p>)}</div></details></div> : <p className="mt-3 text-xs text-slate-600">No persisted ContextPack.</p>}</div>
+      </section>
+
+      <section className="rounded-xl border border-white/8 bg-white/[0.015] p-4">
+        <p className="text-xs font-semibold text-slate-200">Model requests</p>
+        <div className="mt-3 space-y-2">{snapshot.modelContexts.length ? snapshot.modelContexts.map((record) => <div key={record.id} className="rounded border border-white/8 p-2 text-[10px] text-slate-500"><span className="text-slate-200">{record.role}</span> · {record.model} · {record.manifestCount} context items · {new Date(record.createdAt).toLocaleTimeString()}<p className="mt-1 truncate font-mono text-slate-700">{record.inputSha256}</p></div>) : <p className="text-xs text-slate-600">No recorded model context.</p>}</div>
       </section>
 
       <section className="rounded-xl border border-white/8 bg-white/[0.015] p-4"><p className="text-xs font-semibold text-slate-200">Processes</p><div className="mt-3 space-y-2">{snapshot.processes.length ? snapshot.processes.slice().reverse().map((process) => <details key={process.id} className="rounded border border-white/8 p-3"><summary className="cursor-pointer text-[11px] text-slate-400"><span className="text-slate-200">{process.label}</span> · {process.kind} · {process.status}</summary><div className="mt-2 text-[10px] text-slate-600"><p className="font-mono">{process.command} {process.args.join(" ")}</p>{process.stderr && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-red-200/70">{process.stderr}</pre>}{process.stdout && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2">{process.stdout}</pre>}</div></details>) : <p className="text-xs text-slate-600">No managed process evidence.</p>}</div></section>
