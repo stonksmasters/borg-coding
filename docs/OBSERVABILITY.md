@@ -160,3 +160,17 @@ Execution observability is working when a user can glance at BORG during a long 
 - why is it doing that;
 - did it work;
 - what happens next.
+
+
+## Canonical workflow event stream
+
+Raw task telemetry is normalized in Core before presentation. `GET /api/tasks/:taskId/workflow-events` returns stable `WorkflowEvent` records with:
+
+- project/task identity and workflow version;
+- category and stable kind;
+- status;
+- title/detail;
+- timestamp;
+- raw `sourceType` and payload provenance.
+
+The run-status projection uses the same normalized event model. UI code should not derive lifecycle truth from arbitrary raw event names. Durable workflow, verification, and recovery fields remain the authority; canonical events explain what changed.
