@@ -9,7 +9,6 @@ import {
   type RoleAssignment,
   type Task,
   type TaskCheckpoint,
-  type TaskState,
   type WorkflowState,
 } from "../../../packages/core/src/contracts.ts";
 import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
@@ -59,7 +58,7 @@ import {
 } from "../../../packages/design-intelligence/src/index.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
-import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
+import { classifyImplementationFailure, compactRecoveryEvidence } from "./recovery-policy.ts";
 import { VerificationService } from "./verification-service.ts";
 import { QualityGateService } from "./quality-gate-service.ts";
 import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
