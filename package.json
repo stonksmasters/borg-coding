@@ -20,7 +20,10 @@
     "desktop:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-desktop.ps1",
     "desktop:sync": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-desktop.ps1 -Apply",
     "desktop:lifecycle-test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-desktop-lifecycle.ps1",
-    "remote:dev": "node --experimental-strip-types apps/server/src/remote-gateway.ts"
+    "remote:dev": "node --experimental-strip-types apps/server/src/remote-gateway.ts",
+    "verify:core": "node scripts/verify-local.mjs --core-only",
+    "verify:all": "node scripts/verify-local.mjs",
+    "verify:clean": "node scripts/verify-local.mjs --fresh-install"
   },
   "dependencies": {
     "axe-core": "4.13.0",
