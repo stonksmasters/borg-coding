@@ -583,6 +583,18 @@ export class ExecutionOrchestrator {
         if (visualDecision.action === "repair_current_slice") {
           finishRole(activeRoleAssignment, "completed", emit);
           activeRoleAssignment = null;
+          createCheckpointSnapshot(task, "pre_repair");
+
+          const requestedQualityAction = visualDecision.source === "local_vision"
+            ? "technical_repair" as const
+            : "design_refinement" as const;
+          const qualityOutcome = workflow.applyQualityOutcome(task, {
+            action: requestedQualityAction,
+            reason: visualDecision.reason,
+            maximumRepairAttempts: maxRepairAttempts,
+            maximumDesignRefinements: maxDesignRefinements,
+          });
+          adoptCoreMutation(qualityOutcome);
 
           if (visualDecision.source === "local_vision") {
             recordHandoff({
@@ -597,36 +609,35 @@ export class ExecutionOrchestrator {
             recordCompletedReview(task, visualDecision.findings, "repair", visualDecision.reason);
             emit({ type: "review.history.updated" });
             emit({ type: "stage.updated", stage: "Verification", status: "failed" });
-            if (task.attempts >= maxRepairAttempts) {
-              task = transitionTask(task, "BLOCKED", emit);
+            if (qualityOutcome.action === "block") {
               appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", {
                 attempts: task.attempts,
                 visionReview: visualDecision.visionReview,
               });
-              emit({ type: "stream.blocked", message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.` });
+              emit({
+                type: "stream.blocked",
+                message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.`,
+              });
               return;
             }
             repairEvidence = visualDecision.repairEvidence;
-            task = scheduleRepair(task, emit, visualDecision.reason);
-            refreshTaskContext();
             continue;
           }
 
           emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
-          const refinements = workflow.get(task.projectId)?.designRefinementAttempt ?? 0;
-          if (refinements >= maxDesignRefinements) {
-            task = transitionTask(task, "BLOCKED", emit);
+          if (qualityOutcome.action === "block") {
             appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", {
-              refinements,
+              refinements: qualityOutcome.workflow.designRefinementAttempt,
               maximum: maxDesignRefinements,
               review: visualDecision.designReview,
             });
-            emit({ type: "stream.blocked", message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
+            emit({
+              type: "stream.blocked",
+              message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.`,
+            });
             return;
           }
           repairEvidence = visualDecision.repairEvidence;
-          task = scheduleDesignRefinement(task, emit, visualDecision.reason);
-          refreshTaskContext();
           continue;
         }
 
@@ -636,7 +647,13 @@ export class ExecutionOrchestrator {
           emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
 
           if (!projectPlan || !sliceState || !websiteProject) {
-            task = transitionTask(task, "BLOCKED", emit);
+            const blocked = workflow.applyQualityOutcome(task, {
+              action: "block",
+              reason: visualDecision.reason,
+              maximumRepairAttempts: maxRepairAttempts,
+              maximumDesignRefinements: maxDesignRefinements,
+            });
+            adoptCoreMutation(blocked);
             appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
               reason: visualDecision.reason,
               review: visualDecision.designReview,
@@ -648,14 +665,14 @@ export class ExecutionOrchestrator {
 
           const revisionReason = visualDecision.reason;
           const checkpoint = createCheckpointSnapshot(task, "pre_repair");
-          const recovered = workflow.markRecoveryRequired(task, {
-            category: "plan_repair_required",
-            checkpointId: checkpoint.id,
-            resumeAction: "replan",
+          const recovered = workflow.applyQualityOutcome(task, {
+            action: "replan",
             reason: revisionReason,
+            maximumRepairAttempts: maxRepairAttempts,
+            maximumDesignRefinements: maxDesignRefinements,
+            checkpointId: checkpoint.id,
           });
-          task = recovered.task;
-          syncWorkflowProjection(task, recovered.workflow);
+          adoptCoreMutation(recovered);
           appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", {
             review: visualDecision.designReview,
             repairScope: visualDecision.scope,
@@ -671,8 +688,7 @@ export class ExecutionOrchestrator {
           });
 
           const revising = workflow.beginPlanRevision(task, revisionReason);
-          task = revising.task;
-          syncWorkflowProjection(task, revising.workflow);
+          adoptCoreMutation(revising);
           emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The current slice cannot satisfy the product-quality review. Revising the project plan without discarding the existing worktree." });
 
           const revisionModel = teamPolicies.modelFor(teamPolicy, "architect", model, primaryDiscipline);
@@ -702,8 +718,7 @@ export class ExecutionOrchestrator {
               resumeAction: "replan",
               reason: revision.reason,
             });
-            task = failedRevision.task;
-            syncWorkflowProjection(task, failedRevision.workflow);
+            adoptCoreMutation(failedRevision);
             appendTaskEvent(taskId, "PLAN_REVISION_FAILED", {
               reason: revision.reason,
               validation: revision.validation,
@@ -773,7 +788,13 @@ export class ExecutionOrchestrator {
         if (visualDecision.action === "block") {
           finishRole(activeRoleAssignment, "completed", emit);
           activeRoleAssignment = null;
-          task = transitionTask(task, "BLOCKED", emit);
+          const blocked = workflow.applyQualityOutcome(task, {
+            action: "block",
+            reason: visualDecision.reason,
+            maximumRepairAttempts: maxRepairAttempts,
+            maximumDesignRefinements: maxDesignRefinements,
+          });
+          adoptCoreMutation(blocked);
           emit({
             type: "design.review.blocked",
             designReview: visualDecision.designReview,
@@ -800,8 +821,13 @@ export class ExecutionOrchestrator {
         }, emit);
         activeRoleAssignment = null;
         emit({ type: "stage.updated", stage: "Verification", status: "complete" });
-        task = transitionTask(task, "REVIEWING", emit);
-        refreshTaskContext();
+        const qualityPass = workflow.applyQualityOutcome(task, {
+          action: "pass",
+          reason: "Visual and product quality gates passed.",
+          maximumRepairAttempts: maxRepairAttempts,
+          maximumDesignRefinements: maxDesignRefinements,
+        });
+        adoptCoreMutation(qualityPass, "verification_complete");
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_reviewing", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Verification passed. Fresh review and visual quality gates are running." });
         emit({ type: "stage.updated", stage: "Review", status: "active" });
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
