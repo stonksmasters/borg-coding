@@ -162,7 +162,6 @@ const executionOrchestrator = new ExecutionOrchestrator({
   workflow,
   tools,
   teamPolicies,
-  vision,
   access,
   verificationService,
   qualityGateService,
