@@ -145,7 +145,7 @@ test("ProjectPlanRevisionService projects only the Core-authoritative proposed p
     assert.equal(result.plan.status, "proposed");
     assert.equal(result.coverage.valid, true);
     const planDoc = readFileSync(join(root, ".localcode", "build", "plan.md"), "utf8");
-    assert.match(planDoc, /Revision: 5/i);
+    assert.match(planDoc, /Revision 5/i);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
