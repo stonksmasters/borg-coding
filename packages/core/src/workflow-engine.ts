@@ -546,6 +546,62 @@ export class WorkflowEngine {
     return { ...result, action: "verify" };
   }
 
+  applyExecutionFailure(
+    task: Task,
+    reason: string,
+  ): { task: Task; workflow: WorkflowState; action: "failed" | "recover" | "block" } {
+    const current = this.requireTask(task);
+    if (task.state === "RECOVERY_REQUIRED") {
+      return { task, workflow: current, action: "recover" };
+    }
+    if (task.state === "BLOCKED") {
+      return { task, workflow: current, action: "block" };
+    }
+    if (task.state === "FAILED") {
+      return { task, workflow: current, action: "failed" };
+    }
+    assertTransition(task.state, "FAILED");
+    const now = new Date().toISOString();
+    const updatedTask = { ...task, state: "FAILED" as const, updatedAt: now };
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      status: "failed",
+      nextAction: "recover",
+      pendingCommand: null,
+      attemptPhase: null,
+      recoveryCategory: "execution_failure",
+      recovery: {
+        status: "blocked",
+        category: "execution_failure",
+        previousTaskState: task.state,
+        checkpointId: current.recovery.checkpointId,
+        resumeAction: "inspect_worktree",
+        reason: reason.trim().slice(0, 4_000),
+        updatedAt: now,
+      },
+      detail: reason.trim().slice(0, 4_000),
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    this.store.commitWorkflowMutation({
+      task: updatedTask,
+      state: workflow,
+      events: [
+        taskEvent(task.id, "WORKFLOW_EXECUTION_FAILED", {
+          previousState: task.state,
+          reason: workflow.detail,
+          workflowVersion: workflow.version,
+        }, now),
+        taskEvent(task.id, "TASK_STATE_CHANGED", {
+          from: task.state,
+          to: "FAILED",
+          workflowVersion: workflow.version,
+        }, now),
+      ],
+    });
+    return { task: updatedTask, workflow, action: "failed" };
+  }
+
   applyRecoveryDecision(
     task: Task,
     decision: RecoveryDecision,
