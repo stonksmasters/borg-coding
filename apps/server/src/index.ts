@@ -189,7 +189,6 @@ const executionOrchestrator = new ExecutionOrchestrator({
   scheduleDesignRefinement,
   recordCompletedReview,
   recordMemoryNote,
-  designRefinementCount,
   contextSourceHints,
 });
 
@@ -456,11 +455,6 @@ function latestDesignBrief(taskId: string): DesignBrief | null {
   return parsed.success ? parsed.data : null;
 }
 
-function designRefinementCount(taskId: string): number {
-  const events = tasks.listEvents(taskId);
-  const latestRevision = events.findLastIndex((event) => event.type === "PROJECT_PLAN_REVISION_APPROVED");
-  return events.slice(latestRevision + 1).filter((event) => event.type === "DESIGN_REFINEMENT_SCHEDULED").length;
-}
 
 function recordMemoryNote(root: string, note: MemoryNote) {
   try { memory.recordNote(root, note); }
@@ -868,11 +862,16 @@ function recordHandoff(input: {
 
 function scheduleDesignRefinement(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
   createCheckpointSnapshot(task, "pre_repair");
-  const updated = transitionTask(task, "IMPLEMENTING", emit);
-  const refinement = designRefinementCount(task.id) + 1;
-  appendTaskEvent(task.id, "DESIGN_REFINEMENT_SCHEDULED", { refinement, maximum: maxDesignRefinements, reason });
-  emit({ type: "design.refinement.scheduled", refinement, maximum: maxDesignRefinements, message: reason });
-  return updated;
+  const result = workflow.beginDesignRefinement(task, { reason, maximum: maxDesignRefinements });
+  syncWorkflowProjection(result.task, result.workflow);
+  emit({
+    type: "design.refinement.scheduled",
+    refinement: result.workflow.designRefinementAttempt,
+    maximum: maxDesignRefinements,
+    message: reason,
+  });
+  emit({ type: "task.state", taskId: task.id, state: result.task.state, workflow: result.workflow });
+  return result.task;
 }
 
 function recoveryPayload(updated: Task, reason: string, recovery?: RecoveryDecision) {
