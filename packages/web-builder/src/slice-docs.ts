@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileS
 import { join, resolve } from "node:path";
 import type { WorkflowState } from "../../core/src/contracts.ts";
 import type { ProjectComponent, ProjectPage, ProjectPlan, ProjectSlice, ProjectStyleSystem } from "../../core/src/project-domain.ts";
-import { fallbackFlows } from "./blueprint-planning.ts";
+import { briefForcesFrontendOnly, fallbackFlows, normalizeStyleDirection } from "./blueprint-planning.ts";
 import { initializeProjectModel } from "./project-model.ts";
 import { parseStructuredJson, structuredJsonArtifactBody } from "./structured-json.ts";
 
@@ -542,7 +542,9 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
   const seller = requestedByBrief(text, /\b(?:seller|merchant|storefront|inventory|sku)\b/i);
   const admin = requestedByBrief(text, /\b(?:admin|moderation|role|permission)\b/i);
   const accounts = requestedByBrief(text, /\b(?:account|auth|login|sign.?up|profile|order|wishlist)\b/i);
-  const backendRequired = requestedByBrief(text, /\b(?:account|auth|login|database|persist|checkout|payment|booking|order|cart|upload|message|api|integration|dashboard|seller|admin)\b/i);
+  const backendRequired = briefForcesFrontendOnly(brief)
+    ? false
+    : requestedByBrief(text, /\b(?:account|auth|login|database|persist|checkout|payment|booking|order|cart|upload|message|api|integration|dashboard|seller|admin)\b/i);
   const slices: ProjectSlice[] = [];
 
   if (commerce) {
@@ -663,6 +665,9 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
 
 export function parseProjectPlanResult(answer: string, brief: string, template = ""): ProjectPlanParseResult {
   const fallback = fallbackProjectPlan(brief, template);
+  const frontendOnly = briefForcesFrontendOnly(brief);
+  const resolvedBackendRequired = (value: unknown) =>
+    frontendOnly ? false : typeof value === "boolean" ? value : fallback.backendRequired;
   const fallbackValidation = validateProjectPlanCoverage(fallback, brief);
   const selectFallback = (reason: string, candidateValidation: ProjectPlanValidation = fallbackValidation): ProjectPlanParseResult => ({
     plan: fallback,
@@ -689,7 +694,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
           features: list(parsedRaw.features, list(nestedMap?.features)),
           sitemap: Array.isArray(parsedRaw.sitemap) && parsedRaw.sitemap.length ? parsedRaw.sitemap : nestedMap?.sitemap,
           flows: Array.isArray(parsedRaw.flows) && parsedRaw.flows.length ? parsedRaw.flows : nestedMap?.flows,
-          backendRequired: typeof parsedRaw.backendRequired === "boolean" ? parsedRaw.backendRequired : nestedMap?.backendRequired,
+          backendRequired: resolvedBackendRequired(typeof parsedRaw.backendRequired === "boolean" ? parsedRaw.backendRequired : nestedMap?.backendRequired),
           styles: parsedRaw.styles ?? nestedStyles,
           slices: Array.isArray(parsedRaw.slices) && parsedRaw.slices.length
             ? parsedRaw.slices
@@ -781,7 +786,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
             };
           }) : fallback.components,
           styles: {
-            direction: clean((raw.styles as Record<string, unknown> | undefined)?.direction, fallback.styles.direction),
+            direction: normalizeStyleDirection((raw.styles as Record<string, unknown> | undefined)?.direction) || fallback.styles.direction,
             colors: list((raw.styles as Record<string, unknown> | undefined)?.colors, fallback.styles.colors),
             typography: list((raw.styles as Record<string, unknown> | undefined)?.typography, fallback.styles.typography),
             spacing: list((raw.styles as Record<string, unknown> | undefined)?.spacing, fallback.styles.spacing),
@@ -793,8 +798,8 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
             accessibility: list((raw.styles as Record<string, unknown> | undefined)?.accessibility, fallback.styles.accessibility),
             avoid: list((raw.styles as Record<string, unknown> | undefined)?.avoid, fallback.styles.avoid),
           },
-          visualDirection: clean(raw.visualDirection, clean((raw.styles as Record<string, unknown> | undefined)?.direction, fallback.visualDirection)),
-          backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallback.backendRequired,
+          visualDirection: normalizeStyleDirection(raw.visualDirection) || normalizeStyleDirection((raw.styles as Record<string, unknown> | undefined)?.direction) || fallback.visualDirection,
+          backendRequired: resolvedBackendRequired(raw.backendRequired),
           slices: repairedSlices,
           acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
         },
@@ -845,7 +850,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
             };
           }) : fallback.components,
           styles: {
-            direction: clean((raw.styles as Record<string, unknown> | undefined)?.direction, fallback.styles.direction),
+            direction: normalizeStyleDirection((raw.styles as Record<string, unknown> | undefined)?.direction) || fallback.styles.direction,
             colors: list((raw.styles as Record<string, unknown> | undefined)?.colors, fallback.styles.colors),
             typography: list((raw.styles as Record<string, unknown> | undefined)?.typography, fallback.styles.typography),
             spacing: list((raw.styles as Record<string, unknown> | undefined)?.spacing, fallback.styles.spacing),
@@ -857,8 +862,8 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
             accessibility: list((raw.styles as Record<string, unknown> | undefined)?.accessibility, fallback.styles.accessibility),
             avoid: list((raw.styles as Record<string, unknown> | undefined)?.avoid, fallback.styles.avoid),
           },
-          visualDirection: clean(raw.visualDirection, clean((raw.styles as Record<string, unknown> | undefined)?.direction, fallback.visualDirection)),
-          backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallback.backendRequired,
+          visualDirection: normalizeStyleDirection(raw.visualDirection) || normalizeStyleDirection((raw.styles as Record<string, unknown> | undefined)?.direction) || fallback.visualDirection,
+          backendRequired: resolvedBackendRequired(raw.backendRequired),
           slices: repairedSlices,
           acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
         }, brief),
@@ -927,7 +932,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
 
     const rawStyles = raw.styles && typeof raw.styles === "object" && !Array.isArray(raw.styles) ? raw.styles as Record<string, unknown> : {};
     const styles: ProjectStyleSystem = {
-      direction: clean(rawStyles.direction, clean(raw.visualDirection, fallback.styles.direction)),
+      direction: normalizeStyleDirection(rawStyles.direction) || normalizeStyleDirection(raw.visualDirection) || fallback.styles.direction,
       colors: list(rawStyles.colors, fallback.styles.colors),
       typography: list(rawStyles.typography, fallback.styles.typography),
       spacing: list(rawStyles.spacing, fallback.styles.spacing),
@@ -950,8 +955,8 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
       flows,
       components,
       styles,
-      visualDirection: clean(raw.visualDirection, styles.direction),
-      backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallback.backendRequired,
+      visualDirection: normalizeStyleDirection(raw.visualDirection) || styles.direction,
+      backendRequired: resolvedBackendRequired(raw.backendRequired),
       slices,
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
