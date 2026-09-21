@@ -552,8 +552,49 @@ export class WorkflowEngine {
     input: { retryKind: "implementation" | "technical_repair"; eventType: "IMPLEMENTATION_RETRY_SCHEDULED" | "REPAIR_SCHEDULED" },
   ): { task: Task; workflow: WorkflowState; action: "retry" | "block" } {
     if (decision.disposition === "fatal") {
-      const blocked = this.transition(task, "BLOCKED");
-      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+      assertTransition(task.state, "BLOCKED");
+      const current = this.requireTask(task);
+      const now = new Date().toISOString();
+      const updatedTask = { ...task, state: "BLOCKED" as const, updatedAt: now };
+      const workflow = WorkflowStateSchema.parse({
+        ...current,
+        status: "blocked",
+        nextAction: "recover",
+        pendingCommand: null,
+        attemptPhase: null,
+        recoveryCategory: decision.category,
+        recovery: {
+          status: "blocked",
+          category: decision.category,
+          previousTaskState: task.state,
+          checkpointId: current.recovery.checkpointId,
+          resumeAction: "inspect_worktree",
+          reason: decision.action.trim().slice(0, 4_000),
+          updatedAt: now,
+        },
+        detail: decision.reason.trim().slice(0, 4_000),
+        version: current.version + 1,
+        updatedAt: now,
+      });
+      this.store.commitWorkflowMutation({
+        task: updatedTask,
+        state: workflow,
+        events: [
+          taskEvent(task.id, "WORKFLOW_RECOVERY_UPDATED", {
+            category: decision.category,
+            detail: decision.reason,
+            action: decision.action,
+            fatal: true,
+            workflowVersion: workflow.version,
+          }, now),
+          taskEvent(task.id, "TASK_STATE_CHANGED", {
+            from: task.state,
+            to: "BLOCKED",
+            workflowVersion: workflow.version,
+          }, now),
+        ],
+      });
+      return { task: updatedTask, workflow, action: "block" };
     }
     const retried = this.retry(task, {
       reason: decision.reason,
