@@ -420,28 +420,31 @@ export class ExecutionOrchestrator {
           const initialSourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
           const repairDelta = preAttemptSnapshot.fingerprint !== postAttemptSnapshot.fingerprint;
           const explainedNoMutation = /\b(?:no (?:source )?(?:change|mutation) (?:is )?required because|no mutation needed because|already resolved and no (?:source )?change is required)\b/i.test(answer);
-          const sourceProgress = attemptStartedInRepair ? repairDelta || explainedNoMutation : initialSourceProgress;
-          if (attemptStartedInRepair && !repairDelta && explainedNoMutation) {
-            appendTaskEvent(taskId, "REPAIR_NO_MUTATION_EXPLAINED", { attempt: task.attempts, answer: answer.slice(0, 4_000) });
+          const toolFailures = directToolFailures
+            .map((value) => String(value).slice(0, 2_000))
+            .filter(Boolean)
+            .slice(-5);
+          const fatalRepairFailure = attemptStartedInRepair
+            ? toolFailures
+                .map((failure) => classifyImplementationFailure(failure, 0, maxRepairAttempts))
+                .find((decision) => ["path_escape", "approval_violation", "repository_invalid", "permission_denied"].includes(decision.category))
+            : null;
+          const verifyWithoutMutation = attemptStartedInRepair && !repairDelta && !fatalRepairFailure;
+          const sourceProgress = attemptStartedInRepair ? repairDelta : initialSourceProgress;
+          if (attemptStartedInRepair && !repairDelta) {
+            appendTaskEvent(taskId, explainedNoMutation ? "REPAIR_NO_MUTATION_EXPLAINED" : "REPAIR_NO_MUTATION_VERIFICATION_REQUIRED", {
+              attempt: task.attempts,
+              answer: answer.slice(0, 4_000),
+              toolFailures,
+            });
           }
-          if (!sourceProgress) {
+          if ((!sourceProgress && !verifyWithoutMutation) || fatalRepairFailure) {
             if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
             activeRoleAssignment = null;
-            const persistedToolFailures = tasks.listEvents(taskId)
-              .filter((event) => event.type === "TOOL_FAILED")
-              .slice(-5)
-              .map((event) => {
-                const payload = event.payload as Record<string, unknown>;
-                return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
-              });
-            const toolFailures = [...directToolFailures, ...persistedToolFailures]
-              .map((value) => String(value).slice(0, 2_000))
-              .filter(Boolean)
-              .slice(-5);
             const fallbackFailure = attemptStartedInRepair
-              ? "The repair attempt completed without changing the source diff relative to the start of this repair pass."
+              ? "The repair attempt did not produce a source mutation and cannot proceed without resolving the current fatal tool failure."
               : "The implementation attempt completed without any source-file progress.";
-            const decision = classifyObservedToolFailures(
+            const decision = fatalRepairFailure ?? classifyObservedToolFailures(
               toolFailures,
               task.attempts,
               maxRepairAttempts,
