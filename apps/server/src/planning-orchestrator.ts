@@ -550,7 +550,7 @@ export class PlanningOrchestrator {
         mapAnswer = (await this.deps.runAgent({
           ...mapRequest,
           messages: syntaxFailure
-            ? [mapRequest.messages[0], { role: "user" as const, content: repairPrompt }]
+            ? [{ role: "system" as const, content: repairPrompt }]
             : [
                 ...mapRequest.messages,
                 { role: "assistant" as const, content: mapAnswer },
@@ -707,7 +707,7 @@ export class PlanningOrchestrator {
           styleAnswer = (await this.deps.runAgent({
             ...styleRequest,
             messages: syntaxFailure
-              ? [styleRequest.messages[0], { role: "user" as const, content: repairPrompt }]
+              ? [{ role: "system" as const, content: repairPrompt }]
               : [
                   ...styleRequest.messages,
                   { role: "assistant" as const, content: styleAnswer },
@@ -890,9 +890,8 @@ export class PlanningOrchestrator {
           const repaired = await this.deps.runAgent({
             ...architectRequest,
             messages: [
-              architectRequest.messages[0],
               {
-                role: "user" as const,
+                role: "system" as const,
                 content: structuredJsonSyntaxRepairPrompt({
                   tag: "borg-project-plan",
                   parserError: parseResult.fallbackReason ?? "Project-plan JSON was invalid.",
