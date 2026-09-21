@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   parseStructuredJson,
+  structuredJsonArtifactBody,
   structuredJsonSyntaxRepairPrompt,
   taggedJsonBody,
 } from "../packages/web-builder/src/structured-json.ts";
@@ -47,6 +48,17 @@ test("structured JSON repair accepts fenced JSON and trims artifact noise", () =
   const parsed = parseStructuredJson<{ ok: boolean }>(["```json", '{"ok":true}', "```"].join(String.fromCharCode(10)));
   assert.equal(parsed.source, "repaired");
   assert.deepEqual(parsed.value, { ok: true });
+});
+
+test("structured artifact extraction accepts raw and fenced JSON without XML-style markers", () => {
+  const raw = structuredJsonArtifactBody('{"siteGoal":"Driftline"}', "borg-product-map");
+  assert.equal(raw.framed, false);
+  assert.equal(raw.body, '{"siteGoal":"Driftline"}');
+  assert.match(raw.framingRepair ?? "", /without <borg-product-map> framing/i);
+
+  const fenced = structuredJsonArtifactBody('Here is the result:\n\`\`\`json\n{"ok":true}\n\`\`\`', "borg-product-map");
+  assert.equal(fenced.framed, false);
+  assert.equal(fenced.body, '{"ok":true}');
 });
 
 test("syntax repair prompt preserves the malformed artifact instead of asking for regeneration", () => {
