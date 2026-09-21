@@ -567,14 +567,16 @@ export class PlanningOrchestrator {
         tools,
         mode,
         role: "architect" as const,
-        disciplines: route.disciplines,
+        disciplines: ["frontend"] as EngineeringDiscipline[],
         streamText: false,
+        allowTools: false,
+        maxRequestCharacters: 34_000,
         emit,
+        onRequestBody: (body: string) => this.deps.recordModelInput(task.id, "blueprint_design_system", architectModel, null, [], body),
         messages: [
-          { role: "system" as const, content: `${stylePrompt}\n\n<approved_context>\n${repositoryContext}\n</approved_context>` },
-          { role: "user" as const, content: "Produce only the Stage 2 global design-system artifact." },
+          { role: "system" as const, content: stylePrompt },
+          { role: "user" as const, content: "Produce only the Stage 2 global design-system artifact. Do not research, inspect files, or change the frozen Product Map." },
         ],
-        limits: { toolRounds: 2, toolCalls: 3 },
       };
       let styleAnswer = (await this.deps.runAgent(styleRequest)).answer;
       let styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
@@ -587,12 +589,22 @@ export class PlanningOrchestrator {
             { role: "assistant" as const, content: styleAnswer },
             { role: "user" as const, content: `The design system was too vague or invalid: ${styleResult.reason ?? "unknown reason"}. Return a concrete <borg-style-system> with semantic color values, numeric typography/spacing scales, layout constraints, responsive rules, and anti-patterns.` },
           ],
-          limits: { toolRounds: 1, toolCalls: 1 },
         })).answer;
         styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
       }
+      if (styleResult.source === "fallback") {
+        return failBlueprintStage(
+          "Design System",
+          "blueprint_design_system_invalid",
+          `Global Design System could not be generated after a bounded repair: ${styleResult.reason ?? "unknown validation failure"}`,
+        );
+      }
       stagedStyleSystem = styleResult.styles;
-      appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_COMPLETED", { source: styleResult.source, reason: styleResult.reason });
+      appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_COMPLETED", {
+        source: styleResult.source,
+        reason: styleResult.reason,
+        artifact: stagedStyleSystem,
+      });
       repositoryContext += `\n\nFROZEN GLOBAL STYLE SYSTEM (Stage 2 authority for component architecture):\n${JSON.stringify(stagedStyleSystem, null, 2)}`;
       sliceDirective = blueprintCompletionPrompt({
         brief: planningBrief,
