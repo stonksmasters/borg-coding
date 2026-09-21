@@ -107,7 +107,7 @@ export const ProjectPlanSchema = z.object({
   // Defaults preserve restart compatibility with workflow snapshots created before the
   // sitemap/component/style inventories became first-class project state.
   sitemap: z.array(ProjectPageSchema).default([]),
-  flows: z.array(ProjectUserFlowSchema).default([]),
+  flows: z.array(ProjectUserFlowSchema).optional(),
   components: z.array(ProjectComponentSchema).default([]),
   styles: ProjectStyleSystemSchema.default(emptyProjectStyleSystem),
   visualDirection: z.string(),
