@@ -29,6 +29,7 @@ export type ProjectPlanRevisionInput = {
   tools: ToolBroker;
   disciplines: readonly EngineeringDiscipline[];
   emit: ProjectPlanRevisionEventSink;
+  appendTaskEvent?: (type: string, payload: Record<string, unknown>) => void;
   onRequestBody?: (body: string) => void;
 };
 
@@ -104,6 +105,10 @@ export class ProjectPlanRevisionService {
 
     if (parsed.source === "fallback") {
       semanticRetryUsed = true;
+      input.appendTaskEvent?.("PROJECT_PLAN_REVISION_SEMANTIC_RETRY", {
+        reason: parsed.fallbackReason,
+        validation: parsed.validation,
+      });
       input.emit({
         type: "project.plan.revision.semantic_retry",
         reason: parsed.fallbackReason,
