@@ -919,7 +919,13 @@ export class PlanningOrchestrator {
           }
         }
 
-        if (parseResult.source === "fallback" && (parseResult.retryRecommended || blueprintCompletionPlanning)) {
+        const projectPlanStillHasSyntaxFailure = parseResult.source === "fallback"
+          && /Planner project-plan JSON could not be parsed:/i.test(parseResult.fallbackReason ?? "");
+        if (
+          parseResult.source === "fallback"
+          && !projectPlanStillHasSyntaxFailure
+          && (parseResult.retryRecommended || blueprintCompletionPlanning)
+        ) {
           appendTaskEvent(task.id, "PROJECT_PLAN_SEMANTIC_RETRY", {
             reason: parseResult.fallbackReason,
             validation: parseResult.validation,
