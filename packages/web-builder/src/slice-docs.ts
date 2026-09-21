@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileS
 import { join, resolve } from "node:path";
 import type { WorkflowState } from "../../core/src/contracts.ts";
 import type { ProjectComponent, ProjectPage, ProjectPlan, ProjectSlice, ProjectStyleSystem } from "../../core/src/project-domain.ts";
+import { fallbackFlows } from "./blueprint-planning.ts";
 import { initializeProjectModel } from "./project-model.ts";
 
 export type SliceAction = "initial" | "revise" | "advance";
@@ -465,6 +466,7 @@ export function readProjectPlan(root: string): ProjectPlan | null {
       ...(value as ProjectPlan),
       pages: pages.length ? pages : sitemap.map((page) => page.name),
       sitemap,
+      flows: Array.isArray(value.flows) ? value.flows : fallbackFlows(sitemap),
       components,
       styles: value.styles ?? fallbackStyles(false),
     };
@@ -575,6 +577,7 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
     pages,
     features,
     sitemap,
+    flows: fallbackFlows(sitemap),
     components,
     styles: fallbackStyles(commerce),
     visualDirection: commerce ? "Premium, mobile-first commercial product design with immersive discovery and trustworthy purchase flows." : "Follow the approved brief and Design Director direction; establish a coherent reusable visual system.",
@@ -643,6 +646,17 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
     }));
 
     const pageIds = new Set(sitemap.map((page) => page.id));
+    const rawFlows = Array.isArray(raw.flows) ? raw.flows.slice(0, 20) : [];
+    const flows = rawFlows.length ? rawFlows.map((item, index) => {
+      const value = item as Record<string, unknown>;
+      const name = clean(value.name, `Journey ${index + 1}`);
+      return {
+        id: slug(clean(value.id, name), index),
+        name,
+        purpose: clean(value.purpose, `${name} user journey.`),
+        steps: list(value.steps).map((pageId, pageIndex) => slug(pageId, pageIndex)).filter((pageId) => pageIds.has(pageId)),
+      };
+    }).filter((flow) => flow.steps.length >= 2) : fallbackFlows(sitemap);
     const rawComponents = Array.isArray(raw.components) ? raw.components.slice(0, 80) : [];
     const components = rawComponents.length ? rawComponents.map((item, index) => {
       const value = item as Record<string, unknown>;
@@ -688,6 +702,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
       pages: sitemap.map((page) => page.name),
       features: list(raw.features, fallback.features),
       sitemap,
+      flows,
       components,
       styles,
       visualDirection: clean(raw.visualDirection, styles.direction),
@@ -780,14 +795,14 @@ export function projectPlanningPrompt(brief: string): string {
   return `OUTER WEBSITE PHASE PLAN. This is the one full planning loop for the frontend phase. Inspect the brief and approved repository context, then plan the COMPLETE website before implementation. Do not implement anything.
 
 Your plan has three first-class structure artifacts:
-1. SITEMAP: enumerate every route/page the finished website should contain. Each page needs a stable id, route, purpose, ordered sections, componentIds, and page-level acceptance criteria. Do not collapse a multi-page product into "pages required by the brief."
+1. SITEMAP + USER FLOWS: enumerate every route/page the finished website should contain and the important user journeys between stable page ids. Each page needs a stable id, route, purpose, ordered sections, componentIds, and page-level acceptance criteria. Do not collapse a multi-page product into "pages required by the brief."
 2. COMPONENT INVENTORY: enumerate the reusable/buildable layout, section, UI, and feature components needed for the sitemap. Each component needs a stable id, purpose, kind, page usage, variants, and acceptance criteria. This inventory is the future authority for component-focused workspaces.
 3. GLOBAL STYLE SYSTEM: define site-wide visual rules independently from any single component: color roles, typography, spacing, radii, shadows, layout principles, motion, responsive behavior, accessibility, and explicit anti-patterns. Style feedback must be able to change this system without redefining page/component behavior.
 
 Then create bounded implementation slices that cover the sitemap and component inventory. Assign every major page section and planned component to at least one slice. Put shell/navigation and the primary entry experience early; include a final cross-page review slice. Every slice must have one concrete user-visible outcome and fit in one bounded implementation/verification session.
 
 End your response with exactly one machine-readable block using this shape:
-<borg-project-plan>{"siteGoal":"...","audience":"...","pages":["Home"],"features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["Navigation","Hero"],"componentIds":["site-header","hero"],"acceptanceCriteria":["..."]}],"components":[{"id":"site-header","name":"Site Header","kind":"layout","purpose":"...","usedBy":["home"],"variants":["desktop","mobile"],"acceptanceCriteria":["..."]}],"styles":{"direction":"...","colors":["..."],"typography":["..."],"spacing":["..."],"radii":["..."],"shadows":["..."],"layoutPrinciples":["..."],"motion":["..."],"responsive":["..."],"accessibility":["..."],"avoid":["..."]},"visualDirection":"...","backendRequired":false,"slices":[{"id":"...","title":"...","outcome":"...","scope":["..."],"acceptanceCriteria":["..."]}],"acceptanceCriteria":["..."]}</borg-project-plan>
+<borg-project-plan>{"siteGoal":"...","audience":"...","pages":["Home"],"features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["Navigation","Hero"],"componentIds":["site-header","hero"],"acceptanceCriteria":["..."]}],"flows":[{"id":"primary","name":"Primary journey","purpose":"...","steps":["home","detail"]}],"components":[{"id":"site-header","name":"Site Header","kind":"layout","purpose":"...","usedBy":["home"],"variants":["desktop","mobile"],"acceptanceCriteria":["..."]}],"styles":{"direction":"...","colors":["..."],"typography":["..."],"spacing":["..."],"radii":["..."],"shadows":["..."],"layoutPrinciples":["..."],"motion":["..."],"responsive":["..."],"accessibility":["..."],"avoid":["..."]},"visualDirection":"...","backendRequired":false,"slices":[{"id":"...","title":"...","outcome":"...","scope":["..."],"acceptanceCriteria":["..."]}],"acceptanceCriteria":["..."]}</borg-project-plan>
 
 The only project files authorized during PLAN are planning documents under .localcode/build/**/*.md, persisted by BORG after your response. Do not create source, component, style, asset, configuration, backend, API, auth, or database files; do not run builds, tests, previews, or verification. Brief: ${brief}`;
 }
@@ -826,7 +841,7 @@ export function persistProposedProjectPlan(
     "",
     ...(options.revisionReason ? ["## Revision reason", "", options.revisionReason.slice(0, 4_000), ""] : []),
   ].join("\n"));
-  writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.sitemap.map((page) => `## ${page.name}\n\n- ID: \`${page.id}\`\n- Route: \`${page.route}\`\n- Purpose: ${page.purpose}\n- Sections: ${page.sections.join("; ") || "To be resolved during implementation"}\n- Components: ${page.componentIds.join(", ") || "None assigned"}\n- Acceptance: ${page.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
+  writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.sitemap.map((page) => `## ${page.name}\n\n- ID: \`${page.id}\`\n- Route: \`${page.route}\`\n- Purpose: ${page.purpose}\n- Sections: ${page.sections.join("; ") || "To be resolved during implementation"}\n- Components: ${page.componentIds.join(", ") || "None assigned"}\n- Acceptance: ${page.acceptanceCriteria.join("; ")}`).join("\n\n")}\n\n## User journeys\n\n${proposed.flows.length ? proposed.flows.map((flow) => `- **${flow.name}** — ${flow.steps.join(" → ")}\n  - ${flow.purpose}`).join("\n") : "- No multi-page journeys required."}\n`);
   writeFileSync(join(dir, "components.md"), `# Planned components\n\n${proposed.components.map((component) => `## ${component.name}\n\n- ID: \`${component.id}\`\n- Kind: ${component.kind}\n- Purpose: ${component.purpose}\n- Used by: ${component.usedBy.join(", ") || "shared/global"}\n- Variants: ${component.variants.join(", ") || "default"}\n- Acceptance: ${component.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
   writeFileSync(join(dir, "styles.md"), `# Global style system\n\n## Direction\n\n${proposed.styles.direction}\n\n## Colors\n${proposed.styles.colors.map((item) => `- ${item}`).join("\n")}\n\n## Typography\n${proposed.styles.typography.map((item) => `- ${item}`).join("\n")}\n\n## Spacing\n${proposed.styles.spacing.map((item) => `- ${item}`).join("\n")}\n\n## Radii\n${proposed.styles.radii.map((item) => `- ${item}`).join("\n")}\n\n## Shadows\n${proposed.styles.shadows.map((item) => `- ${item}`).join("\n")}\n\n## Layout principles\n${proposed.styles.layoutPrinciples.map((item) => `- ${item}`).join("\n")}\n\n## Motion\n${proposed.styles.motion.map((item) => `- ${item}`).join("\n")}\n\n## Responsive\n${proposed.styles.responsive.map((item) => `- ${item}`).join("\n")}\n\n## Accessibility\n${proposed.styles.accessibility.map((item) => `- ${item}`).join("\n")}\n\n## Avoid\n${proposed.styles.avoid.map((item) => `- ${item}`).join("\n")}\n`);
   initializeProjectModel(root, proposed);
