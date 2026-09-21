@@ -24,6 +24,7 @@ import {
   selectSpecialistPacks,
   specialistPackRefs,
   specialistSystemInstructions,
+  type DisciplineRoute,
   type SpecialistCapabilityPack,
 } from "../../../packages/orchestration/src/index.ts";
 import {
@@ -87,6 +88,33 @@ export type PlanningOutcome = {
 };
 
 export type PlanningEventSink = (event: Record<string, unknown>) => void;
+
+export function resolvePlanningDisciplineRoute(
+  routed: DisciplineRoute,
+  input: { websiteFrontend: boolean; projectPlanning: boolean },
+): DisciplineRoute {
+  if (input.projectPlanning && input.websiteFrontend) {
+    return {
+      primary: "frontend",
+      disciplines: ["frontend"],
+      reasons: ["BORG website blueprint planning"],
+    };
+  }
+  if (!input.websiteFrontend) return routed;
+  return {
+    primary: "frontend",
+    disciplines: [
+      "frontend",
+      ...routed.disciplines.filter((discipline) =>
+        discipline !== "frontend"
+        && discipline !== "devops"
+        && discipline !== "infrastructure"
+        && discipline !== "backend"
+        && discipline !== "qa"),
+    ].slice(0, 6),
+    reasons: ["BORG website frontend phase", ...routed.reasons],
+  };
+}
 
 type HandoffInput = {
   task: Task;
@@ -220,27 +248,7 @@ export class PlanningOrchestrator {
     const teamPolicy = teamPolicies.load(selectedPath);
     const routed = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
     const websiteFrontend = mode !== "ask" && Boolean(selectedWebsite) && rawSliceAction !== "backend";
-    const route = projectPlanning && selectedWebsite
-      ? {
-          primary: "frontend" as EngineeringDiscipline,
-          disciplines: ["frontend" as EngineeringDiscipline],
-          reasons: ["BORG website blueprint planning"],
-        }
-      : websiteFrontend
-        ? {
-            primary: "frontend" as EngineeringDiscipline,
-            disciplines: [
-              "frontend" as EngineeringDiscipline,
-              ...routed.disciplines.filter((discipline) =>
-                discipline !== "frontend"
-                && discipline !== "devops"
-                && discipline !== "infrastructure"
-                && discipline !== "backend"
-                && discipline !== "qa"),
-            ].slice(0, 6),
-            reasons: ["BORG website frontend phase", ...routed.reasons],
-          }
-        : routed;
+    const route = resolvePlanningDisciplineRoute(routed, { websiteFrontend, projectPlanning: projectPlanning && Boolean(selectedWebsite) });
     const packs = selectSpecialistPacks(route.disciplines);
 
     let task: Task = {
