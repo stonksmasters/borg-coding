@@ -866,6 +866,59 @@ export class PlanningOrchestrator {
       let proposedProjectPlan: ProjectPlan | null = null;
       if (projectPlanning && websiteProject) {
         let parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+        if (parseResult.source === "repaired") {
+          appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
+            stage: "Component Architecture / Build Roadmap",
+            tag: "borg-project-plan",
+            repair: parseResult.repairReason ?? null,
+            method: "deterministic",
+          });
+        }
+
+        const initialProjectPlanSyntaxFailure = parseResult.source === "fallback"
+          && /Planner project-plan JSON could not be parsed:/i.test(parseResult.fallbackReason ?? "");
+        if (initialProjectPlanSyntaxFailure) {
+          appendTaskEvent(task.id, "PROJECT_PLAN_SYNTAX_RETRY", {
+            reason: parseResult.fallbackReason,
+          });
+          emit({
+            type: "stage.updated",
+            stage: "Component Architecture",
+            status: "active",
+            message: "The project-plan artifact had malformed JSON. Repairing syntax without redesigning the blueprint.",
+          });
+          const repaired = await this.deps.runAgent({
+            ...architectRequest,
+            messages: [
+              architectRequest.messages[0],
+              {
+                role: "user" as const,
+                content: structuredJsonSyntaxRepairPrompt({
+                  tag: "borg-project-plan",
+                  parserError: parseResult.fallbackReason ?? "Project-plan JSON was invalid.",
+                  malformedArtifact: answer,
+                }),
+              },
+            ],
+          });
+          answer = repaired.answer;
+          usedTools ||= repaired.usedTools;
+          parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+          appendTaskEvent(task.id, "PROJECT_PLAN_SYNTAX_RETRY_COMPLETED", {
+            source: parseResult.source,
+            fallbackReason: parseResult.fallbackReason,
+            repairReason: parseResult.repairReason ?? null,
+            validation: parseResult.validation,
+          });
+          if (parseResult.source === "repaired") {
+            appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
+              stage: "Component Architecture / Build Roadmap",
+              tag: "borg-project-plan",
+              repair: parseResult.repairReason ?? null,
+              method: "deterministic_after_model_repair",
+            });
+          }
+        }
 
         if (parseResult.source === "fallback" && parseResult.retryRecommended) {
           appendTaskEvent(task.id, "PROJECT_PLAN_SEMANTIC_RETRY", {
@@ -894,8 +947,17 @@ export class PlanningOrchestrator {
           appendTaskEvent(task.id, "PROJECT_PLAN_SEMANTIC_RETRY_COMPLETED", {
             source: parseResult.source,
             fallbackReason: parseResult.fallbackReason,
+            repairReason: parseResult.repairReason ?? null,
             validation: parseResult.validation,
           });
+          if (parseResult.source === "repaired") {
+            appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
+              stage: "Component Architecture / Build Roadmap",
+              tag: "borg-project-plan",
+              repair: parseResult.repairReason ?? null,
+              method: "deterministic_after_semantic_repair",
+            });
+          }
         }
 
         if (parseResult.source === "fallback") {
@@ -933,6 +995,14 @@ export class PlanningOrchestrator {
             answer = repaired.answer;
             usedTools ||= repaired.usedTools;
             parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+            if (parseResult.source === "repaired") {
+              appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
+                stage: "Component Architecture / Build Roadmap",
+                tag: "borg-project-plan",
+                repair: parseResult.repairReason ?? null,
+                method: "deterministic_after_coverage_repair",
+              });
+            }
             if (parseResult.source === "fallback") {
               throw new Error(`Stage 3-4 Blueprint repair remained invalid: ${parseResult.fallbackReason ?? "project plan could not be parsed"}`);
             }
