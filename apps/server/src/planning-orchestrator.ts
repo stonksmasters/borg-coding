@@ -432,6 +432,22 @@ export class PlanningOrchestrator {
     let stagedProductMap: ProductMap | null = null;
     let stagedStyleSystem = blueprintFallback?.styles ?? null;
 
+    const failBlueprintStage = (stage: string, category: string, reason: string): PlanningOutcome => {
+      const message = reason.trim().slice(0, 4_000);
+      appendTaskEvent(task.id, "BLUEPRINT_STAGE_RECOVERY_REQUIRED", { stage, category, reason: message });
+      const recovery = workflow.markRecoveryRequired(task, {
+        category,
+        reason: message,
+        resumeAction: "replan",
+      });
+      task = recovery.task;
+      this.deps.syncWorkflowProjection(task, recovery.workflow);
+      emit({ type: "task.state", state: task.state, workflow: recovery.workflow });
+      emit({ type: "stage.updated", stage, status: "failed", message });
+      emit({ type: "runtime.failed", stage, message });
+      return { task, status: "failed" };
+    };
+
     if (projectPlanning && websiteProject && blueprintFallback) {
       emit({ type: "stage.updated", stage: "Product Map", status: "active", message: "Mapping pages, routes, sections, and user journeys before design/component planning." });
       appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_STARTED", { revision: projectPlan?.revision ?? null });
@@ -441,14 +457,16 @@ export class PlanningOrchestrator {
         tools,
         mode,
         role: "architect" as const,
-        disciplines: route.disciplines,
+        disciplines: ["frontend"] as EngineeringDiscipline[],
         streamText: false,
+        allowTools: false,
+        maxRequestCharacters: 28_000,
         emit,
+        onRequestBody: (body: string) => this.deps.recordModelInput(task.id, "blueprint_product_map", architectModel, null, [], body),
         messages: [
-          { role: "system" as const, content: `${productMapPlanningPrompt(planningBrief, planningFeedback)}\n\n<approved_context>\n${repositoryContext}\n</approved_context>` },
-          { role: "user" as const, content: "Produce only the Stage 1 product map artifact." },
+          { role: "system" as const, content: productMapPlanningPrompt(planningBrief, planningFeedback) },
+          { role: "user" as const, content: "Produce only the Stage 1 product map artifact. Do not research, inspect files, or discuss implementation." },
         ],
-        limits: { toolRounds: 3, toolCalls: 4 },
       };
       let mapAnswer = (await this.deps.runAgent(mapRequest)).answer;
       let mapResult = parseProductMap(mapAnswer, blueprintFallback);
@@ -461,9 +479,15 @@ export class PlanningOrchestrator {
             { role: "assistant" as const, content: mapAnswer },
             { role: "user" as const, content: `The product map was invalid: ${mapResult.reason ?? "unknown reason"}. Regenerate the complete <borg-product-map> artifact and satisfy every Stage 1 rule.` },
           ],
-          limits: { toolRounds: 2, toolCalls: 2 },
         })).answer;
         mapResult = parseProductMap(mapAnswer, blueprintFallback);
+      }
+      if (mapResult.source === "fallback") {
+        return failBlueprintStage(
+          "Product Map",
+          "blueprint_product_map_invalid",
+          `Product Map could not be generated after a bounded repair: ${mapResult.reason ?? "unknown validation failure"}`,
+        );
       }
       stagedProductMap = mapResult.map;
       appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_COMPLETED", {
@@ -471,6 +495,7 @@ export class PlanningOrchestrator {
         reason: mapResult.reason,
         pages: stagedProductMap.sitemap.length,
         flows: stagedProductMap.flows.length,
+        artifact: stagedProductMap,
       });
       repositoryContext += `\n\nFROZEN PRODUCT MAP (Stage 1 authority for subsequent blueprint stages):\n${JSON.stringify(stagedProductMap, null, 2)}`;
       emit({ type: "stage.updated", stage: "Product Map", status: "complete", message: `${stagedProductMap.sitemap.length} pages and ${stagedProductMap.flows.length} user journeys mapped.` });
