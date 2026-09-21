@@ -289,7 +289,10 @@ test("approved slice recovers from a missing target, verifies, and reaches its c
   const result = await runRuntimeCase("recoverable_missing_path");
   try {
     assert.ok(result.events.some((event) => event.type === "workspace.preflight.completed"));
-    assert.ok(result.events.some((event) => event.type === "recovery.scheduled" && event.category === "missing_path"));
+    assert.ok(
+      result.events.some((event) => event.type === "recovery.scheduled" && event.category === "missing_path"),
+      `Expected missing_path recovery. Events: ${JSON.stringify(result.events)}`,
+    );
     assert.ok(result.events.some((event) => event.type === "tool.completed" && event.tool === "worktree_write"));
     assert.ok(result.events.some((event) => event.type === "delivery.ready"));
     assert.equal(readFileSync(join(result.fixture.worktreePath, "src", "features", "recovery", "Recovered.tsx"), "utf8").includes("Recovered slice"), true);
@@ -324,7 +327,11 @@ test("path traversal stays fatally blocked and never consumes the bounded recove
   const result = await runRuntimeCase("fatal_path_escape");
   try {
     assert.ok(result.events.some((event) => event.type === "stream.blocked"));
-    assert.equal(result.events.some((event) => event.type === "recovery.scheduled"), false);
+    assert.equal(
+      result.events.some((event) => event.type === "recovery.scheduled"),
+      false,
+      `Fatal path escape must not schedule recovery. Events: ${JSON.stringify(result.events)}`,
+    );
     assert.equal(existsSync(join(result.runtimeRoot, "escape.ts")), false);
     const repository = new SqliteTaskRepository(result.databasePath);
     const task = repository.findTask(result.taskId);
