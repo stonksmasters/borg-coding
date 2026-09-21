@@ -134,7 +134,7 @@ approved execute command
 
 ## Slice 4 — Extract QualityGateService and ProjectPlanRevisionService
 
-**Status:** in progress
+**Status:** complete
 
 ### Detailed implementation contract
 
@@ -198,6 +198,8 @@ type QualityDecision =
 - Current PR #44 regressions remain green.
 
 ## Slice 5 — Tighten Core outcome authority and durable attempt phase
+
+**Status:** next
 
 ### Purpose
 
