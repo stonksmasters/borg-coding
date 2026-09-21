@@ -21,6 +21,27 @@ test("verification and review phases cannot mutate source", () => {
   assert.equal(executionAllowsTool("REVIEWING", null, "worktree_patch"), false);
 });
 
+test("missing-module verification evidence targets the importing file and likely missing worktree files", () => {
+  const results = [{
+    label: "npm run build",
+    command: "npm",
+    args: ["run", "build"],
+    exitCode: 2,
+    stdout: [
+      "src/pages/HomePage.tsx(7,24): error TS2307: Cannot find module '../components/sections/ContactCTA' or its corresponding type declarations.",
+      "src/pages/HomePage.tsx(8,20): error TS2307: Cannot find module '../components/layout/Footer' or its corresponding type declarations.",
+    ].join("\n"),
+    stderr: "",
+  }];
+  const context = buildRepairContext({ sliceId: "home", attempt: 0, results, recentChanges: ["src/pages/HomePage.tsx"] });
+  assert.deepEqual(context.implicatedFiles, ["src/pages/HomePage.tsx"]);
+  assert.ok(context.allowedFiles.includes("src/components/sections/ContactCTA.tsx"));
+  assert.ok(context.allowedFiles.includes("src/components/layout/Footer.tsx"));
+  const prompt = formatRepairContext(context);
+  assert.match(prompt, /ContactCTA\.tsx/);
+  assert.match(prompt, /Footer\.tsx/);
+});
+
 test("TypeScript evidence produces a compact implicated-file repair context", () => {
   const results = [{ label: "npm run build", command: "npm", args: ["run", "build"], exitCode: 2, stdout: "src/components/layout/Header.tsx(21,56): error TS2345: RefObject<HTMLDivElement | null> is not assignable", stderr: "" }];
   const errors = parseVerificationErrors(results);
