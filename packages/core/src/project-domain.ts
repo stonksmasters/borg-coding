@@ -27,6 +27,14 @@ export const ProjectPageSchema = z.object({
 });
 export type ProjectPage = z.infer<typeof ProjectPageSchema>;
 
+export const ProjectUserFlowSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  purpose: z.string(),
+  steps: z.array(z.string().min(1)).min(2),
+});
+export type ProjectUserFlow = z.infer<typeof ProjectUserFlowSchema>;
+
 export const ProjectComponentSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -99,6 +107,7 @@ export const ProjectPlanSchema = z.object({
   // Defaults preserve restart compatibility with workflow snapshots created before the
   // sitemap/component/style inventories became first-class project state.
   sitemap: z.array(ProjectPageSchema).default([]),
+  flows: z.array(ProjectUserFlowSchema).default([]),
   components: z.array(ProjectComponentSchema).default([]),
   styles: ProjectStyleSystemSchema.default(emptyProjectStyleSystem),
   visualDirection: z.string(),
