@@ -971,8 +971,8 @@ export class ExecutionOrchestrator {
         setFrontendWorkflowStage(approvedWorktreePath, "blocked", { currentSlice: failedSlice.current, totalSlices: failedSlice.total, taskId, detail: message });
       }
       appendTaskEvent(taskId, "IMPLEMENTATION_FAILED", { message });
-      if (task && !["FAILED", "CANCELLED", "COMPLETE", "BLOCKED"].includes(task.state)) {
-        adoptCoreMutation(workflow.transition(task, "FAILED"));
+      if (task && !["CANCELLED", "COMPLETE"].includes(task.state)) {
+        adoptCoreMutation(workflow.applyExecutionFailure(task, message));
       }
       emit({ type: "runtime.failed", message });
       
