@@ -265,6 +265,8 @@ export async function runOllamaAgent(options: AgentOptions) {
         toolFailures.push(message);
         options.emit({ type: "tool.failed", tool: call.function.name, message });
         options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message, available_tools: availableToolNames }) });
+        const fatalBoundary = /unsafe worktree path|escapes (?:the approved root|through a (?:parent )?link)|outside borg's managed worktree root|does not have an approved worktree|permission denied|EACCES|EPERM/i.test(message);
+        if (options.phase === "implementation" && fatalBoundary) throw new Error(message);
         const invalid = /unknown|unavailable|cannot invoke|requires EDIT or AGENT|not configured/i.test(message);
         if (invalid) {
           const failures = (invalidToolFailures.get(call.function.name) ?? 0) + 1;
