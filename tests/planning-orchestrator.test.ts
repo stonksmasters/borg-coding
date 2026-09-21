@@ -166,7 +166,7 @@ test("website blueprint planning forces frontend authority over generic keyword 
   const routed = new DisciplineRouter().route(
     "Build a production-quality frontend website. Do not implement backend infrastructure. Run verification after the build.",
   );
-  assert.equal(routed.primary, "devops");
+  assert.equal(routed.primary, "infrastructure");
   const blueprint = resolvePlanningDisciplineRoute(routed, { websiteFrontend: true, projectPlanning: true });
   assert.equal(blueprint.primary, "frontend");
   assert.deepEqual(blueprint.disciplines, ["frontend"]);
@@ -175,6 +175,7 @@ test("website blueprint planning forces frontend authority over generic keyword 
   const focusedFrontend = resolvePlanningDisciplineRoute(routed, { websiteFrontend: true, projectPlanning: false });
   assert.equal(focusedFrontend.primary, "frontend");
   assert.ok(!focusedFrontend.disciplines.includes("devops"));
+  assert.ok(!focusedFrontend.disciplines.includes("infrastructure"));
   assert.ok(!focusedFrontend.disciplines.includes("backend"));
   assert.ok(!focusedFrontend.disciplines.includes("qa"));
 });
