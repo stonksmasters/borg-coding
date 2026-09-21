@@ -472,7 +472,17 @@ export class PlanningOrchestrator {
     };
 
     if (projectPlanning && websiteProject && blueprintFallback) {
-      emit({ type: "stage.updated", stage: "Product Map", status: "active", message: "Mapping pages, routes, sections, and user journeys before design/component planning." });
+      if (stagedProductMap) {
+        appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_REUSED", {
+          sourceTaskId: blueprintRecoveryTaskId,
+          recoveryCategory: blueprintRecoveryCategory,
+          pages: stagedProductMap.sitemap.length,
+          flows: stagedProductMap.flows.length,
+        });
+        repositoryContext += `\n\nFROZEN PRODUCT MAP (recovered Stage 1 authority):\n${JSON.stringify(stagedProductMap, null, 2)}`;
+        emit({ type: "stage.updated", stage: "Product Map", status: "complete", message: `Reused ${stagedProductMap.sitemap.length} validated pages and ${stagedProductMap.flows.length} user journeys from the prior Blueprint attempt.` });
+      } else {
+        emit({ type: "stage.updated", stage: "Product Map", status: "active", message: "Mapping pages, routes, sections, and user journeys before design/component planning." });
       appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_STARTED", { revision: projectPlan?.revision ?? null });
       const mapRequest = {
         ollamaUrl: this.deps.ollamaUrl,
@@ -520,8 +530,9 @@ export class PlanningOrchestrator {
         flows: stagedProductMap.flows.length,
         artifact: stagedProductMap,
       });
-      repositoryContext += `\n\nFROZEN PRODUCT MAP (Stage 1 authority for subsequent blueprint stages):\n${JSON.stringify(stagedProductMap, null, 2)}`;
-      emit({ type: "stage.updated", stage: "Product Map", status: "complete", message: `${stagedProductMap.sitemap.length} pages and ${stagedProductMap.flows.length} user journeys mapped.` });
+        repositoryContext += `\n\nFROZEN PRODUCT MAP (Stage 1 authority for subsequent blueprint stages):\n${JSON.stringify(stagedProductMap, null, 2)}`;
+        emit({ type: "stage.updated", stage: "Product Map", status: "complete", message: `${stagedProductMap.sitemap.length} pages and ${stagedProductMap.flows.length} user journeys mapped.` });
+      }
     }
 
     const isGreenfieldDesign = isBorgWebsite && websiteWorkflow === "initial_generation";
