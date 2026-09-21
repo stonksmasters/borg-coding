@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 if (!process.env.npm_execpath) {
@@ -10,6 +12,11 @@ const coreOnly = args.has("--core-only");
 const freshInstall = args.has("--fresh-install");
 const skipDesktop = args.has("--skip-desktop");
 const npmExec = process.env.npm_execpath;
+
+if (!freshInstall && !existsSync(join(process.cwd(), "node_modules"))) {
+  console.error("BORG dependencies are not installed. Run npm run verify:clean for a locked install + full verification.");
+  process.exit(69);
+}
 
 const stages = [
   ...(freshInstall ? [{ id: "install", label: "Locked dependency install", script: "install:ci" }] : []),
