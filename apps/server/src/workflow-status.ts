@@ -64,11 +64,14 @@ function activityDetail(event: TaskEvent) {
   return event.type.replaceAll("_", " ").toLowerCase();
 }
 
-function stageFor(task: Task, events: TaskEvent[], slice: SliceState | null): RunStage {
+function stageFor(task: Task, events: TaskEvent[], slice: SliceState | null, workflow: WorkflowState | null): RunStage {
   if (["BLOCKED", "FAILED", "RECOVERY_REQUIRED"].includes(task.state)) return "blocked";
   if (["PAUSED", "CANCELLED"].includes(task.state)) return "paused";
   if (task.state === "AWAITING_APPROVAL") return "awaiting_approval";
-  if (task.state === "IMPLEMENTING") return task.attempts > 0 ? "repairing" : "implementing";
+  if (task.state === "IMPLEMENTING") {
+    const durableRepair = workflow?.attemptPhase === "technical_repair" || workflow?.attemptPhase === "design_refinement";
+    return durableRepair || task.attempts > 0 ? "repairing" : "implementing";
+  }
   if (task.state === "VERIFYING") {
     const designStarted = events.findLast((event) => event.type === "DESIGN_REVIEW_STARTED");
     const verification = events.findLast((event) => event.type === "VERIFICATION_COMPLETED");
@@ -203,7 +206,7 @@ export function deriveWorkflowStatus(
     : terminal
       ? task.state.toLowerCase().replaceAll("_", " ")
       : (latestActivity?.payload.activity as { title?: string } | undefined)?.title ?? task.state.toLowerCase().replaceAll("_", " ");
-  const stage = baselineApprovalCount > 0 ? "awaiting_approval" as const : stageFor(task, events, slice);
+  const stage = baselineApprovalCount > 0 ? "awaiting_approval" as const : stageFor(task, events, slice, workflow);
   const activeSlice = plan && slice ? plan.slices[slice.current] ?? null : null;
   const legacyVerificationPassed = (latestVerification?.payload.verification as { passed?: boolean } | undefined)?.passed ?? null;
   const verificationPassed = workflow
