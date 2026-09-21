@@ -447,6 +447,7 @@ export class PlanningOrchestrator {
     const recoveredStyleSystem = recoveredStyleArtifact && validateStyleSystem(recoveredStyleArtifact).valid
       ? recoveredStyleArtifact
       : null;
+    const recoveredDesignBrief = blueprintRecoveryEvents.findLast((event) => event.type === "DESIGN_BRIEF_CREATED")?.payload.brief as DesignBrief | undefined;
     let stagedProductMap: ProductMap | null = blueprintRecoveryCategory === "blueprint_design_system_invalid"
       || blueprintRecoveryCategory === "blueprint_component_architecture_invalid"
       ? recoveredProductMap
@@ -536,14 +537,24 @@ export class PlanningOrchestrator {
     }
 
     const isGreenfieldDesign = isBorgWebsite && websiteWorkflow === "initial_generation";
-    const designRequired = mode !== "ask" && !miniLoop && requiresDesignDirection({
+    let designBrief: DesignBrief | null = blueprintRecoveryCategory === "blueprint_design_system_invalid"
+      || blueprintRecoveryCategory === "blueprint_component_architecture_invalid"
+      ? recoveredDesignBrief ?? null
+      : null;
+    const designRequired = mode !== "ask" && !miniLoop && !designBrief && requiresDesignDirection({
       request: requestText,
       disciplines: route.disciplines,
       isBorgWebsite,
     });
 
-    let designBrief: DesignBrief | null = null;
-    if (designRequired) {
+    if (designBrief) {
+      appendTaskEvent(task.id, "DESIGN_BRIEF_REUSED", {
+        sourceTaskId: blueprintRecoveryTaskId,
+        recoveryCategory: blueprintRecoveryCategory,
+      });
+      emit({ type: "design.brief.created", brief: designBrief });
+      emit({ type: "stage.updated", stage: "Design Direction", status: "complete", message: "Reused the validated Design Director brief from the prior Blueprint attempt." });
+    } else if (designRequired) {
       emit({ type: "stage.updated", stage: "Design Direction", status: "active" });
       appendTaskEvent(task.id, "DESIGN_BRIEF_STARTED", {
         model: architectModel,
