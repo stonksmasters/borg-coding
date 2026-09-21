@@ -716,7 +716,7 @@ export class PlanningOrchestrator {
           }
           appendTaskEvent(task.id, "BLUEPRINT_COMPLETED", {
             pages: candidatePlan.sitemap.length,
-            flows: candidatePlan.flows.length,
+            flows: (candidatePlan.flows ?? []).length,
             components: candidatePlan.components.length,
             slices: candidatePlan.slices.length,
           });
