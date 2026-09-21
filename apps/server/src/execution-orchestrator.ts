@@ -58,7 +58,7 @@ import {
 } from "../../../packages/design-intelligence/src/index.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
-import { classifyImplementationFailure, compactRecoveryEvidence } from "./recovery-policy.ts";
+import { classifyImplementationFailure, classifyObservedToolFailures, compactRecoveryEvidence } from "./recovery-policy.ts";
 import { VerificationService } from "./verification-service.ts";
 import { QualityGateService } from "./quality-gate-service.ts";
 import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
@@ -401,10 +401,15 @@ export class ExecutionOrchestrator {
               .map((value) => String(value).slice(0, 2_000))
               .filter(Boolean)
               .slice(-5);
-            const failure = toolFailures.at(-1) ?? (attemptStartedInRepair
+            const fallbackFailure = attemptStartedInRepair
               ? "The repair attempt completed without changing the source diff relative to the start of this repair pass."
-              : "The implementation attempt completed without any source-file progress.");
-            const decision = classifyImplementationFailure(failure, task.attempts, maxRepairAttempts, { noProgress: true });
+              : "The implementation attempt completed without any source-file progress.";
+            const decision = classifyObservedToolFailures(
+              toolFailures,
+              task.attempts,
+              maxRepairAttempts,
+              fallbackFailure,
+            );
             appendTaskEvent(taskId, attemptStartedInRepair ? "REPAIR_NO_PROGRESS" : "IMPLEMENTATION_NO_PROGRESS", {
               attempt: task.attempts,
               toolFailures,
