@@ -250,7 +250,7 @@ export function BorgWorkspaceV2() {
         : null;
   const taskBusy = streaming || taskIsRunning(taskState) || taskNeedsAttention(taskState);
   const canStop = streaming && !executionIsRunning(taskState);
-  const canRetry = Boolean(activeSession && activeTaskId && !streaming && !runtimeActive && taskState === "BLOCKED");
+  const canRetry = Boolean(activeSession && activeTaskId && !streaming && !runtimeActive && ["BLOCKED", "RECOVERY_REQUIRED"].includes(taskState));
   const actionLabel = canRetry ? "Retry" : executionIsRunning(taskState) || (taskBusy && !canStop) ? "Working" : canStop ? "Stop" : "Send";
   const activityMessages = useMemo(() => messages.filter((message) => message.role === "tool" || (message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.role !== "tool" && !(message.kind === "warning" && isUnsupportedLanguageTool(message.text))), [messages]);
@@ -899,7 +899,7 @@ export function BorgWorkspaceV2() {
       setTaskState("DELIVERY_READY");
     } else if (event.type === "runtime.failed" || event.type === "stream.failed") {
       setMessages((current) => [...current, transientMessage("system", event.message ?? "Runtime failed.", "warning")]);
-      setTaskState("FAILED");
+      setTaskState(event.state ?? "FAILED");
     }
   }
 
