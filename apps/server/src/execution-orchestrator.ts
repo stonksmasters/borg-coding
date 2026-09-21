@@ -349,14 +349,20 @@ export class ExecutionOrchestrator {
           activeRoleAssignment = null;
           const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
-          if (decision.disposition === "fatal") {
-            syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-            throw error;
+          if (decision.disposition === "retry") {
+            const recoveryPreflight = performPreflight("implementation_recovery");
+            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+            createCheckpointSnapshot(task, "pre_repair");
           }
-          const recoveryPreflight = performPreflight("implementation_recovery");
-          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
-          task = scheduleImplementationRetry(task, emit, decision.action, decision);
-          refreshTaskContext();
+          const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
+            retryKind: "implementation",
+            eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
+          });
+          adoptCoreMutation(recoveryOutcome);
+          if (recoveryOutcome.action === "block") {
+            emit({ type: "stream.blocked", message: decision.action });
+            return;
+          }
           continue;
         }
         const { answer, usedTools, budgetExhausted } = implementationResult;
@@ -393,13 +399,20 @@ export class ExecutionOrchestrator {
               postAttemptFingerprint: postAttemptSnapshot.fingerprint,
             });
             appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
-            if (decision.disposition === "fatal") {
-              syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-              throw new Error(`Slice recovery stopped: ${decision.reason}`);
+            if (decision.disposition === "retry") {
+              const recoveryPreflight = performPreflight("no_progress_recovery");
+              repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
+              createCheckpointSnapshot(task, "pre_repair");
             }
-            const recoveryPreflight = performPreflight("no_progress_recovery");
-            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
-            task = scheduleImplementationRetry(task, emit, decision.action, decision);
+            const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
+              retryKind: "implementation",
+              eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
+            });
+            adoptCoreMutation(recoveryOutcome);
+            if (recoveryOutcome.action === "block") {
+              emit({ type: "stream.blocked", message: decision.action });
+              return;
+            }
             continue;
           }
         }
@@ -434,8 +447,8 @@ export class ExecutionOrchestrator {
         }, emit);
         const verifierModel = teamPolicies.modelFor(teamPolicy, "verifier", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "verifier", primaryDiscipline, verifierModel, packs, emit);
-        task = transitionTask(task, "VERIFYING", emit);
-        refreshTaskContext();
+        const implementationOutcome = workflow.completeImplementation(task);
+        adoptCoreMutation(implementationOutcome, "implementation_complete");
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_verifying", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Implementation produced source changes. Deterministic and browser verification are running." });
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         let verificationResult: Awaited<ReturnType<VerificationService["run"]>>;
@@ -455,14 +468,20 @@ export class ExecutionOrchestrator {
           activeRoleAssignment = null;
           const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "verification" });
-          if (decision.disposition === "fatal") {
-            syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-            throw error;
+          if (decision.disposition === "retry") {
+            const recoveryPreflight = performPreflight("verification_recovery");
+            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+            createCheckpointSnapshot(task, "pre_repair");
           }
-          const recoveryPreflight = performPreflight("verification_recovery");
-          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
-          task = scheduleRepair(task, emit, decision.action, decision);
-          refreshTaskContext();
+          const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
+            retryKind: "technical_repair",
+            eventType: "REPAIR_SCHEDULED",
+          });
+          adoptCoreMutation(recoveryOutcome);
+          if (recoveryOutcome.action === "block") {
+            emit({ type: "stream.blocked", message: decision.action });
+            return;
+          }
           continue;
         }
         const {
