@@ -46,6 +46,30 @@ test("product-map parser deterministically repairs a missing comma before semant
   assert.match(result.reason ?? "", /missing comma/i);
 });
 
+
+test("product-map stage deterministically repairs a missing comma without regenerating product decisions", () => {
+  const fallback = fallbackProjectPlan("Build a premium expedition website", "portfolio");
+  const answer = `<borg-product-map>{"siteGoal":"Plan premium expeditions","audience":"Adventure travelers","features":["Discovery","Inquiry"],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"Entry","sections":["Navigation","Selected expeditions"],"acceptanceCriteria":["home works"]},{"id":"expeditions","name":"Expeditions","route":"/expeditions","purpose":"Browse","sections":["Filters","Results"],"acceptanceCriteria":["browse works"]}],"flows":[{"id":"discover","name":"Discover","purpose":"Move from entry to catalog","steps":["home" "expeditions"]}],"backendRequired":false}</borg-product-map>`;
+  const result = parseProductMap(answer, fallback);
+  assert.equal(result.source, "repaired");
+  assert.deepEqual(result.map.flows[0]?.steps, ["home", "expeditions"]);
+  assert.match(result.reason ?? "", /missing comma/i);
+  assert.equal(validateProductMap(result.map).valid, true);
+});
+
+test("product-map stage repairs harmless trailing commas but still rejects semantic invalidity", () => {
+  const fallback = fallbackProjectPlan("Build a portfolio", "portfolio");
+  const syntactic = `<borg-product-map>{"siteGoal":"Show work","audience":"Clients","features":["Work",],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"Entry","sections":["Hero"],"acceptanceCriteria":["works"],},{"id":"work","name":"Work","route":"/work","purpose":"Browse","sections":["Projects"],"acceptanceCriteria":["works"]}],"flows":[{"id":"browse","name":"Browse","purpose":"Explore","steps":["home","work"],}],"backendRequired":false}</borg-product-map>`;
+  const repaired = parseProductMap(syntactic, fallback);
+  assert.equal(repaired.source, "repaired");
+  assert.equal(validateProductMap(repaired.map).valid, true);
+
+  const semanticallyInvalid = `<borg-product-map>{"siteGoal":"Show work","audience":"Clients","features":[],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"Entry","sections":[],"acceptanceCriteria":[]}],"flows":[],"backendRequired":false}</borg-product-map>`;
+  const rejected = parseProductMap(semanticallyInvalid, fallback);
+  assert.equal(rejected.source, "fallback");
+  assert.match(rejected.reason ?? "", /sections|acceptance/i);
+});
+
 test("style-system stage rejects vague prose and accepts implementation-grade scales", () => {
   assert.equal(validateStyleSystem(concreteStyles).valid, true);
   const fallback = fallbackProjectPlan("Build a premium dashboard", "dashboard").styles;
