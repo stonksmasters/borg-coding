@@ -7,7 +7,7 @@ import { ActivityFeed, type AgentActivity } from "@/components/agent/activity-fe
 import { ChangesPanel, type ChangeSet } from "@/components/changes/changes-panel";
 import { PlanPanel } from "@/components/workspace/plan-panel";
 import { DocsPanel, type BuildDoc } from "@/components/workspace/docs-panel";
-import { StructurePanel } from "@/components/workspace/structure-panel";
+import { StructurePanel, type ProjectBlueprint } from "@/components/workspace/structure-panel";
 import { TerminalPanel, type TaskProcess, type TaskProcessEvent } from "@/components/workspace/terminal-panel";
 import type { DesignBriefView, DesignReviewView } from "@/components/workspace/design-panel";
 import { EvidencePanel } from "@/components/workspace/evidence-panel";
@@ -170,13 +170,15 @@ export function BorgWorkspaceV2() {
   const [liveActivity, setLiveActivity] = useState<string[]>([]);
   const [activities, setActivities] = useState<AgentActivity[]>([]);
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus | null>(null);
+  const [blueprint, setBlueprint] = useState<ProjectBlueprint | null>(null);
+  const [blueprintRevisionBusy, setBlueprintRevisionBusy] = useState(false);
   const [baselineCandidates, setBaselineCandidates] = useState<BaselineCandidate[]>([]);
   const [baselineBusy, setBaselineBusy] = useState(false);
   const [baselineError, setBaselineError] = useState("");
   const [contextRecords, setContextRecords] = useState<ContextRecord[]>([]);
   const [selectedContext, setSelectedContext] = useState<(ContextRecord & { inputText: string }) | null>(null);
   const [changes, setChanges] = useState<ChangeSet>(EMPTY_CHANGE_SET);
-  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "sitemap" | "components" | "styles" | "files" | "environment" | "changes" | "evidence" | "logs" | "memory" | "debug">("preview");
+  const [rightPanel, setRightPanel] = useState<"preview" | "plan" | "sitemap" | "components" | "styles" | "roadmap" | "files" | "environment" | "changes" | "evidence" | "logs" | "memory" | "debug">("preview");
   const [buildDocs, setBuildDocs] = useState<BuildDoc[]>([]);
   const [sliceState, setSliceState] = useState<SliceState | null>(null);
   const [sliceFeedback, setSliceFeedback] = useState("");
@@ -257,7 +259,7 @@ export function BorgWorkspaceV2() {
     return message?.text?.trim() || escalation?.planText?.trim() || null;
   }, [escalation, messages]);
   const panelGroup = rightPanel === "debug" ? "debug"
-    : rightPanel === "sitemap" || rightPanel === "components" || rightPanel === "styles" ? "structure"
+    : rightPanel === "sitemap" || rightPanel === "components" || rightPanel === "styles" || rightPanel === "roadmap" ? "blueprint"
       : rightPanel === "files" || rightPanel === "environment" || rightPanel === "memory" ? "project"
         : rightPanel === "changes" || rightPanel === "evidence" || rightPanel === "logs" ? "review"
           : rightPanel;
@@ -323,7 +325,7 @@ export function BorgWorkspaceV2() {
   }, [activeTaskId]);
 
   useEffect(() => {
-    if (!activeTaskId || !isWebsite) { setWorkflowStatus(null); setBaselineCandidates([]); setContextRecords([]); setSelectedContext(null); return; }
+    if (!activeTaskId || !isWebsite) { setWorkflowStatus(null); setBlueprint(null); setBaselineCandidates([]); setContextRecords([]); setSelectedContext(null); return; }
     setSelectedContext(null);
     let active = true;
     const refresh = async () => {
@@ -333,8 +335,9 @@ export function BorgWorkspaceV2() {
       ]);
       if (!active) return;
       if (statusResponse.ok) {
-        const result = await statusResponse.json() as { status: WorkflowStatus; baselineCandidates?: BaselineCandidate[] };
+        const result = await statusResponse.json() as { status: WorkflowStatus; blueprint?: ProjectBlueprint | null; baselineCandidates?: BaselineCandidate[] };
         setWorkflowStatus(result.status);
+        setBlueprint(result.blueprint ?? null);
         setBaselineCandidates(result.baselineCandidates ?? []);
       }
       if (contextsResponse.ok) setContextRecords((await contextsResponse.json() as { contexts: ContextRecord[] }).contexts);
@@ -503,7 +506,7 @@ export function BorgWorkspaceV2() {
     setMessages(result.messages);
     if (resetWorkspace) {
       const restoredPlan = [...result.messages].reverse().find((message) => message.role === "assistant" && message.kind === "plan")?.text?.trim();
-      if (restoredPlan && ["PLANNING", "AWAITING_APPROVAL", "CANCELLED"].includes(result.task?.state ?? "")) setRightPanel("plan");
+      if (restoredPlan && ["PLANNING", "AWAITING_APPROVAL", "CANCELLED"].includes(result.task?.state ?? "")) setRightPanel(isWebsite ? "sitemap" : "plan");
       else if (result.session.repositoryPath) setRightPanel("preview");
     }
     setLiveActivity([]);
@@ -869,7 +872,7 @@ export function BorgWorkspaceV2() {
         setMessages((current) => [...current, transientMessage("system", `Plan revision ${delta?.fromRevision ?? "?"} → ${delta?.toRevision ?? "?"} is ready. ${changed.length ? `Changed: ${changed.slice(0, 8).join(", ")}.` : "The approved scope was revised to resolve the quality conflict."} Approval resumes the same worktree and current slice boundary.`, "status")]);
       }
       setTaskState("AWAITING_APPROVAL");
-      setRightPanel("plan");
+      setRightPanel(isWebsite ? "sitemap" : "plan");
       if (event.taskId) void refreshDocs(event.taskId);
     } else if (event.type === "mode.escalation.requested" && event.approval && event.escalation) {
       setApproval(event.approval);
@@ -954,6 +957,40 @@ export function BorgWorkspaceV2() {
       setStreaming(false);
       setRuntimeActive(false);
       abortRef.current = null;
+    }
+  }
+
+  async function reviseBlueprint(feedback: string) {
+    const clean = feedback.trim();
+    if (!activeSession || !activeTaskId || !approval || !planApproval || !clean || blueprintRevisionBusy) return;
+    setBlueprintRevisionBusy(true);
+    setSessionError("");
+    try {
+      const rejection = await fetch(`${API}/api/tasks/${encodeURIComponent(activeTaskId)}/approval`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "reject" }),
+      });
+      const result = await rejection.json().catch(() => ({})) as { task?: { state?: string }; error?: string };
+      if (!rejection.ok) throw new Error(result.error ?? "Unable to reject the current blueprint proposal.");
+      setApproval(null);
+      setEscalation(null);
+      setPlanApproval(false);
+      setPlanRevisionApproval(false);
+      setPlanRevisionDelta(null);
+      setPlanRevisionReason("");
+      setTaskState(result.task?.state ?? "PLAN COMPLETE");
+      setRightPanel("sitemap");
+      await runTask(
+        `BLUEPRINT REVISION FEEDBACK:\n${clean}\n\nRevise the proposed project blueprint in the outer planning loop. Re-evaluate the product map first, then the global design system, then component architecture, then the build roadmap. Do not mutate application source files.`,
+        "initial",
+        activeSession,
+        true,
+      );
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Unable to revise the project blueprint.");
+    } finally {
+      setBlueprintRevisionBusy(false);
     }
   }
 
@@ -1549,17 +1586,19 @@ export function BorgWorkspaceV2() {
           <div className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-2">
             <nav aria-label="Workspace views" className="grid min-w-0 flex-1 grid-cols-6 gap-1 rounded-lg border border-white/8 bg-black/20 p-1">
               <button type="button" disabled={!isWebsite} onClick={() => { setRightPanel("preview"); if (activeSession && !previewUrl) void activatePreview(activeSession.id); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "preview" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
-              <button type="button" disabled={!latestPlan && !designBrief} onClick={() => setRightPanel("plan")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "plan" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>
-              <button type="button" disabled={!activeTaskId} onClick={() => { setRightPanel("sitemap"); if (activeTaskId) void refreshDocs(activeTaskId); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "structure" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Structure</button>
+              {isWebsite
+                ? <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("sitemap")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "blueprint" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Blueprint</button>
+                : <button type="button" disabled={!latestPlan && !designBrief} onClick={() => setRightPanel("plan")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "plan" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Plan</button>}
               <button type="button" disabled={!activeTaskId} onClick={() => { setRightPanel("files"); if (activeTaskId) void refreshProject(activeTaskId); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "project" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Project</button>
               <button type="button" onClick={() => setRightPanel("changes")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "review" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300"}`}>Review{changes.files.length || blockingFindingIds.length ? ` (${changes.files.length + blockingFindingIds.length})` : ""}</button>
               <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("debug")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "debug" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Debug</button>
             </nav>
           </div>
-          {panelGroup === "structure" && <nav aria-label="Structure views" className="flex h-10 shrink-0 items-center gap-1 border-b border-white/8 bg-[#0c1016] px-3">
-            <button type="button" onClick={() => setRightPanel("sitemap")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "sitemap" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Sitemap &amp; pages</button>
-            <button type="button" onClick={() => setRightPanel("components")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "components" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Components</button>
-            <button type="button" onClick={() => setRightPanel("styles")} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "styles" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Styles</button>
+          {panelGroup === "blueprint" && <nav aria-label="Project blueprint views" className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-white/8 bg-[#0c1016] px-3">
+            <button type="button" onClick={() => setRightPanel("sitemap")} className={`shrink-0 rounded-md px-3 py-1 text-xs ${rightPanel === "sitemap" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>1 · Product map</button>
+            <button type="button" onClick={() => setRightPanel("styles")} className={`shrink-0 rounded-md px-3 py-1 text-xs ${rightPanel === "styles" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>2 · Design system</button>
+            <button type="button" onClick={() => setRightPanel("components")} className={`shrink-0 rounded-md px-3 py-1 text-xs ${rightPanel === "components" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>3 · Components</button>
+            <button type="button" onClick={() => setRightPanel("roadmap")} className={`shrink-0 rounded-md px-3 py-1 text-xs ${rightPanel === "roadmap" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>4 · Build roadmap</button>
           </nav>}
           {panelGroup === "project" && <nav aria-label="Project views" className="flex h-10 shrink-0 items-center gap-1 border-b border-white/8 bg-[#0c1016] px-3">
             <button type="button" onClick={() => { setRightPanel("files"); if (activeTaskId && !projectEntries.length) void refreshProject(activeTaskId); }} className={`rounded-md px-3 py-1 text-xs ${rightPanel === "files" ? "bg-[#a7ff4f]/10 text-[#d9ffb5]" : "text-slate-500 hover:text-slate-300"}`}>Files</button>
@@ -1612,7 +1651,7 @@ export function BorgWorkspaceV2() {
         </div>}</div>
 
         <div className="border-t border-white/8 bg-[#0a0d12]/95 p-4 sm:px-8">
-          {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planRevisionApproval ? "Approve plan revision & continue" : planApproval ? "Approve frontend phase plan" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planRevisionApproval ? `The current slice could not legally satisfy the product-quality review. Revision ${planRevisionDelta?.fromRevision ?? "?"} → ${planRevisionDelta?.toRevision ?? "?"} repairs that authority boundary and will resume the same isolated worktree.` : planApproval ? "Approval freezes the tailored slice roadmap and starts the frontend build. BORG will execute each slice in a bounded mini-loop inside isolated worktrees." : "This mini-plan is limited to the current approved slice. Approved frontend slices execute automatically inside the frozen phase plan."}</p>{planRevisionApproval && planRevisionReason && <p className="mt-2 text-[11px] leading-5 text-amber-100/80"><span className="font-medium">Why BORG replanned:</span> {planRevisionReason}</p>}</div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planRevisionApproval ? "Reject revision" : planApproval ? "Revise plan" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planRevisionApproval ? "Approve & resume" : planApproval ? "Approve plan" : "Build slice"}</Button></div></div>}
+          {approval && (escalation || planApproval) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/25 bg-[#a7ff4f]/5 p-4"><div className="max-w-xl"><p className="text-sm font-medium text-[#d9ffb5]">{planRevisionApproval ? "Approve plan revision & continue" : planApproval ? "Approve project blueprint" : "Ready to build this slice"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{planRevisionApproval ? `The current slice could not legally satisfy the product-quality review. Revision ${planRevisionDelta?.fromRevision ?? "?"} → ${planRevisionDelta?.toRevision ?? "?"} repairs that authority boundary and will resume the same isolated worktree.` : planApproval ? "Approval freezes the product map, global design system, component architecture, and foundation-first slice roadmap. BORG then starts the frontend build in bounded mini-loops." : "This mini-plan is limited to the current approved slice. Approved frontend slices execute automatically inside the frozen phase plan."}</p>{planRevisionApproval && planRevisionReason && <p className="mt-2 text-[11px] leading-5 text-amber-100/80"><span className="font-medium">Why BORG replanned:</span> {planRevisionReason}</p>}</div><div className="flex gap-2"><Button type="button" variant="outline" disabled={approvalBusy} onClick={() => void decideEscalation("reject")} className="border-white/10 bg-transparent text-slate-300"><X className="size-4" />{planRevisionApproval ? "Reject revision" : planApproval ? "Revise blueprint" : "Keep planning"}</Button><Button type="button" disabled={approvalBusy} onClick={() => void decideEscalation("approve")} className="bg-[#a7ff4f] text-[#071007]"><Sparkles className="size-4" />{approvalBusy ? "Saving…" : planRevisionApproval ? "Approve & resume" : planApproval ? "Approve blueprint" : "Build slice"}</Button></div></div>}
           {deliveryReady && (!isWebsite || !sliceState) && <div className="mx-auto mb-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-3"><div><p className="text-sm font-medium text-[#d9ffb5]">Verified changes ready</p><p className="mt-1 text-xs text-slate-400">{changes.files.length ? `${changes.files.length} files updated. ` : ""}Review the diff before saving this non-workflow change set.</p></div><div className="flex gap-2"><Button variant="outline" disabled={deliveryBusy} onClick={() => setRightPanel("changes")} className="border-white/10 bg-transparent text-slate-300">Review changes</Button><Button disabled={deliveryBusy} onClick={() => void deliver("commit")} className="bg-[#a7ff4f] text-[#071007]">Save version</Button></div></div>}
           {taskState === "COMPLETE" && sliceState?.status === "frontend_complete" && <div className="mx-auto mb-3 max-w-3xl rounded-xl border border-[#a7ff4f]/20 bg-[#a7ff4f]/5 p-4">
             <p className="text-sm font-medium text-[#d9ffb5]">Frontend complete</p>
