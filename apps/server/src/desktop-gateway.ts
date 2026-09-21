@@ -659,7 +659,7 @@ async function streamExecutionRoute(taskId: string, response: ServerResponse) {
 
 const startupInternetSync = syncInternetToCore();
 
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, null);
 
   if (request.method === "GET" && request.url === "/health") {
