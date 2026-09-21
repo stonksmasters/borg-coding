@@ -86,14 +86,32 @@ The browser workspace still uses the bundled Vinext/Vite/Cloudflare development 
 
 ## Verification
 
-The canonical repository verification contract is:
+Use one command to run the repository verification contract locally:
 
 ```text
-npm run install:ci
-npm run check
-npm run lint
-npm test
-npm run build
+npm run verify:all
 ```
 
-GitHub Actions runs the same checks plus the Windows desktop lifecycle test.
+On Windows this runs, in order:
+
+- TypeScript typecheck
+- ESLint
+- the complete Node test suite
+- the production web build
+- the native Windows desktop lifecycle regression
+
+For a clean CI-parity run that first replaces dependencies from the lockfile:
+
+```text
+npm run verify:clean
+```
+
+For the platform-independent core checks only:
+
+```text
+npm run verify:core
+```
+
+`verify:all` skips the desktop lifecycle stage on non-Windows platforms and reports that explicitly. If `node_modules` is missing, use `verify:clean`.
+
+GitHub Actions uses the same `verify:core` runner after its locked dependency install, while the Windows job runs the same desktop lifecycle regression used by `verify:all`. This keeps the local and CI verification contracts aligned.
