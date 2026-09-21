@@ -506,7 +506,13 @@ export class ExecutionOrchestrator {
           appendTaskEvent(taskId, "VISUAL_REGRESSION_COMPLETED", { report: verification.visualRegression, attempt: task.attempts });
           emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
         }
-        if (!verification.passed) {
+        const verificationAttempt = task.attempts;
+        const verificationOutcome = workflow.applyVerificationOutcome(task, {
+          maximumRepairAttempts: maxRepairAttempts,
+          reason: verificationFailure,
+        });
+
+        if (verificationOutcome.action !== "quality_review") {
           finishRole(activeRoleAssignment, "completed", emit);
           recordHandoff({
             task,
@@ -519,20 +525,40 @@ export class ExecutionOrchestrator {
           }, emit);
           activeRoleAssignment = null;
           emit({ type: "stage.updated", stage: "Verification", status: "failed" });
-          if (task.attempts >= maxRepairAttempts) {
-            task = transitionTask(task, "BLOCKED", emit);
-            appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, verification });
-            emit({ type: "stream.blocked", message: `Verification still failed after ${maxRepairAttempts} repair attempts. Changes remain isolated for inspection.` });
-            
+          createCheckpointSnapshot(task, "pre_repair");
+          adoptCoreMutation(verificationOutcome);
+
+          if (verificationOutcome.action === "block") {
+            appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", {
+              attempts: verificationAttempt,
+              verification,
+            });
+            emit({
+              type: "stream.blocked",
+              message: `Verification still failed after ${maxRepairAttempts} repair attempts. Changes remain isolated for inspection.`,
+            });
             return;
           }
-          const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
+
+          const status = await tools.execute(
+            { function: { name: "git_status", arguments: {} } },
+            "agent",
+            taskContext,
+            "verifier",
+            activeDisciplines,
+          ) as { stdout?: string };
           const recentChanges = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim());
-          const context = buildRepairContext({ sliceId: compiledFocus?.sliceId ?? compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
-          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({ browserEvidence: verification.browserEvidence, specialistEvidence: verification.specialistEvidence }).slice(0, 40_000)}`;
+          const context = buildRepairContext({
+            sliceId: compiledFocus?.sliceId ?? compiledSlice?.sliceId,
+            attempt: verificationAttempt,
+            results: deterministicVerification.results,
+            recentChanges,
+          });
+          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({
+            browserEvidence: verification.browserEvidence,
+            specialistEvidence: verification.specialistEvidence,
+          }).slice(0, 40_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
-          task = scheduleRepair(task, emit, verificationFailure);
-          refreshTaskContext();
           continue;
         }
 
