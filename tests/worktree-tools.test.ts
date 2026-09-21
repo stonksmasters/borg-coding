@@ -134,6 +134,7 @@ test("worktree mutation requires approval and remains inside the recorded task w
     assert.equal(styleBlocked.results.at(-1)?.label, "BORG style contract");
     assert.match(styleBlocked.results.at(-1)?.stderr ?? "", /Pill\.tsx.*rounded-full/i);
     writeFileSync(join(worktree.path, "src", "Pill.tsx"), "export const Pill = () => <button className=\"rounded-md\">Contact</button>;\n");
+    writeFileSync(join(worktree.path, "src", "Avatar.tsx"), "export const Avatar = () => <img alt=\"Team member\" className=\"rounded-full\" />;\n");
     const styleRepaired = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
     assert.equal(styleRepaired.passed, true);
 
