@@ -26,7 +26,6 @@ import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import { normalizeWorkflowEvents } from "../../../packages/core/src/workflow-events.ts";
 import { DebugSnapshotSchema, evaluateDebugInvariants, redactDebugValue, type DebugSnapshot } from "../../../packages/core/src/control-plane-debug.ts";
 import { taskRepositoryPath } from "../../../packages/core/src/task-repository-binding.ts";
-import { assertExecutionTransition, buildRepairContext, formatRepairContext, type ExecutionState } from "../../../packages/core/src/execution-state.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
 import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
@@ -38,41 +37,32 @@ import { inspectProjectTree, resolveProjectPath } from "../../../packages/reposi
 import { ToolBroker, type PermissionMode } from "../../../packages/tools/src/tool-broker.ts";
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { ProjectEnvironmentStore } from "../../../packages/tools/src/project-environment.ts";
-import type { BrowserEvidenceReport } from "../../../packages/browser-verification/src/index.ts";
-import { OllamaVisionProvider, VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
+import { OllamaVisionProvider, VisionReviewService } from "../../../packages/vision-review/src/index.ts";
 import { VisualRegressionService, type BaselineCandidate, type VisualRegressionReport } from "../../../packages/visual-regression/src/index.ts";
 import {
   DisciplineRouter,
   TeamPolicyService,
-  evaluateSpecialistEvidence,
   roleCapabilities,
-  selectSpecialistPacks,
   specialistPackRefs,
-  specialistSystemInstructions,
-  verificationProfileFor,
   type SpecialistCapabilityPack,
 } from "../../../packages/orchestration/src/index.ts";
-import { runFreshReview } from "./fresh-review.ts";
 import { deriveWorkflowStatus } from "./workflow-status.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { PlanningOrchestrator } from "./planning-orchestrator.ts";
-import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
-import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
+import { ExecutionOrchestrator } from "./execution-orchestrator.ts";
+import { VerificationService } from "./verification-service.ts";
+import type { RecoveryDecision } from "./recovery-policy.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
-import { preflightFailureMessage, runWorkspacePreflight } from "../../../packages/web-builder/src/workspace-preflight.ts";
 import { projectWorkflowState } from "../../../packages/web-builder/src/workflow-projection.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
-import { websiteGenerationContext } from "../../../packages/web-builder/src/generation-context.ts";
-import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext, type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
-import { updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanDelta, projectPlanRepairPrompt, projectPlanRevisionPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePrompt, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
+import { approveProjectPlan, currentSlice, prepareSlice, projectDeliveredFrontendCheckpoint, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
   VisualDirectorService,
-  designBriefPrompt,
   type DesignBrief,
   type DesignReviewResult,
 } from "../../../packages/design-intelligence/src/index.ts";
@@ -152,91 +142,43 @@ const planningOrchestrator = new PlanningOrchestrator({
   createCheckpointSnapshot,
 });
 
-function changedSourcePaths(status: string) {
-  return status.split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => line.slice(3).trim())
-    .map((value) => value.includes(" -> ") ? value.split(" -> ").at(-1)!.trim() : value)
-    .filter((value) => value && !value.startsWith(".localcode/build/"));
-}
+const verificationService = new VerificationService({ tools, processRuntime });
 
-function safeWorktreeFile(root: string, path: string) {
-  const candidate = resolve(root, path);
-  const rel = relative(resolve(root), candidate);
-  if (rel === ".." || rel.startsWith(".." + sep)) return null;
-  try {
-    if (!existsSync(candidate) || !statSync(candidate).isFile() || statSync(candidate).size > 256_000) return null;
-    return readFileSync(candidate, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-function sourceMutationSnapshot(root: string) {
-  const status = gitRead(root, ["status", "--porcelain", "--untracked-files=all"]) ?? "";
-  const diff = gitRead(root, ["diff", "--no-ext-diff", "--binary", "--", ".", ":(exclude).localcode/build/**"]) ?? "";
-  const paths = changedSourcePaths(status);
-  const sourceStatus = status.split(/\r?\n/).filter((line) => line && !line.includes(".localcode/build/"));
-  const fileHashes = paths.map((path) => {
-    const content = safeWorktreeFile(root, path);
-    return [path, content === null ? null : createHash("sha256").update(content).digest("hex")];
-  });
-  const fingerprint = createHash("sha256").update(JSON.stringify({ status: sourceStatus, diff, fileHashes })).digest("hex");
-  return { status, diff, paths, fingerprint };
-}
-
-function directRepairDependencies(root: string, paths: string[]) {
-  const dependencies = new Set<string>();
-  const extensions = ["", ".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".json"];
-  for (const path of paths.slice(0, 20)) {
-    const content = safeWorktreeFile(root, path);
-    if (!content) continue;
-    const imports = [
-      ...content.matchAll(/(?:from\s*|import\s*\(|require\s*\(|@import\s*)["'](\.[^"']+)["']/g),
-    ].map((match) => match[1]);
-    for (const specifier of imports.slice(0, 40)) {
-      const absoluteBase = resolve(dirname(resolve(root, path)), specifier);
-      const candidates = [
-        ...extensions.map((extension) => absoluteBase + extension),
-        ...extensions.filter(Boolean).map((extension) => resolve(absoluteBase, "index" + extension)),
-      ];
-      const match = candidates.find((candidate) => {
-        const rel = relative(resolve(root), candidate);
-        return rel !== ".."
-          && !rel.startsWith(".." + sep)
-          && existsSync(candidate)
-          && statSync(candidate).isFile()
-          && statSync(candidate).size <= 256_000;
-      });
-      if (!match) continue;
-      const rel = relative(resolve(root), match).replaceAll("\\", "/");
-      if (!rel.startsWith(".localcode/") && !rel.includes("/node_modules/")) dependencies.add(rel);
-    }
-  }
-  return [...dependencies].filter((path) => !paths.includes(path)).slice(0, 20);
-}
-
-function repairGroundingSnapshot(root: string) {
-  const snapshot = sourceMutationSnapshot(root);
-  const dependencyPaths = directRepairDependencies(root, snapshot.paths);
-  const changedFiles = snapshot.paths.slice(0, 12).map((path) => {
-    const content = safeWorktreeFile(root, path);
-    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 12_000)}`;
-  });
-  const dependencies = dependencyPaths.slice(0, 12).map((path) => {
-    const content = safeWorktreeFile(root, path);
-    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 8_000)}`;
-  });
-  return [
-    "CURRENT WORKTREE GROUNDING. This snapshot is authoritative for the repair pass; do not rediscover or guess paths.",
-    `Changed source files:\n${snapshot.paths.length ? snapshot.paths.map((path) => `- ${path}`).join("\n") : "- none"}`,
-    dependencyPaths.length ? `Direct relative dependencies automatically resolved from changed files:\n${dependencyPaths.map((path) => `- ${path}`).join("\n")}` : "",
-    `Current source diff:\n${snapshot.diff.slice(0, 40_000) || "[no tracked diff]"}`,
-    changedFiles.length ? `Current changed-file contents:\n${changedFiles.join("\n\n")}` : "",
-    dependencies.length ? `Current direct-dependency contents:\n${dependencies.join("\n\n")}` : "",
-    "Use this bounded neighborhood first. Read beyond it only when a direct dependency proves another file is required for the evidenced repair.",
-  ].filter(Boolean).join("\n\n");
-}
+const executionOrchestrator = new ExecutionOrchestrator({
+  tasks,
+  workflow,
+  tools,
+  teamPolicies,
+  vision,
+  visualDirector,
+  access,
+  verificationService,
+  ollamaUrl,
+  model,
+  maxRepairAttempts,
+  maxDesignRefinements,
+  appendTaskEvent,
+  transitionTask,
+  syncWorkflowProjection,
+  taskProjectRepository,
+  latestDesignBrief,
+  taskWorkflowAuthorityProjectId,
+  projectPlanFromWorkflow,
+  sliceStateFromWorkflow,
+  recordModelInput,
+  recordContextPack,
+  beginRole,
+  finishRole,
+  recordHandoff,
+  createCheckpointSnapshot,
+  scheduleImplementationRetry,
+  scheduleRepair,
+  scheduleDesignRefinement,
+  recordCompletedReview,
+  recordMemoryNote,
+  designRefinementCount,
+  contextSourceHints,
+});
 
 async function visionRuntimeStatus() {
   const policy = vision.status();
@@ -1346,880 +1288,25 @@ const server = createServer((request, response) => {
   const executionRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/execute$/);
   if (request.method === "POST" && executionRoute) {
     const taskId = decodeURIComponent(executionRoute[1]);
-    let task = tasks.findTask(taskId);
+    const task = tasks.findTask(taskId);
     const approval = tasks.findApproval(taskId);
     if (!task || !approval) return send(response, 404, { error: "Approved task not found" });
-    if (task.state !== "IMPLEMENTING" || approval.status !== "APPROVED" || !approval.worktreePath || !approval.baseCommit) return send(response, 409, { error: "Task is not ready for approved implementation." });
-    const approvedWorktreePath = approval.worktreePath;
+    if (task.state !== "IMPLEMENTING" || approval.status !== "APPROVED" || !approval.worktreePath || !approval.baseCommit) {
+      return send(response, 409, { error: "Task is not ready for approved implementation." });
+    }
     response.writeHead(200, {
-      "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-cache, no-transform",
-      "access-control-allow-origin": "http://localhost:5173", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type",
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "access-control-allow-origin": "http://localhost:5173",
+      "access-control-allow-methods": "POST, OPTIONS",
+      "access-control-allow-headers": "content-type",
     });
-    const taskContext: { taskId: string; executionState?: ExecutionState } = { taskId, executionState: "IMPLEMENT" };
-    const emit = (event: Record<string, unknown>) => {
-      const enriched = { ...event, taskId };
-      writeEvent(response, enriched);
-      const eventType = String(event.type ?? "");
-      if (eventType.startsWith("tool.") || eventType.startsWith("runtime.turn.")) appendTaskEvent(taskId, eventType.toUpperCase().replaceAll(".", "_"), enriched);
-      if (eventType === "activity.updated") appendTaskEvent(taskId, "AGENT_ACTIVITY", { activity: event.activity });
-    };
-    const performPreflight = (reason: string) => {
-      const report = runWorkspacePreflight(approvedWorktreePath, { reason, repair: true, expectedGitHead: approval.baseCommit ?? undefined });
-      appendTaskEvent(taskId, "WORKSPACE_PREFLIGHT_COMPLETED", { report });
-      emit({ type: "workspace.preflight.completed", report });
-      if (!report.passed) {
-        appendTaskEvent(taskId, "WORKSPACE_PREFLIGHT_BLOCKED", { report });
-        throw new Error(`Workspace preflight blocked execution: ${preflightFailureMessage(report)}`);
-      }
-      return report;
-    };
-    const savedPlan = tasks.listEvents(taskId).findLast((event) =>
-      event.type === "PLAN_REVISION_MODEL_RESPONSE_COMPLETED" || event.type === "MODEL_RESPONSE_COMPLETED"
-    )?.payload.answer;
-    const websiteProject = websiteInfo(approvedWorktreePath);
-    const persistedDesignBrief = websiteProject ? readPersistedDesignBrief(approvedWorktreePath) : null;
-    const parsedPersistedDesignBrief = persistedDesignBrief ? DesignBriefSchema.safeParse(persistedDesignBrief) : null;
-    const designBrief = latestDesignBrief(taskId) ?? (parsedPersistedDesignBrief?.success ? parsedPersistedDesignBrief.data : null);
-    const designContext = designBrief ? designBriefPrompt(designBrief) : "";
-    const taskWorkflow = workflow.get(task.projectId);
-    const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
-    const authorityProjectId = taskWorkflowAuthorityProjectId(task.id) ?? task.projectId;
-    const authorityWorkflow = workflow.get(authorityProjectId);
-    const projectPlan = websiteProject ? projectPlanFromWorkflow(authorityWorkflow ?? ownedTaskWorkflow, approvedWorktreePath) : null;
-    const executionScopeEvents = tasks.listEvents(taskId);
-    const executionMarkers = resolveExecutionScopeMarkers(executionScopeEvents, Boolean(websiteProject));
-    const focusedExecutionScope = executionMarkers.focus;
-    const focusedBrowserRoute = focusedExecutionScope && projectPlan
-      ? (() => {
-          const staticRoute = (route: string | null | undefined) =>
-            route && route.startsWith("/") && !/[:\[]/.test(route) ? route : null;
-          if (focusedExecutionScope.type === "page") {
-            return staticRoute(projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id)?.route);
-          }
-          const component = projectPlan.components.find((item) => item.id === focusedExecutionScope.id);
-          return component?.usedBy
-            .map((pageId) => staticRoute(projectPlan.sitemap.find((page) => page.id === pageId)?.route))
-            .find((route): route is string => Boolean(route)) ?? null;
-        })()
-      : null;
-    const sliceState = websiteProject && executionMarkers.frontendSliceSelected
-      ? sliceStateFromWorkflow(ownedTaskWorkflow, projectPlan, approvedWorktreePath)
-      : null;
-    const priorDeliveredWebsiteTask = websiteProject
-      ? tasks.listTasks(task.projectId).some((candidate) => candidate.id !== taskId && ["DELIVERY_READY", "DELIVERING", "COMPLETE"].includes(candidate.state))
-      : false;
-    const executionScope = resolveExecutionTaskScope({
-      events: executionScopeEvents,
-      hasWebsite: Boolean(websiteProject),
-      hasProjectPlan: Boolean(projectPlan),
-      hasSliceState: Boolean(sliceState),
-      priorDeliveredWebsiteTask,
-    });
-    const styleWorkspace = executionScope.styleWorkspace;
-    const websiteWorkflow = executionScope.websiteWorkflow;
-    const websiteContext = websiteProject ? websiteGenerationContext({
-      name: websiteProject.name,
-      template: websiteProject.template,
-      originalBrief: websiteProject.originalBrief,
-    }, websiteWorkflow) : "";
-    const backendHandoff = executionScope.backendPhase
-      ? `Plan and implement backend work from the completed frontend contract. Preserve the frontend.\n${ownedTaskWorkflow?.handoff ?? readProjectDocs(approvedWorktreePath).filter((doc) => /\/(data-contract|handoff|decisions)\.md$/.test(doc.path)).map((doc) => `${doc.path}\n${doc.content.slice(0, 4000)}`).join("\n\n").slice(0, 12_000)}` : "";
-    const styleExecutionContext = styleWorkspace && websiteProject
-      ? "GLOBAL STYLE WORKSPACE. Preserve sitemap, routes, page purposes, component responsibilities, content hierarchy, interactions, and data behavior. Change shared visual primitives first: theme/tokens, typography, spacing, radii, shadows, layout rhythm, responsive styling, motion, and accessibility presentation. Avoid one-off component patches when a shared rule can solve the request. Verify representative pages at mobile and desktop widths."
-      : "";
-    const teamPolicy = teamPolicies.load(taskProjectRepository(taskId));
-    const activeDisciplines = (task.disciplines.length ? task.disciplines : [teamPolicy.defaultDiscipline]) as EngineeringDiscipline[];
-    const primaryDiscipline = activeDisciplines[0];
-    const packs = selectSpecialistPacks(activeDisciplines);
-    const specialistInstructions = {
-      implementer: specialistSystemInstructions(packs, "implementer"),
-      verifier: specialistSystemInstructions(packs, "verifier"),
-      reviewer: specialistSystemInstructions(packs, "reviewer"),
-    };
-    const availableImplementationTools = tools.toolDefinitions("agent", taskContext, "implementer", activeDisciplines).map((tool) => tool.function.name);
-    const verificationProfile = verificationProfileFor(packs);
-    let activeRoleAssignment: RoleAssignment | null = null;
-    void (async () => {
-      const taskEvents = tasks.listEvents(taskId);
-      const blockedRetry = taskEvents.findLast((event) => event.type === "BLOCKED_RETRY_REQUESTED");
-      const blockedFailure = blockedRetry
-        ? taskEvents.findLast((event) =>
-            event.type === "REPAIR_LIMIT_REACHED"
-            || event.type === "DESIGN_REVIEW_BLOCKED"
-            || event.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
-            || event.type === "PLAN_REPAIR_REQUIRED")
-        : null;
-      let repairEvidence = blockedRetry
-        ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
-        : "";
-      let executionState: ExecutionState = blockedRetry ? "REPAIR" : "IMPLEMENT";
-      taskContext.executionState = executionState;
-      const setExecutionState = (next: ExecutionState) => {
-        if (next !== executionState) assertExecutionTransition(executionState, next);
-        executionState = next;
-        taskContext.executionState = next;
-        appendTaskEvent(taskId, "EXECUTION_STATE_CHANGED", { state: next, repairAttempt: task?.attempts ?? 0 });
-        emit({ type: "execution.state.changed", state: next, repairAttempt: task?.attempts ?? 0 });
-      };
-      let implementationBudgetContinuations = 0;
-      let implementationBudgetExhausted = false;
-      appendTaskEvent(taskId, "EXECUTION_STATE_CHANGED", { state: executionState, repairAttempt: task.attempts });
-      performPreflight("execution_start");
-      const contextHintRoot = taskProjectRepository(taskId) ?? approvedWorktreePath;
-      const contextWorkflowVersion = authorityWorkflow?.version ?? ownedTaskWorkflow?.version ?? null;
-      const selectedSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
-      const focusedEntity = focusedExecutionScope && projectPlan
-        ? (focusedExecutionScope.type === "page"
-            ? projectPlan.sitemap.find((item) => item.id === focusedExecutionScope.id)
-            : projectPlan.components.find((item) => item.id === focusedExecutionScope.id))
-        : null;
-      const compiledSlice = sliceState && projectPlan && selectedSlice ? compileFrontendContext({
-        root: approvedWorktreePath,
-        phase: "frontend",
-        sliceIndex: sliceState.current,
-        authority: { plan: projectPlan, state: sliceState, workflowVersion: contextWorkflowVersion },
-        productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief ?? undefined,
-        sourceHints: contextSourceHints(contextHintRoot, [task.request, selectedSlice.title, selectedSlice.outcome, ...selectedSlice.scope].join(" ")),
-        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
-      }) : null;
-      const compiledFocus = focusedExecutionScope && projectPlan ? compileFocusedFrontendContext({
-        root: approvedWorktreePath,
-        scope: focusedExecutionScope,
-        productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief ?? undefined,
-        sourceHints: contextSourceHints(contextHintRoot, [task.request, focusedEntity?.name ?? "", focusedEntity?.purpose ?? ""].join(" ")),
-        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
-        authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
-      }) : null;
-      const compiledStyle = styleWorkspace && projectPlan ? compileStyleFrontendContext({
-        root: approvedWorktreePath,
-        productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief ?? undefined,
-        sourceHints: contextSourceHints(contextHintRoot, `global styles theme typography spacing color layout responsive motion ${task.request}`),
-        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
-        authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
-      }) : null;
-      const compiledExecutionContext = compiledFocus ?? compiledStyle ?? compiledSlice;
-      if (compiledExecutionContext) recordContextPack(taskId, authorityProjectId, compiledExecutionContext);
-      const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
-      const focusedExecutionPrompt = compiledFocus
-        ? `FOCUSED ${focusedExecutionScope!.type.toUpperCase()} WORKSPACE [${focusedExecutionScope!.id}]. Modify only the selected ${focusedExecutionScope!.type} and direct dependencies represented in the focused context. Preserve unrelated pages/components and the approved global style system. Do not perform repository-wide redesign or planning.\n\n${compiledFocus.text}`
-        : "";
-      const styleExecutionPrompt = compiledStyle
-        ? `${styleExecutionContext}\n\n${compiledStyle.text}`
-        : styleExecutionContext;
-      while (task) {
-        if (task.attempts > 0) performPreflight("retry_start");
-        const attemptStartedInRepair = taskContext.executionState === "REPAIR";
-        const preAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
-        const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
-        activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
-        const repairGrounding = attemptStartedInRepair ? repairGroundingSnapshot(approvedWorktreePath) : "";
-        const repairPrompt = repairEvidence
-          ? [repairEvidence, repairGrounding].filter(Boolean).join("\n\n")
-          : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
-        let implementationResult: Awaited<ReturnType<typeof runOllamaAgent>>;
-        try {
-          implementationResult = await runOllamaAgent({
-          ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
-          limits: sliceState || focusedExecutionScope || styleWorkspace ? { toolRounds: 12, toolCalls: 28 } : undefined,
-          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledExecutionContext?.sliceId ?? null, compiledExecutionContext?.manifest ?? [], body) : undefined,
-          messages: [
-            ...(taskContext.executionState === "REPAIR" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
-            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext && !compiledExecutionContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
-            { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
-          ],
-          });
-        } catch (error) {
-          if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
-          activeRoleAssignment = null;
-          const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
-          appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
-          if (decision.disposition === "fatal") {
-            syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-            throw error;
-          }
-          const recoveryPreflight = performPreflight("implementation_recovery");
-          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
-          task = scheduleImplementationRetry(task, emit, decision.action, decision);
-          continue;
-        }
-        const { answer, usedTools, budgetExhausted } = implementationResult;
-        implementationBudgetExhausted = Boolean(budgetExhausted);
-        if (sliceState || focusedExecutionScope || styleWorkspace) {
-          const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
-          const postAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
-          const initialSourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
-          const repairDelta = preAttemptSnapshot.fingerprint !== postAttemptSnapshot.fingerprint;
-          const explainedNoMutation = /\b(?:no (?:source )?(?:change|mutation) (?:is )?required because|no mutation needed because|already resolved and no (?:source )?change is required)\b/i.test(answer);
-          const sourceProgress = attemptStartedInRepair ? repairDelta || explainedNoMutation : initialSourceProgress;
-          if (attemptStartedInRepair && !repairDelta && explainedNoMutation) {
-            appendTaskEvent(taskId, "REPAIR_NO_MUTATION_EXPLAINED", { attempt: task.attempts, answer: answer.slice(0, 4_000) });
-          }
-          if (!sourceProgress) {
-            if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
-            activeRoleAssignment = null;
-            const toolFailures = tasks.listEvents(taskId)
-              .filter((event) => event.type === "TOOL_FAILED")
-              .slice(-5)
-              .map((event) => {
-                const payload = event.payload as Record<string, unknown>;
-                return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
-              });
-            const failure = toolFailures.at(-1) ?? (attemptStartedInRepair
-              ? "The repair attempt completed without changing the source diff relative to the start of this repair pass."
-              : "The implementation attempt completed without any source-file progress.");
-            const decision = classifyImplementationFailure(failure, task.attempts, maxRepairAttempts, { noProgress: true });
-            appendTaskEvent(taskId, attemptStartedInRepair ? "REPAIR_NO_PROGRESS" : "IMPLEMENTATION_NO_PROGRESS", {
-              attempt: task.attempts,
-              toolFailures,
-              decision,
-              preAttemptFingerprint: preAttemptSnapshot.fingerprint,
-              postAttemptFingerprint: postAttemptSnapshot.fingerprint,
-            });
-            appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
-            if (decision.disposition === "fatal") {
-              syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-              throw new Error(`Slice recovery stopped: ${decision.reason}`);
-            }
-            const recoveryPreflight = performPreflight("no_progress_recovery");
-            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
-            task = scheduleImplementationRetry(task, emit, decision.action, decision);
-            continue;
-          }
-        }
-        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted && implementationBudgetContinuations < 1) {
-          implementationBudgetContinuations += 1;
-          appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_CONTINUATION", {
-            continuation: implementationBudgetContinuations,
-            toolBudgetExhausted: true,
-          });
-          if (activeRoleAssignment) finishRole(activeRoleAssignment, "completed", emit);
-          activeRoleAssignment = null;
-          repairEvidence = focusedExecutionScope
-            ? `The bounded implementation tool budget ended before the focused ${focusedExecutionScope.type} edit demonstrated completion. Continue the SAME focused scope [${focusedExecutionScope.id}] from the current worktree state. Do not re-plan or inspect unrelated pages/components.`
-            : styleWorkspace
-              ? "The bounded implementation tool budget ended before the global style edit demonstrated completion. Continue the SAME style task from the current worktree state without changing site structure."
-              : "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
-          emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same scoped task once with compact context instead of treating partial progress as complete." });
-          continue;
-        }
-        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
-        appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, budgetExhausted: Boolean(budgetExhausted), attempt: task.attempts });
-        finishRole(activeRoleAssignment, "completed", emit);
-        recordHandoff({
-          task,
-          fromRole: "implementer",
-          toRole: "verifier",
-          objective: task.request,
-          completedWork: [task.attempts > 0 ? `Repair attempt ${task.attempts} completed.` : "Approved implementation completed."],
-          evidence: [`Implementation response recorded with ${usedTools ? "tool use" : "no tool use"}.`],
-          constraints: packs.flatMap((pack) => pack.riskRules),
-          requiredNextAction: `Run the ${verificationProfile} deterministic profile and collect: ${packs.flatMap((pack) => pack.requiredEvidence).join(" ")}`,
-        }, emit);
-        const verifierModel = teamPolicies.modelFor(teamPolicy, "verifier", model, primaryDiscipline);
-        activeRoleAssignment = beginRole(task, "verifier", primaryDiscipline, verifierModel, packs, emit);
-        setExecutionState("VERIFY");
-        task = transitionTask(task, "VERIFYING", emit);
-        if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_verifying", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Implementation produced source changes. Deterministic and browser verification are running." });
-        emit({ type: "stage.updated", stage: "Verification", status: "active" });
-        emit({ type: "tool.started", tool: "verification_run", input: { profile: verificationProfile } });
-        let deterministicVerification: {
-          passed?: boolean;
-          results?: Array<{ label?: string; command?: string; args?: string[]; exitCode?: number; stdout?: string; stderr?: string }>;
-          browserEvidence?: BrowserEvidenceReport | null;
-          visualRegression?: VisualRegressionReport;
-        };
-        try {
-          deterministicVerification = await tools.execute(
-            { function: { name: "verification_run", arguments: { profile: verificationProfile } } },
-            "agent", taskContext, "verifier", activeDisciplines,
-          ) as typeof deterministicVerification;
-        } catch (error) {
-          if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
-          activeRoleAssignment = null;
-          const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
-          appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "verification" });
-          if (decision.disposition === "fatal") {
-            syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-            throw error;
-          }
-          const recoveryPreflight = performPreflight("verification_recovery");
-          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
-          setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, decision.action, decision);
-          continue;
-        }
-        let focusedBrowserEvidence: BrowserEvidenceReport | null = null;
-        let focusedBrowserFailure: string | null = null;
-        if (focusedBrowserRoute) {
-          const serverUrl = processRuntime.findRunning(taskId, "dev_server")?.url;
-          if (!serverUrl) {
-            focusedBrowserFailure = "Focused route verification requires the managed development server.";
-          } else {
-            const focusedUrl = new URL(focusedBrowserRoute, serverUrl).toString();
-            try {
-              await tools.execute(
-                { function: { name: "browser_responsive", arguments: { url: focusedUrl, accessibility: true } } },
-                "agent", taskContext, "verifier", activeDisciplines,
-              );
-              const closed = await tools.execute(
-                { function: { name: "browser_close", arguments: {} } },
-                "agent", taskContext, "verifier", activeDisciplines,
-              ) as { report?: BrowserEvidenceReport | null };
-              focusedBrowserEvidence = closed.report ?? null;
-              appendTaskEvent(taskId, "FOCUSED_BROWSER_VERIFICATION_COMPLETED", {
-                scope: focusedExecutionScope,
-                route: focusedBrowserRoute,
-                passed: focusedBrowserEvidence?.passed ?? false,
-              });
-            } catch (error) {
-              focusedBrowserFailure = error instanceof Error ? error.message : String(error);
-              appendTaskEvent(taskId, "FOCUSED_BROWSER_VERIFICATION_FAILED", {
-                scope: focusedExecutionScope,
-                route: focusedBrowserRoute,
-                message: focusedBrowserFailure,
-              });
-            }
-          }
-        }
-        const verificationEvidence = focusedBrowserEvidence
-          ? { ...deterministicVerification, browserEvidence: focusedBrowserEvidence }
-          : deterministicVerification;
-        const specialistEvidence = evaluateSpecialistEvidence(packs, verificationEvidence);
-        const verification = {
-          ...deterministicVerification,
-          browserEvidence: focusedBrowserEvidence ?? deterministicVerification.browserEvidence,
-          focusedBrowserRoute,
-          focusedBrowserFailure,
-          passed: Boolean(deterministicVerification.passed)
-            && !focusedBrowserFailure
-            && (focusedBrowserEvidence?.passed ?? true)
-            && specialistEvidence.passed,
-          specialistEvidence,
-          specialistInstructions: specialistInstructions.verifier,
-        };
-        emit({ type: "tool.completed", tool: "verification_run", output: verification });
-        const verificationFailure = [
-          ...(verification.browserEvidence?.issues ?? []),
-          ...(verification.specialistEvidence?.failures ?? []),
-        ].filter(Boolean).join(" ") || "Deterministic verification failed.";
-        const verificationSummary = verification.passed
-          ? `${verificationProfile} verification passed for repair attempt ${task.attempts}.`
-          : verificationFailure;
-        const verifiedWorkflow = workflow.recordVerification(task, {
-          passed: verification.passed,
-          attempt: task.attempts,
-          profile: verificationProfile,
-          summary: verificationSummary,
-          browserPassed: verification.browserEvidence?.passed ?? (focusedBrowserFailure ? false : null),
-          specialistPassed: verification.specialistEvidence?.passed ?? null,
-          resultSha256: createHash("sha256").update(JSON.stringify(verification)).digest("hex"),
-          evidence: verification,
-        });
-        syncWorkflowProjection(task, verifiedWorkflow);
-        if (verification.visualRegression && verification.visualRegression.status !== "disabled") {
-          appendTaskEvent(taskId, "VISUAL_REGRESSION_COMPLETED", { report: verification.visualRegression, attempt: task.attempts });
-          emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
-        }
-        if (!verification.passed) {
-          finishRole(activeRoleAssignment, "completed", emit);
-          recordHandoff({
-            task,
-            fromRole: "verifier",
-            toRole: "implementer",
-            objective: task.request,
-            evidence: [JSON.stringify(verification).slice(0, 20_000)],
-            openRisks: [verificationFailure],
-            requiredNextAction: "Repair only the evidenced verification failure.",
-          }, emit);
-          activeRoleAssignment = null;
-          emit({ type: "stage.updated", stage: "Verification", status: "failed" });
-          if (task.attempts >= maxRepairAttempts) {
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
-            appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, verification });
-            emit({ type: "stream.blocked", message: `Verification still failed after ${maxRepairAttempts} repair attempts. Changes remain isolated for inspection.` });
-            response.end();
-            return;
-          }
-          const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
-          const recentChanges = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim());
-          const context = buildRepairContext({ sliceId: compiledFocus?.sliceId ?? compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
-          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({ browserEvidence: verification.browserEvidence, specialistEvidence: verification.specialistEvidence }).slice(0, 40_000)}`;
-          appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
-          setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, verificationFailure);
-          continue;
-        }
-
-        let visionReview: VisionReviewResult | null = null;
-        if (verification.browserEvidence && !designBrief) {
-          setExecutionState("BROWSER_VERIFY");
-          const visionStatus = vision.status();
-          appendTaskEvent(taskId, "VISION_REVIEW_STARTED", { provider: visionStatus.provider, model: visionStatus.model, attempt: task.attempts });
-          emit({ type: "vision.review.started", provider: visionStatus.provider, model: visionStatus.model });
-          visionReview = await vision.review({
-            taskId,
-            request: task.request,
-            worktreePath: approvedWorktreePath,
-            browserEvidence: verification.browserEvidence,
-            onRequestBody: (body) => recordModelInput(taskId, "vision_reviewer", visionStatus.model, compiledSlice?.sliceId ?? null, [], body),
-          });
-          const visionEvent = visionReview.status === "unavailable" ? "VISION_REVIEW_UNAVAILABLE"
-            : visionReview.status === "failed" ? "VISION_REVIEW_FAILED"
-            : visionReview.status === "inconclusive" ? "VISION_REVIEW_INCONCLUSIVE"
-            : visionReview.status === "disabled" ? "VISION_REVIEW_DISABLED"
-            : "VISION_REVIEW_COMPLETED";
-          appendTaskEvent(taskId, visionEvent, { review: visionReview, attempt: task.attempts });
-          emit({ type: "vision.review.completed", visionReview });
-          if (visionReview.status === "repair") {
-            finishRole(activeRoleAssignment, "completed", emit);
-            recordHandoff({
-              task,
-              fromRole: "verifier",
-              toRole: "implementer",
-              objective: task.request,
-              evidence: [JSON.stringify(visionReview).slice(0, 20_000)],
-              openRisks: ["Local vision review found a blocking visual defect."],
-              requiredNextAction: "Repair only the evidenced visual defect.",
-            }, emit);
-            activeRoleAssignment = null;
-            recordCompletedReview(task, visionReview.findings, "repair", "Local vision review found a blocking visual defect.");
-            emit({ type: "review.history.updated" });
-            emit({ type: "stage.updated", stage: "Verification", status: "failed" });
-            if (task.attempts >= maxRepairAttempts) {
-              setExecutionState("BLOCKED");
-              task = transitionTask(task, "BLOCKED", emit);
-              appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, visionReview });
-              emit({ type: "stream.blocked", message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.` });
-              response.end();
-              return;
-            }
-            repairEvidence = `Local vision review requires repair:\n${JSON.stringify(visionReview).slice(0, 60_000)}`;
-            setExecutionState("REPAIR");
-            task = scheduleRepair(task, emit, "Local vision review found a blocking visual defect.");
-            continue;
-          }
-        }
-
-        let designReview: DesignReviewResult | null = null;
-        if (designBrief) {
-          setExecutionState("BROWSER_VERIFY");
-          if (!verification.browserEvidence) {
-            finishRole(activeRoleAssignment, "completed", emit);
-            activeRoleAssignment = null;
-            appendTaskEvent(taskId, "DESIGN_REVIEW_BLOCKED", { reason: "Missing browser evidence.", attempt: task.attempts });
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
-            emit({ type: "design.review.blocked", message: "Premium frontend delivery requires responsive browser screenshots for aesthetic review." });
-            emit({ type: "stream.blocked", message: "Design quality could not be verified because responsive browser evidence is missing." });
-            response.end();
-            return;
-          }
-          const policy = vision.status();
-          emit({ type: "stage.updated", stage: "Visual Direction", status: "active" });
-          appendTaskEvent(taskId, "DESIGN_REVIEW_STARTED", { provider: policy.provider, model: policy.model, attempt: task.attempts });
-          emit({ type: "design.review.started", provider: policy.provider, model: policy.model });
-          const visualReviewSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
-          designReview = await visualDirector.review({
-            taskId,
-            request: [task.request, activeSlicePrompt].filter(Boolean).join("\n\n"),
-            worktreePath: approvedWorktreePath,
-            browserEvidence: verification.browserEvidence,
-            brief: designBrief,
-            policy,
-            scope: {
-              currentSlice: visualReviewSlice ? {
-                id: visualReviewSlice.id,
-                title: visualReviewSlice.title,
-                outcome: visualReviewSlice.outcome,
-                scope: visualReviewSlice.scope,
-              } : null,
-              projectPages: projectPlan?.sitemap.map((page) => ({ id: page.id, name: page.name, route: page.route })) ?? [],
-            },
-            onRequestBody: (body) => recordModelInput(taskId, "visual_director", policy.model, compiledSlice?.sliceId ?? null, [], body),
-          });
-          appendTaskEvent(taskId, designReview.status === "pass" || designReview.status === "repair" ? "DESIGN_REVIEW_COMPLETED" : "DESIGN_REVIEW_BLOCKED", {
-            review: designReview,
-            attempt: task.attempts,
-          });
-          emit({ type: "design.review.completed", designReview });
-
-          if (designReview.status === "repair") {
-            finishRole(activeRoleAssignment, "completed", emit);
-            activeRoleAssignment = null;
-            emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
-
-            const requiresPlanRevision = designReview.repairScope === "cross_slice" || designReview.repairScope === "project_plan";
-            if (requiresPlanRevision) {
-              if (!projectPlan || !sliceState || !websiteProject) {
-                setExecutionState("BLOCKED");
-                task = transitionTask(task, "BLOCKED", emit);
-                appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
-                  reason: designReview.scopeReason || designReview.summary,
-                  review: designReview,
-                  error: "Durable project plan or active slice was unavailable for automatic plan revision.",
-                });
-                emit({ type: "stream.blocked", message: "The Visual Director requires a plan-level repair, but BORG could not resolve the durable active plan/slice needed to revise it safely." });
-                response.end();
-                return;
-              }
-
-              const revisionReason = designReview.scopeReason || designReview.summary;
-              const checkpoint = createCheckpointSnapshot(task, "pre_repair");
-              const recovered = workflow.markRecoveryRequired(task, {
-                category: "plan_repair_required",
-                checkpointId: checkpoint.id,
-                resumeAction: "replan",
-                reason: revisionReason,
-              });
-              task = recovered.task;
-              syncWorkflowProjection(task, recovered.workflow);
-              appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", {
-                review: designReview,
-                repairScope: designReview.repairScope,
-                reason: revisionReason,
-                currentSliceIndex: sliceState.current,
-                currentSliceId: projectPlan.slices[sliceState.current]?.id ?? null,
-              });
-              appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
-                reason: revisionReason,
-                repairScope: designReview.repairScope,
-                review: designReview,
-                checkpointId: checkpoint.id,
-              });
-
-              const revising = workflow.beginPlanRevision(task, revisionReason);
-              task = revising.task;
-              syncWorkflowProjection(task, revising.workflow);
-              setExecutionState("BLOCKED");
-              emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The current slice cannot satisfy the product-quality review. Revising the project plan without discarding the existing worktree." });
-
-              const revisionModel = teamPolicies.modelFor(teamPolicy, "architect", model, primaryDiscipline);
-              const revisionAssignment = beginRole(task, "architect", primaryDiscipline, revisionModel, packs, emit);
-              const revisionBrief = websiteProject.originalBrief || task.request;
-              const revisionRequest = {
-                ollamaUrl,
-                model: revisionModel,
-                tools,
-                mode: "plan" as const,
-                role: "architect" as const,
-                disciplines: activeDisciplines,
-                phase: "plan" as const,
-                emit,
-                limits: { toolRounds: 3, toolCalls: 4 },
-                onRequestBody: (body: string) => recordModelInput(taskId, "architect", revisionModel, `plan-revision:${projectPlan.revision + 1}`, [], body),
-                messages: [
-                  {
-                    role: "system" as const,
-                    content: "You are BORG's bounded project-plan repair architect. Revise planning authority only. Do not mutate source, run commands, restart repository discovery, or discard already-completed work. The original brief, durable current plan, active slice, and independent review evidence below are authoritative.",
-                  },
-                  {
-                    role: "user" as const,
-                    content: projectPlanRevisionPrompt({
-                      brief: revisionBrief,
-                      currentPlan: projectPlan,
-                      currentSliceIndex: sliceState.current,
-                      conflictReason: revisionReason,
-                      review: designReview,
-                    }),
-                  },
-                ],
-              };
-
-              let revisionResult = await runOllamaAgent(revisionRequest);
-              let parsedRevision = parseProjectPlanResult(revisionResult.answer, revisionBrief, websiteProject.template);
-              if (parsedRevision.source === "fallback") {
-                appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_SEMANTIC_RETRY", {
-                  reason: parsedRevision.fallbackReason,
-                  validation: parsedRevision.validation,
-                });
-                revisionResult = await runOllamaAgent({
-                  ...revisionRequest,
-                  messages: [
-                    ...revisionRequest.messages,
-                    { role: "assistant" as const, content: revisionResult.answer },
-                    { role: "user" as const, content: projectPlanRepairPrompt(parsedRevision) },
-                  ],
-                  limits: { toolRounds: 2, toolCalls: 2 },
-                });
-                parsedRevision = parseProjectPlanResult(revisionResult.answer, revisionBrief, websiteProject.template);
-              }
-
-              if (parsedRevision.source === "fallback" || !parsedRevision.validation.valid) {
-                finishRole(revisionAssignment, "failed", emit);
-                const failureReason = `Plan revision failed semantic validation: ${parsedRevision.fallbackReason ?? parsedRevision.validation.issues.join(" ")}`;
-                const failedRevision = workflow.markRecoveryRequired(task, {
-                  category: "plan_repair_required",
-                  checkpointId: checkpoint.id,
-                  resumeAction: "replan",
-                  reason: failureReason,
-                });
-                task = failedRevision.task;
-                syncWorkflowProjection(task, failedRevision.workflow);
-                appendTaskEvent(taskId, "PLAN_REVISION_FAILED", {
-                  reason: failureReason,
-                  validation: parsedRevision.validation,
-                });
-                emit({ type: "stream.blocked", message: failureReason });
-                response.end();
-                return;
-              }
-
-              const planWorkflow = workflow.setProjectPlan(task, parsedRevision.plan);
-              syncWorkflowProjection(task, planWorkflow);
-              const proposedPlan = planWorkflow.projectPlan as ProjectPlan;
-              const coverage = validateProjectPlanCoverage(proposedPlan, revisionBrief);
-              if (!coverage.valid) throw new Error(`Core plan revision failed coverage after parse validation: ${coverage.issues.join(" ")}`);
-              const delta = projectPlanDelta(projectPlan, proposedPlan);
-              persistProposedProjectPlan(approvedWorktreePath, revisionBrief, proposedPlan, taskId, {
-                coverage,
-                currentSlice: planWorkflow.planRevisionResumeIndex ?? sliceState.current,
-                revisionReason,
-              });
-              appendTaskEvent(taskId, "PROJECT_PLAN_COVERAGE_VALIDATED", {
-                revision: proposedPlan.revision,
-                coverage,
-                planRevision: true,
-              });
-              appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_PROPOSED", {
-                plan: proposedPlan,
-                delta,
-                repairScope: designReview.repairScope,
-                reason: revisionReason,
-                workflowVersion: planWorkflow.version,
-              });
-              appendTaskEvent(taskId, "PLAN_REVISION_MODEL_RESPONSE_COMPLETED", {
-                runtime: "ollama",
-                model: revisionModel,
-                role: "architect",
-                answer: revisionResult.answer,
-                usedTools: revisionResult.usedTools,
-              });
-              finishRole(revisionAssignment, "completed", emit);
-              writeEvent(response, { type: "message.delta", taskId, text: revisionResult.answer });
-
-              const revisionApproval = {
-                ...createApproval({ id: randomUUID(), taskId }),
-                worktreePath: approval.worktreePath,
-                baseCommit: approval.baseCommit,
-              };
-              const requestedRevision = workflow.requestApproval(task, revisionApproval, "project_plan_revision");
-              task = requestedRevision.task;
-              syncWorkflowProjection(task, requestedRevision.workflow);
-              emit({ type: "task.state", taskId, state: task.state, workflow: requestedRevision.workflow });
-              writeEvent(response, {
-                type: "project.plan.approval.requested",
-                taskId,
-                approval: revisionApproval,
-                planText: revisionResult.answer,
-                projectPlan: proposedPlan,
-                planRevision: true,
-                planDelta: delta,
-                planRevisionReason: revisionReason,
-                message: `Plan revision ${proposedPlan.revision} resolves a ${designReview.repairScope.replaceAll("_", " ")} quality conflict. Approve it to resume the current worktree at the repaired slice boundary.`,
-              });
-              writeEvent(response, { type: "stream.completed", taskId });
-              response.end();
-              return;
-            }
-
-            const refinements = designRefinementCount(taskId);
-            if (refinements >= maxDesignRefinements) {
-              setExecutionState("BLOCKED");
-              task = transitionTask(task, "BLOCKED", emit);
-              appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", { refinements, maximum: maxDesignRefinements, review: designReview });
-              emit({ type: "stream.blocked", message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
-              response.end();
-              return;
-            }
-
-            repairEvidence = `VISUAL DIRECTOR CURRENT-SLICE REFINEMENT REQUIRED. The Visual Director explicitly classified this repair as legal inside the current approved slice. Rework the design against the persisted Design Brief and screenshot evidence while preserving working behavior, then recapture responsive browser evidence.
-
-Structured scope decision:
-- repairScope: ${designReview.repairScope}
-- scopeReason: ${designReview.scopeReason}
-
-Work from the authoritative repair grounding that BORG injects automatically:
-- Start from the supplied changed-file list, current source diff, changed-file contents, and direct dependencies. Do not guess paths, components, or CSS selectors.
-- Read only further direct dependencies when necessary to repair an implicated file.
-- Trace every style change to markup that actually uses it.
-- Address the highest-severity visible findings with a material composition change, not small token or spacing adjustments.
-- Do not broaden beyond the current slice; a wider change requires a new plan-revision classification.
-- Capture mobile, tablet, and desktop evidence after editing and inspect whether the cited visual problem visibly changed before finishing.
-
-${JSON.stringify(designReview).slice(0, 70000)}`;
-            setExecutionState("REPAIR");
-            task = scheduleDesignRefinement(task, emit, designReview.summary);
-            continue;
-          }
-
-          if (designReview.status !== "pass") {
-            finishRole(activeRoleAssignment, "completed", emit);
-            activeRoleAssignment = null;
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
-            emit({ type: "design.review.blocked", designReview, message: designReview.summary });
-            emit({ type: "stream.blocked", message: `Premium frontend delivery is blocked because mandatory aesthetic review is ${designReview.status}: ${designReview.summary}` });
-            response.end();
-            return;
-          }
-          emit({ type: "stage.updated", stage: "Visual Direction", status: "complete" });
-        }
-
-        let status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
-        let diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
-        finishRole(activeRoleAssignment, "completed", emit);
-        recordHandoff({
-          task,
-          fromRole: "verifier",
-          toRole: "reviewer",
-          objective: task.request,
-          changedFiles: (status.stdout ?? "").split("\n").filter(Boolean).slice(0, 200),
-          evidence: [
-            JSON.stringify(verification).slice(0, 20_000),
-            ...(designReview ? [`Visual Director: ${designReview.status} — ${designReview.summary}`] : []),
-          ],
-          requiredNextAction: "Review the verified diff from fresh context without mutation access.",
-        }, emit);
-        activeRoleAssignment = null;
-        emit({ type: "stage.updated", stage: "Verification", status: "complete" });
-        setExecutionState("REVIEW");
-        task = transitionTask(task, "REVIEWING", emit);
-        if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_reviewing", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Verification passed. Fresh review and visual quality gates are running." });
-        emit({ type: "stage.updated", stage: "Review", status: "active" });
-        const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
-        activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, packs, emit);
-        const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
-        const styleAcceptance = styleWorkspace && projectPlan?.styles
-          ? [
-              projectPlan.styles.direction,
-              ...projectPlan.styles.layoutPrinciples,
-              ...projectPlan.styles.responsive,
-              ...projectPlan.styles.accessibility,
-              ...projectPlan.styles.avoid.map((item) => `Avoid: ${item}`),
-            ]
-          : [];
-        const focusedAcceptance = focusedExecutionScope && projectPlan
-          ? focusedExecutionScope.type === "page"
-            ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
-            : projectPlan.components.find((component) => component.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
-          : [];
-        const review = await runFreshReview({
-          ollamaUrl,
-          model: reviewerModel,
-          taskId,
-          request: task.request,
-          projectGoal: projectPlan?.siteGoal,
-          sliceTitle: activeSlice?.title,
-          sliceOutcome: activeSlice?.outcome,
-          acceptanceCriteria: focusedAcceptance.length ? focusedAcceptance : styleAcceptance.length ? styleAcceptance : activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
-          implementationBudgetExhausted,
-          diff: diff.stdout ?? "",
-          verification,
-          specialistInstructions: specialistInstructions.reviewer,
-          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, [], body) : undefined,
-        });
-        finishRole(activeRoleAssignment, "completed", emit);
-        activeRoleAssignment = null;
-        const reviewHistory = recordCompletedReview(
-          task,
-          [...(visionReview?.findings ?? []), ...review.findings],
-          review.verdict,
-          review.summary,
-          task.attempts > 0
-            ? [`Deterministic verification passed on repair attempt ${task.attempts}.`, `Fresh review run did not reproduce the prior finding.`]
-            : [],
-        );
-        emit({ type: "review.history.updated" });
-        const reviewedRepository = taskProjectRepository(taskId);
-        if (reviewedRepository) for (const finding of review.findings) recordMemoryNote(reviewedRepository, {
-          id: `finding:${finding.id}`, kind: "finding", text: `${finding.severity}: ${finding.title} — ${finding.description}`,
-          taskId, path: finding.file && access.allowsRepositoryFile(finding.file) ? finding.file : null,
-          line: finding.line ?? null, createdAt: new Date().toISOString(),
-        });
-        appendTaskEvent(taskId, "REVIEW_COMPLETED", { review, status, worktreePath: approval.worktreePath, model: reviewerModel, role: "reviewer", attempt: task.attempts });
-        emit({ type: "review.completed", review });
-        if (review.verdict === "repair") {
-          recordHandoff({
-            task,
-            fromRole: "reviewer",
-            toRole: "implementer",
-            objective: task.request,
-            evidence: review.findings.map((finding) => `${finding.severity}: ${finding.title} — ${finding.description}`).slice(0, 20),
-            openRisks: [review.summary],
-            requiredNextAction: "Repair only the blocking findings from independent review.",
-          }, emit);
-          emit({ type: "stage.updated", stage: "Review", status: "failed" });
-          if (task.attempts >= maxRepairAttempts) {
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
-            appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, review });
-            emit({ type: "stream.blocked", message: `Fresh review still found a blocking issue after ${maxRepairAttempts} repair attempts.` });
-            response.end();
-            return;
-          }
-          repairEvidence = `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 60_000)}`;
-          setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, "Fresh-context review found a blocking issue.");
-          continue;
-        }
-
-        const unresolvedBlocking = blockingReviewFindings(reviewHistory.records);
-        if (unresolvedBlocking.length) {
-          emit({ type: "stage.updated", stage: "Review", status: "failed" });
-          appendTaskEvent(taskId, "DELIVERY_BLOCKED_BY_REVIEW_HISTORY", {
-            findingIds: unresolvedBlocking.map((record) => record.id),
-          });
-          emit({ type: "stream.blocked", message: `${unresolvedBlocking.length} unresolved high/critical review finding(s) block delivery. Resolve them in Review History.` });
-          response.end();
-          return;
-        }
-
-        if (focusedExecutionScope && projectPlan) {
-          const changedPaths = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim()).filter((path) => path && !path.includes(" -> "));
-          updateVerifiedProjectModel(approvedWorktreePath, changedPaths, focusedAcceptance);
-          appendTaskEvent(taskId, "FOCUSED_WORKSPACE_VERIFIED", { scopeType: focusedExecutionScope.type, scopeId: focusedExecutionScope.id, changedPaths });
-          status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
-          diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
-        }
-        if (sliceState && projectPlan) {
-          const summary = `Verified ${currentSlice(projectPlan, sliceState).title}.\n\nChanged files:\n${(status.stdout ?? "").slice(0, 1200)}\n\nVerification: passed.\n\nReview: ${review.summary.slice(0, 1200)}`;
-          const changedPaths = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim()).filter((path) => path && !path.includes(" -> "));
-          updateVerifiedProjectModel(approvedWorktreePath, changedPaths, currentSlice(projectPlan, sliceState).acceptanceCriteria);
-          const ready = markSliceReady(approvedWorktreePath, taskId, summary, { plan: projectPlan, state: sliceState });
-          if (ready) appendTaskEvent(taskId, "FRONTEND_SLICE_READY", { slice: ready.current, status: ready.status });
-          status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
-          diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
-        }
-        appendTaskEvent(taskId, "CHANGESET_CAPTURED", { status: status.stdout ?? "", diff: diff.stdout ?? "" });
-        emit({ type: "implementation.summary", status, diff, worktreePath: approval.worktreePath });
-        emit({ type: "stage.updated", stage: "Review", status: "complete" });
-        setExecutionState("COMPLETE");
-        task = transitionTask(task, "DELIVERY_READY", emit);
-        appendTaskEvent(taskId, "DELIVERY_READY", { worktreePath: approval.worktreePath });
-        emit({ type: "delivery.ready", worktreePath: approval.worktreePath, message: "Verified and independently reviewed. Choose how to deliver the isolated changes." });
-        emit({ type: "stream.completed" });
+    void executionOrchestrator.run(task, approval, (event) => writeEvent(response, event))
+      .then(() => response.end())
+      .catch((error) => {
+        writeEvent(response, { type: "runtime.failed", taskId, message: error instanceof Error ? error.message : "Approved implementation failed" });
         response.end();
-        return;
-      }
-    })().catch(async (error) => {
-      if (activeRoleAssignment?.status === "active") finishRole(activeRoleAssignment, "failed", emit);
-      await Promise.allSettled([
-        tools.execute({ function: { name: "browser_close", arguments: {} } }, "agent", taskContext),
-      ]);
-      const message = error instanceof Error ? error.message : "Approved implementation failed";
-      if (tasks.listEvents(taskId).some((event) => event.type === "FRONTEND_SLICE_SELECTED") && websiteInfo(approvedWorktreePath) && readSliceState(approvedWorktreePath)) {
-        const failedSlice = readSliceState(approvedWorktreePath)!;
-        setFrontendWorkflowStage(approvedWorktreePath, "blocked", { currentSlice: failedSlice.current, totalSlices: failedSlice.total, taskId, detail: message });
-      }
-      appendTaskEvent(taskId, "IMPLEMENTATION_FAILED", { message });
-      if (task && !["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "FAILED", emit);
-      emit({ type: "runtime.failed", message });
-      response.end();
-    });
+      });
     return;
   }
   const baselineRoute = request.url?.match(/^\/api\/tasks\/([^/]+)\/visual-baselines$/);

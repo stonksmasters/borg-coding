@@ -92,7 +92,7 @@ HTTP/SSE
 
 ## Slice 3 — Extract ExecutionOrchestrator and VerificationService
 
-**Status:** next
+**Status:** complete
 
 ### Purpose
 
@@ -133,6 +133,8 @@ approved execute command
 - Existing technical/browser verification tests remain green.
 
 ## Slice 4 — Extract QualityGateService and ProjectPlanRevisionService
+
+**Status:** next
 
 ### Purpose
 
