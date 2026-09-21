@@ -219,3 +219,36 @@ Repository Analysis Complete
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test("tool failures are returned directly for bounded recovery classification", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  const fakeTools = {
+    toolDefinitions: () => [{ type: "function", function: { name: "worktree_read", description: "read", parameters: { type: "object" } } }],
+    execute: async () => { throw new Error("ENOENT: no such file or directory, realpath src/features/recovery/Missing.tsx"); },
+  } as unknown as ToolBroker;
+
+  globalThis.fetch = async () => {
+    requests += 1;
+    const message = requests === 1
+      ? { content: "", tool_calls: [{ function: { name: "worktree_read", arguments: { path: "src/features/recovery/Missing.tsx" } } }] }
+      : { content: "Stopping after the failed read." };
+    return new Response(`${JSON.stringify({ message })}\n`, { status: 200, headers: { "content-type": "application/x-ndjson" } });
+  };
+
+  try {
+    const result = await runOllamaAgent({
+      ollamaUrl: "http://127.0.0.1:11434",
+      model: "test",
+      mode: "edit",
+      tools: fakeTools,
+      messages: [{ role: "user", content: "Inspect the target." }],
+      emit: () => {},
+    });
+    assert.equal(requests, 2);
+    assert.deepEqual(result.toolFailures, ["ENOENT: no such file or directory, realpath src/features/recovery/Missing.tsx"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

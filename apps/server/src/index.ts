@@ -54,7 +54,6 @@ import { VerificationService } from "./verification-service.ts";
 import { QualityGateService } from "./quality-gate-service.ts";
 import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
 import { runFreshReview } from "./fresh-review.ts";
-import type { RecoveryDecision } from "./recovery-policy.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
@@ -171,7 +170,6 @@ const executionOrchestrator = new ExecutionOrchestrator({
   maxRepairAttempts,
   maxDesignRefinements,
   appendTaskEvent,
-  transitionTask,
   syncWorkflowProjection,
   taskProjectRepository,
   latestDesignBrief,
@@ -184,12 +182,8 @@ const executionOrchestrator = new ExecutionOrchestrator({
   finishRole,
   recordHandoff,
   createCheckpointSnapshot,
-  scheduleImplementationRetry,
-  scheduleRepair,
-  scheduleDesignRefinement,
   recordCompletedReview,
   recordMemoryNote,
-  designRefinementCount,
   contextSourceHints,
 });
 
@@ -456,11 +450,6 @@ function latestDesignBrief(taskId: string): DesignBrief | null {
   return parsed.success ? parsed.data : null;
 }
 
-function designRefinementCount(taskId: string): number {
-  const events = tasks.listEvents(taskId);
-  const latestRevision = events.findLastIndex((event) => event.type === "PROJECT_PLAN_REVISION_APPROVED");
-  return events.slice(latestRevision + 1).filter((event) => event.type === "DESIGN_REFINEMENT_SCHEDULED").length;
-}
 
 function recordMemoryNote(root: string, note: MemoryNote) {
   try { memory.recordNote(root, note); }
@@ -568,6 +557,8 @@ function createCheckpointSnapshot(
     workflowVersion: durableWorkflow?.version ?? null,
     verification: durableWorkflow?.verification,
     recovery: durableWorkflow?.recovery,
+    attemptPhase: durableWorkflow?.attemptPhase ?? null,
+    designRefinementAttempt: durableWorkflow?.designRefinementAttempt ?? 0,
   });
   tasks.saveCheckpoint(checkpoint);
   appendTaskEvent(task.id, "TASK_CHECKPOINT_CREATED", {
@@ -578,6 +569,8 @@ function createCheckpointSnapshot(
     workflowVersion: checkpoint.workflowVersion,
     verificationStatus: checkpoint.verification.status,
     recoveryStatus: checkpoint.recovery.status,
+    attemptPhase: checkpoint.attemptPhase,
+    designRefinementAttempt: checkpoint.designRefinementAttempt,
   });
   return checkpoint;
 }
@@ -860,48 +853,6 @@ function recordHandoff(input: {
   syncWorkflowProjection(input.task, handoffWorkflow);
   emit?.({ type: "role.handoff", handoff });
   return handoff;
-}
-
-function scheduleDesignRefinement(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
-  createCheckpointSnapshot(task, "pre_repair");
-  const updated = transitionTask(task, "IMPLEMENTING", emit);
-  const refinement = designRefinementCount(task.id) + 1;
-  appendTaskEvent(task.id, "DESIGN_REFINEMENT_SCHEDULED", { refinement, maximum: maxDesignRefinements, reason });
-  emit({ type: "design.refinement.scheduled", refinement, maximum: maxDesignRefinements, message: reason });
-  return updated;
-}
-
-function recoveryPayload(updated: Task, reason: string, recovery?: RecoveryDecision) {
-  return { attempt: updated.attempts, maximum: maxRepairAttempts, reason, category: recovery?.category ?? null, action: recovery?.action ?? null };
-}
-
-function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
-  createCheckpointSnapshot(task, "pre_repair");
-  const result = workflow.retry(task, {
-    reason,
-    eventType: "REPAIR_SCHEDULED",
-    category: recovery?.category ?? null,
-    action: recovery?.action ?? null,
-  });
-  syncWorkflowProjection(result.task, result.workflow);
-  const payload = recoveryPayload(result.task, reason, recovery);
-  emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
-  emit({ type: "task.state", taskId: task.id, state: result.task.state, workflow: result.workflow });
-  return result.task;
-}
-
-function scheduleImplementationRetry(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
-  createCheckpointSnapshot(task, "pre_repair");
-  const result = workflow.retry(task, {
-    reason,
-    eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
-    category: recovery?.category ?? null,
-    action: recovery?.action ?? null,
-  });
-  syncWorkflowProjection(result.task, result.workflow);
-  const payload = recoveryPayload(result.task, reason, recovery);
-  emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
-  return result.task;
 }
 
 const server = createServer((request, response) => {

@@ -200,7 +200,7 @@ test("verification is a durable gate before review and delivery", () => {
 
   const passed = passVerification(engine, task);
   assert.equal(passed.verification.status, "passed");
-  assert.equal(passed.nextAction, "checkpoint");
+  assert.equal(passed.nextAction, "quality_review");
   task = engine.transition(task, "REVIEWING").task;
   task = engine.transition(task, "DELIVERY_READY").task;
   assert.equal(engine.get(task.projectId)?.verification.status, "passed");
@@ -473,8 +473,30 @@ test("blocked task continuation preserves task identity and resets only repair a
     baseCommit: "base",
   };
   task = engine.decideApproval(task, approved, "execution").task;
-  task = engine.retry(task, { reason: "first repair", eventType: "REPAIR_SCHEDULED" }).task;
-  task = engine.retry(task, { reason: "second repair", eventType: "REPAIR_SCHEDULED" }).task;
+  task = engine.applyRecoveryDecision(task, {
+    disposition: "retry",
+    category: "no_progress",
+    reason: "first repair",
+    action: "Retry the bounded repair.",
+    message: "first repair",
+    attempt: task.attempts,
+    maximum: 3,
+  }, {
+    retryKind: "technical_repair",
+    eventType: "REPAIR_SCHEDULED",
+  }).task;
+  task = engine.applyRecoveryDecision(task, {
+    disposition: "retry",
+    category: "no_progress",
+    reason: "second repair",
+    action: "Retry the bounded repair.",
+    message: "second repair",
+    attempt: task.attempts,
+    maximum: 3,
+  }, {
+    retryKind: "technical_repair",
+    eventType: "REPAIR_SCHEDULED",
+  }).task;
   assert.equal(task.attempts, 2);
   task = engine.transition(task, "BLOCKED").task;
 

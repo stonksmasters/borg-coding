@@ -13,6 +13,7 @@ import {
   type WorkflowState,
 } from "./contracts.ts";
 import { assertTransition } from "./state-machine.ts";
+import type { RecoveryDecision } from "./recovery-service.ts";
 
 export type WorkflowMutation = {
   state: WorkflowState;
@@ -102,7 +103,7 @@ function taskProjection(state: TaskState): Pick<WorkflowState, "status" | "nextA
     case "AWAITING_APPROVAL": return { status: "awaiting_approval", nextAction: "await_approval" };
     case "IMPLEMENTING": return { status: "running", nextAction: "implement" };
     case "VERIFYING": return { status: "verifying", nextAction: "verify" };
-    case "REVIEWING": return { status: "reviewing", nextAction: "checkpoint" };
+    case "REVIEWING": return { status: "reviewing", nextAction: "review" };
     case "DELIVERY_READY": return { status: "awaiting_feedback", nextAction: "checkpoint" };
     case "DELIVERING": return { status: "running", nextAction: "deliver" };
     case "RECOVERY_REQUIRED": case "PAUSED": return { status: "recovery_required", nextAction: "recover" };
@@ -210,6 +211,8 @@ export class WorkflowEngine {
       lastConsumedCommandId: sliceSelection?.supersededCommandId ?? existing?.lastConsumedCommandId ?? null,
       verification: pendingVerification(0),
       recovery: inactiveWorkflowRecovery,
+      attemptPhase: null,
+      designRefinementAttempt: 0,
       repairAttempt: 0,
       recoveryCategory: null,
       detail,
@@ -343,6 +346,7 @@ export class WorkflowEngine {
         ? { ...interruptedCommand, claimedByTaskId: null, claimedAt: null }
         : current.pendingCommand,
       verification: to === "VERIFYING" || to === "IMPLEMENTING" ? pendingVerification(updatedTask.attempts) : current.verification,
+      attemptPhase: to === "IMPLEMENTING" ? (current.attemptPhase ?? "implementation") : null,
       recovery: to === "RECOVERY_REQUIRED"
         ? {
             status: "required",
@@ -440,6 +444,8 @@ export class WorkflowEngine {
       pendingCommand: projectPlanApproved ? command(task.projectId, nextVersion, "start_slice", now, 0) : null,
       verification: planRevisionApproved ? pendingVerification(updatedTask.attempts) : current.verification,
       recovery: planRevisionApproved ? inactiveWorkflowRecovery : current.recovery,
+      attemptPhase: approval.status === "APPROVED" && (kind === "execution" || planRevision) ? "implementation" : current.attemptPhase,
+      designRefinementAttempt: planRevisionApproved ? 0 : current.designRefinementAttempt,
       recoveryCategory: planRevisionApproved ? null : current.recoveryCategory,
       detail: approval.status === "REJECTED"
         ? "Approval was rejected."
@@ -518,7 +524,7 @@ export class WorkflowEngine {
       recovery: input.passed ? inactiveWorkflowRecovery : current.recovery,
       recoveryCategory: input.passed ? null : current.recoveryCategory,
       status: "verifying",
-      nextAction: input.passed ? "checkpoint" : "repair",
+      nextAction: input.passed ? "quality_review" : "repair",
       detail: gate.summary || (input.passed ? "Verification passed." : "Verification failed."),
       version: current.version + 1,
       updatedAt: now,
@@ -533,6 +539,227 @@ export class WorkflowEngine {
       }, now)],
     });
     return state;
+  }
+
+  completeImplementation(task: Task): { task: Task; workflow: WorkflowState; action: "verify" } {
+    const result = this.transition(task, "VERIFYING");
+    return { ...result, action: "verify" };
+  }
+
+  applyExecutionFailure(
+    task: Task,
+    reason: string,
+  ): { task: Task; workflow: WorkflowState; action: "failed" | "recover" | "block" } {
+    const current = this.requireTask(task);
+    if (task.state === "RECOVERY_REQUIRED") {
+      return { task, workflow: current, action: "recover" };
+    }
+    if (task.state === "BLOCKED") {
+      return { task, workflow: current, action: "block" };
+    }
+    if (task.state === "FAILED") {
+      return { task, workflow: current, action: "failed" };
+    }
+    assertTransition(task.state, "FAILED");
+    const now = new Date().toISOString();
+    const updatedTask = { ...task, state: "FAILED" as const, updatedAt: now };
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      status: "failed",
+      nextAction: "recover",
+      pendingCommand: null,
+      attemptPhase: null,
+      recoveryCategory: "execution_failure",
+      recovery: {
+        status: "blocked",
+        category: "execution_failure",
+        previousTaskState: task.state,
+        checkpointId: current.recovery.checkpointId,
+        resumeAction: "inspect_worktree",
+        reason: reason.trim().slice(0, 4_000),
+        updatedAt: now,
+      },
+      detail: reason.trim().slice(0, 4_000),
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    this.store.commitWorkflowMutation({
+      task: updatedTask,
+      state: workflow,
+      events: [
+        taskEvent(task.id, "WORKFLOW_EXECUTION_FAILED", {
+          previousState: task.state,
+          reason: workflow.detail,
+          workflowVersion: workflow.version,
+        }, now),
+        taskEvent(task.id, "TASK_STATE_CHANGED", {
+          from: task.state,
+          to: "FAILED",
+          workflowVersion: workflow.version,
+        }, now),
+      ],
+    });
+    return { task: updatedTask, workflow, action: "failed" };
+  }
+
+  applyRecoveryDecision(
+    task: Task,
+    decision: RecoveryDecision,
+    input: { retryKind: "implementation" | "technical_repair"; eventType: "IMPLEMENTATION_RETRY_SCHEDULED" | "REPAIR_SCHEDULED" },
+  ): { task: Task; workflow: WorkflowState; action: "retry" | "block" } {
+    if (decision.disposition === "fatal") {
+      assertTransition(task.state, "BLOCKED");
+      const current = this.requireTask(task);
+      const now = new Date().toISOString();
+      const updatedTask = { ...task, state: "BLOCKED" as const, updatedAt: now };
+      const workflow = WorkflowStateSchema.parse({
+        ...current,
+        status: "blocked",
+        nextAction: "recover",
+        pendingCommand: null,
+        attemptPhase: null,
+        recoveryCategory: decision.category,
+        recovery: {
+          status: "blocked",
+          category: decision.category,
+          previousTaskState: task.state,
+          checkpointId: current.recovery.checkpointId,
+          resumeAction: "inspect_worktree",
+          reason: decision.action.trim().slice(0, 4_000),
+          updatedAt: now,
+        },
+        detail: decision.reason.trim().slice(0, 4_000),
+        version: current.version + 1,
+        updatedAt: now,
+      });
+      this.store.commitWorkflowMutation({
+        task: updatedTask,
+        state: workflow,
+        events: [
+          taskEvent(task.id, "WORKFLOW_RECOVERY_UPDATED", {
+            category: decision.category,
+            detail: decision.reason,
+            action: decision.action,
+            fatal: true,
+            workflowVersion: workflow.version,
+          }, now),
+          taskEvent(task.id, "TASK_STATE_CHANGED", {
+            from: task.state,
+            to: "BLOCKED",
+            workflowVersion: workflow.version,
+          }, now),
+        ],
+      });
+      return { task: updatedTask, workflow, action: "block" };
+    }
+    const retried = this.retry(task, {
+      reason: decision.reason,
+      eventType: input.eventType,
+      phase: input.retryKind,
+      category: decision.category,
+      action: decision.action,
+    });
+    return { ...retried, action: "retry" };
+  }
+
+  applyVerificationOutcome(
+    task: Task,
+    input: { maximumRepairAttempts: number; reason: string },
+  ): { task: Task; workflow: WorkflowState; action: "quality_review" | "repair" | "block" } {
+    const current = this.requireTask(task);
+    if (task.state !== "VERIFYING") throw new Error("Verification outcome requires a VERIFYING task.");
+    if (current.verification.status === "pending") throw new Error("Verification outcome requires a recorded verification result.");
+    if (current.verification.attempt !== task.attempts) {
+      throw new Error(`Verification outcome belongs to attempt ${current.verification.attempt}, not current attempt ${task.attempts}.`);
+    }
+    if (current.verification.status === "passed") {
+      return { task, workflow: current, action: "quality_review" };
+    }
+    if (task.attempts >= input.maximumRepairAttempts) {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    const retried = this.retry(task, {
+      reason: input.reason,
+      eventType: "REPAIR_SCHEDULED",
+      phase: "technical_repair",
+    });
+    return { ...retried, action: "repair" };
+  }
+
+  applyQualityOutcome(
+    task: Task,
+    input:
+      | { action: "pass"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number }
+      | { action: "technical_repair"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number }
+      | { action: "design_refinement"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number }
+      | { action: "replan"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number; checkpointId: string }
+      | { action: "block"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number },
+  ): { task: Task; workflow: WorkflowState; action: "review" | "repair" | "design_refinement" | "replan" | "block" } {
+    const current = this.requireTask(task);
+    if (task.state !== "VERIFYING") throw new Error("Quality outcome requires a VERIFYING task.");
+    assertVerificationPassed(task, current, "Quality review");
+    if (input.action === "pass") {
+      const reviewing = this.transition(task, "REVIEWING");
+      return { task: reviewing.task, workflow: reviewing.workflow, action: "review" };
+    }
+    if (input.action === "replan") {
+      const recovery = this.markRecoveryRequired(task, {
+        category: "plan_repair_required",
+        checkpointId: input.checkpointId,
+        resumeAction: "replan",
+        reason: input.reason,
+      });
+      return { ...recovery, action: "replan" };
+    }
+    if (input.action === "block") {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    if (input.action === "design_refinement") {
+      if (current.designRefinementAttempt >= input.maximumDesignRefinements) {
+        const blocked = this.transition(task, "BLOCKED");
+        return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+      }
+      const refinement = this.beginDesignRefinement(task, {
+        reason: input.reason,
+        maximum: input.maximumDesignRefinements,
+      });
+      return { ...refinement, action: "design_refinement" };
+    }
+    if (task.attempts >= input.maximumRepairAttempts) {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    const repaired = this.retry(task, {
+      reason: input.reason,
+      eventType: "REPAIR_SCHEDULED",
+      phase: "technical_repair",
+    });
+    return { ...repaired, action: "repair" };
+  }
+
+  applyReviewOutcome(
+    task: Task,
+    input: { action: "pass" | "repair" | "block"; reason: string; maximumRepairAttempts: number },
+  ): { task: Task; workflow: WorkflowState; action: "delivery_ready" | "repair" | "block" } {
+    const current = this.requireTask(task);
+    if (task.state !== "REVIEWING") throw new Error("Review outcome requires a REVIEWING task.");
+    assertVerificationPassed(task, current, "Review outcome");
+    if (input.action === "pass") {
+      const ready = this.transition(task, "DELIVERY_READY");
+      return { task: ready.task, workflow: ready.workflow, action: "delivery_ready" };
+    }
+    if (input.action === "block" || task.attempts >= input.maximumRepairAttempts) {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    const repaired = this.retry(task, {
+      reason: input.reason,
+      eventType: "REPAIR_SCHEDULED",
+      phase: "technical_repair",
+    });
+    return { ...repaired, action: "repair" };
   }
 
   markRecoveryRequired(task: Task, input: {
@@ -553,6 +780,7 @@ export class WorkflowEngine {
         ? { ...current.pendingCommand, claimedByTaskId: null, claimedAt: null }
         : current.pendingCommand,
       recoveryCategory: input.category,
+      attemptPhase: null,
       recovery: {
         status: "required",
         category: input.category,
@@ -581,9 +809,10 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow };
   }
 
-  retry(task: Task, input: {
+  private retry(task: Task, input: {
     reason: string;
     eventType: "REPAIR_SCHEDULED" | "IMPLEMENTATION_RETRY_SCHEDULED";
+    phase?: "implementation" | "technical_repair";
     category?: string | null;
     action?: string | null;
   }): { task: Task; workflow: WorkflowState } {
@@ -602,6 +831,7 @@ export class WorkflowEngine {
       nextAction: "implement",
       pendingCommand: null,
       verification: pendingVerification(updatedTask.attempts),
+      attemptPhase: input.phase ?? (input.eventType === "REPAIR_SCHEDULED" ? "technical_repair" : "implementation"),
       recovery: {
         status: "repairing",
         category: input.category ?? current.recovery.category,
@@ -633,26 +863,48 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow };
   }
 
-  recovery(task: Task, category: string, detail: string, fatal: boolean): WorkflowState {
+  private beginDesignRefinement(task: Task, input: { reason: string; maximum: number }): { task: Task; workflow: WorkflowState } {
     const current = this.requireTask(task);
+    if (current.designRefinementAttempt >= input.maximum) {
+      throw new Error(`Design refinement limit reached (${current.designRefinementAttempt}/${input.maximum}).`);
+    }
+    if (task.state !== "IMPLEMENTING") assertTransition(task.state, "IMPLEMENTING");
     const now = new Date().toISOString();
-    return this.update(task, current, {
-      status: fatal ? "blocked" : "recovery_required",
-      nextAction: fatal ? "recover" : "repair",
+    const updatedTask = { ...task, state: "IMPLEMENTING" as const, updatedAt: now };
+    const refinement = current.designRefinementAttempt + 1;
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      status: "running",
+      nextAction: "implement",
       pendingCommand: null,
-      recoveryCategory: category,
+      verification: pendingVerification(updatedTask.attempts),
+      attemptPhase: "design_refinement",
+      designRefinementAttempt: refinement,
       recovery: {
-        status: fatal ? "blocked" : "required",
-        category,
+        status: "repairing",
+        category: "design_refinement",
         previousTaskState: task.state,
         checkpointId: current.recovery.checkpointId,
-        resumeAction: fatal ? "inspect_worktree" : "retry_current_scope",
-        reason: detail.trim().slice(0, 4_000),
+        resumeAction: "retry_current_scope",
+        reason: input.reason.trim().slice(0, 4_000),
         updatedAt: now,
       },
-      detail,
-      repairAttempt: task.attempts,
-    }, "WORKFLOW_RECOVERY_UPDATED", { category, detail, fatal });
+      recoveryCategory: "design_refinement",
+      detail: input.reason.trim().slice(0, 4_000),
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    const events = [
+      ...(task.state === "IMPLEMENTING" ? [] : [taskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: "IMPLEMENTING", workflowVersion: workflow.version }, now)]),
+      taskEvent(task.id, "DESIGN_REFINEMENT_SCHEDULED", {
+        refinement,
+        maximum: input.maximum,
+        reason: input.reason,
+        workflowVersion: workflow.version,
+      }, now),
+    ];
+    this.store.commitWorkflowMutation({ task: updatedTask, state: workflow, events });
+    return { task: updatedTask, workflow };
   }
 
   continueFromCheckpoint(
@@ -687,6 +939,10 @@ export class WorkflowEngine {
         : continuation.resultingState === "REVIEWING" || continuation.resultingState === "DELIVERY_READY"
           ? checkpointVerification
           : current.verification,
+      attemptPhase: continuation.resultingState === "IMPLEMENTING"
+        ? (options.checkpoint?.attemptPhase ?? current.attemptPhase ?? "technical_repair")
+        : null,
+      designRefinementAttempt: options.checkpoint?.designRefinementAttempt ?? current.designRefinementAttempt,
       recovery: continuation.status === "recovery_required" || continuation.resultingState === "PAUSED"
         ? {
             status: "required",

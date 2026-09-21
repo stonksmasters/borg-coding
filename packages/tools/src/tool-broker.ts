@@ -249,7 +249,7 @@ export class ToolBroker {
       items.filter((item) =>
         (!role || roleAllowsTool(role, item.function.name))
         && (!disciplines?.length || specialistAllowsTool(disciplines, item.function.name))
-        && executionAllowsTool(context?.executionState, item.function.name)
+        && executionAllowsTool(context?.taskState, context?.attemptPhase, item.function.name)
       );
     if (mode !== "ask" && this.access?.load().repositoryPath) available.push(...allowed(repositoryDefinitions.filter((item) => item.function.name !== "repository_memory_search" || this.memory)));
     if ((mode === "edit" || mode === "agent") && context && this.worktree) available.push(...allowed(this.worktree.definitions()));
@@ -261,7 +261,9 @@ export class ToolBroker {
   }
 
   async execute(call: ToolCall, mode: PermissionMode = "ask", context?: TaskToolContext, role?: EngineeringRole, disciplines?: readonly EngineeringDiscipline[]): Promise<unknown> {
-    if (!executionAllowsTool(context?.executionState, call.function.name)) throw new Error(`${call.function.name} is unavailable during ${context?.executionState}.`);
+    if (!executionAllowsTool(context?.taskState, context?.attemptPhase, call.function.name)) {
+      throw new Error(`${call.function.name} is unavailable during ${context?.taskState ?? "unknown"} (${context?.attemptPhase ?? "no attempt phase"}).`);
+    }
     if (call.function.name === "activity_update") {
       if (mode === "ask") throw new Error("Structured activity updates are unavailable in ASK mode.");
       return normalizeActivityUpdate(call.function.arguments);

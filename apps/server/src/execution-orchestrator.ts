@@ -9,21 +9,19 @@ import {
   type RoleAssignment,
   type Task,
   type TaskCheckpoint,
-  type TaskState,
   type WorkflowState,
 } from "../../../packages/core/src/contracts.ts";
 import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import {
-  assertExecutionTransition,
   buildRepairContext,
   formatRepairContext,
-  type ExecutionState,
 } from "../../../packages/core/src/execution-state.ts";
 import { blockingReviewFindings } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import type { MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
 import { ToolBroker } from "../../../packages/tools/src/tool-broker.ts";
+import type { TaskToolContext } from "../../../packages/tools/src/worktree-tools.ts";
 import {
   TeamPolicyService,
   selectSpecialistPacks,
@@ -60,7 +58,7 @@ import {
 } from "../../../packages/design-intelligence/src/index.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
-import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
+import { classifyImplementationFailure, classifyObservedToolFailures, compactRecoveryEvidence } from "./recovery-policy.ts";
 import { VerificationService } from "./verification-service.ts";
 import { QualityGateService } from "./quality-gate-service.ts";
 import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
@@ -96,7 +94,6 @@ export type ExecutionOrchestratorDependencies = {
   maxRepairAttempts: number;
   maxDesignRefinements: number;
   appendTaskEvent(taskId: string, type: string, payload: Record<string, unknown>): void;
-  transitionTask(task: Task, state: TaskState, emit?: ExecutionEventSink): Task;
   syncWorkflowProjection(task: Task, state: WorkflowState): WorkflowState;
   taskProjectRepository(taskId: string): string | null;
   latestDesignBrief(taskId: string): DesignBrief | null;
@@ -109,12 +106,8 @@ export type ExecutionOrchestratorDependencies = {
   finishRole(assignment: RoleAssignment, status: "completed" | "failed", emit?: ExecutionEventSink): RoleAssignment;
   recordHandoff(input: HandoffInput, emit?: ExecutionEventSink): unknown;
   createCheckpointSnapshot(task: Task, kind: TaskCheckpoint["kind"]): TaskCheckpoint;
-  scheduleImplementationRetry(task: Task, emit: ExecutionEventSink, reason: string, recovery?: RecoveryDecision): Task;
-  scheduleRepair(task: Task, emit: ExecutionEventSink, reason: string, recovery?: RecoveryDecision): Task;
-  scheduleDesignRefinement(task: Task, emit: ExecutionEventSink, reason: string): Task;
   recordCompletedReview(task: Task, findings: Finding[], verdict: "pass" | "repair" | "unknown", summary: string, resolutionEvidence?: string[]): { records: ReviewFindingRecord[] };
   recordMemoryNote(root: string, note: MemoryNote): void;
-  designRefinementCount(taskId: string): number;
   contextSourceHints(root: string, query: string): string[];
 };
 
@@ -145,7 +138,6 @@ export class ExecutionOrchestrator {
       maxRepairAttempts,
       maxDesignRefinements,
       appendTaskEvent,
-      transitionTask,
       syncWorkflowProjection,
       taskProjectRepository,
       latestDesignBrief,
@@ -158,15 +150,10 @@ export class ExecutionOrchestrator {
       finishRole,
       recordHandoff,
       createCheckpointSnapshot,
-      scheduleImplementationRetry,
-      scheduleRepair,
-      scheduleDesignRefinement,
       recordCompletedReview,
       recordMemoryNote,
-      designRefinementCount,
       contextSourceHints,
     } = this.deps;
-    const taskContext: { taskId: string; executionState?: ExecutionState } = { taskId, executionState: "IMPLEMENT" };
     const emit = (event: Record<string, unknown>) => {
       const enriched = { ...event, taskId };
       transportEmit(enriched);
@@ -194,6 +181,26 @@ export class ExecutionOrchestrator {
     const designContext = designBrief ? designBriefPrompt(designBrief) : "";
     const taskWorkflow = workflow.get(task.projectId);
     const ownedTaskWorkflow = taskWorkflow?.taskId === task.id ? taskWorkflow : null;
+    const taskContext: TaskToolContext = {
+      taskId,
+      taskState: task.state,
+      attemptPhase: ownedTaskWorkflow?.attemptPhase ?? null,
+    };
+    const refreshTaskContext = () => {
+      const currentWorkflow = workflow.get(task.projectId);
+      taskContext.taskState = task.state;
+      taskContext.attemptPhase = currentWorkflow?.taskId === task.id ? currentWorkflow.attemptPhase : null;
+    };
+    const adoptCoreMutation = (
+      result: { task: Task; workflow: WorkflowState },
+      checkpointKind?: TaskCheckpoint["kind"],
+    ) => {
+      task = result.task;
+      syncWorkflowProjection(task, result.workflow);
+      if (checkpointKind) createCheckpointSnapshot(task, checkpointKind);
+      emit({ type: "task.state", taskId, state: task.state, workflow: result.workflow });
+      refreshTaskContext();
+    };
     const authorityProjectId = taskWorkflowAuthorityProjectId(task.id) ?? task.projectId;
     const authorityWorkflow = workflow.get(authorityProjectId);
     const projectPlan = websiteProject ? projectPlanFromWorkflow(authorityWorkflow ?? ownedTaskWorkflow, approvedWorktreePath) : null;
@@ -265,18 +272,9 @@ export class ExecutionOrchestrator {
       let repairEvidence = blockedRetry
         ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
         : "";
-      let executionState: ExecutionState = blockedRetry ? "REPAIR" : "IMPLEMENT";
-      taskContext.executionState = executionState;
-      const setExecutionState = (next: ExecutionState) => {
-        if (next !== executionState) assertExecutionTransition(executionState, next);
-        executionState = next;
-        taskContext.executionState = next;
-        appendTaskEvent(taskId, "EXECUTION_STATE_CHANGED", { state: next, repairAttempt: task?.attempts ?? 0 });
-        emit({ type: "execution.state.changed", state: next, repairAttempt: task?.attempts ?? 0 });
-      };
+      refreshTaskContext();
       let implementationBudgetContinuations = 0;
       let implementationBudgetExhausted = false;
-      appendTaskEvent(taskId, "EXECUTION_STATE_CHANGED", { state: executionState, repairAttempt: task.attempts });
       performPreflight("execution_start");
       const contextHintRoot = taskProjectRepository(taskId) ?? approvedWorktreePath;
       const contextWorkflowVersion = authorityWorkflow?.version ?? ownedTaskWorkflow?.version ?? null;
@@ -294,7 +292,7 @@ export class ExecutionOrchestrator {
         productContract: websiteContext,
         projectBrief: websiteProject?.originalBrief ?? undefined,
         sourceHints: contextSourceHints(contextHintRoot, [task.request, selectedSlice.title, selectedSlice.outcome, ...selectedSlice.scope].join(" ")),
-        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
+        stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
       }) : null;
       const compiledFocus = focusedExecutionScope && projectPlan ? compileFocusedFrontendContext({
         root: approvedWorktreePath,
@@ -302,7 +300,7 @@ export class ExecutionOrchestrator {
         productContract: websiteContext,
         projectBrief: websiteProject?.originalBrief ?? undefined,
         sourceHints: contextSourceHints(contextHintRoot, [task.request, focusedEntity?.name ?? "", focusedEntity?.purpose ?? ""].join(" ")),
-        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
+        stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
         authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
       }) : null;
       const compiledStyle = styleWorkspace && projectPlan ? compileStyleFrontendContext({
@@ -310,7 +308,7 @@ export class ExecutionOrchestrator {
         productContract: websiteContext,
         projectBrief: websiteProject?.originalBrief ?? undefined,
         sourceHints: contextSourceHints(contextHintRoot, `global styles theme typography spacing color layout responsive motion ${task.request}`),
-        stage: taskContext.executionState === "REPAIR" ? "repair" : "execution",
+        stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
         authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
       }) : null;
       const compiledExecutionContext = compiledFocus ?? compiledStyle ?? compiledSlice;
@@ -324,7 +322,8 @@ export class ExecutionOrchestrator {
         : styleExecutionContext;
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
-        const attemptStartedInRepair = taskContext.executionState === "REPAIR";
+        refreshTaskContext();
+        const attemptStartedInRepair = taskContext.attemptPhase !== "implementation";
         const preAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
@@ -339,7 +338,7 @@ export class ExecutionOrchestrator {
           limits: sliceState || focusedExecutionScope || styleWorkspace ? { toolRounds: 12, toolCalls: 28 } : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledExecutionContext?.sliceId ?? null, compiledExecutionContext?.manifest ?? [], body) : undefined,
           messages: [
-            ...(taskContext.executionState === "REPAIR" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
+            ...(taskContext.attemptPhase !== "implementation" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
             { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext && !compiledExecutionContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
@@ -349,16 +348,35 @@ export class ExecutionOrchestrator {
           activeRoleAssignment = null;
           const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
-          if (decision.disposition === "fatal") {
-            syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-            throw error;
+          emit({ type: "recovery.classified", decision, phase: "implementation" });
+          if (decision.disposition === "retry") {
+            const recoveryPreflight = performPreflight("implementation_recovery");
+            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+            createCheckpointSnapshot(task, "pre_repair");
           }
-          const recoveryPreflight = performPreflight("implementation_recovery");
-          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
-          task = scheduleImplementationRetry(task, emit, decision.action, decision);
+          const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
+            retryKind: "technical_repair",
+            eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
+          });
+          adoptCoreMutation(recoveryOutcome);
+          if (recoveryOutcome.action === "retry") {
+            emit({
+              type: "recovery.scheduled",
+              attempt: recoveryOutcome.task.attempts,
+              maximum: maxRepairAttempts,
+              reason: decision.reason,
+              category: decision.category,
+              action: decision.action,
+              message: decision.action,
+            });
+          }
+          if (recoveryOutcome.action === "block") {
+            emit({ type: "stream.blocked", message: decision.action });
+            return;
+          }
           continue;
         }
-        const { answer, usedTools, budgetExhausted } = implementationResult;
+        const { answer, usedTools, budgetExhausted, toolFailures: directToolFailures = [] } = implementationResult;
         implementationBudgetExhausted = Boolean(budgetExhausted);
         if (sliceState || focusedExecutionScope || styleWorkspace) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
@@ -373,17 +391,26 @@ export class ExecutionOrchestrator {
           if (!sourceProgress) {
             if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
             activeRoleAssignment = null;
-            const toolFailures = tasks.listEvents(taskId)
+            const persistedToolFailures = tasks.listEvents(taskId)
               .filter((event) => event.type === "TOOL_FAILED")
               .slice(-5)
               .map((event) => {
                 const payload = event.payload as Record<string, unknown>;
                 return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
               });
-            const failure = toolFailures.at(-1) ?? (attemptStartedInRepair
+            const toolFailures = [...directToolFailures, ...persistedToolFailures]
+              .map((value) => String(value).slice(0, 2_000))
+              .filter(Boolean)
+              .slice(-5);
+            const fallbackFailure = attemptStartedInRepair
               ? "The repair attempt completed without changing the source diff relative to the start of this repair pass."
-              : "The implementation attempt completed without any source-file progress.");
-            const decision = classifyImplementationFailure(failure, task.attempts, maxRepairAttempts, { noProgress: true });
+              : "The implementation attempt completed without any source-file progress.";
+            const decision = classifyObservedToolFailures(
+              toolFailures,
+              task.attempts,
+              maxRepairAttempts,
+              fallbackFailure,
+            );
             appendTaskEvent(taskId, attemptStartedInRepair ? "REPAIR_NO_PROGRESS" : "IMPLEMENTATION_NO_PROGRESS", {
               attempt: task.attempts,
               toolFailures,
@@ -392,13 +419,32 @@ export class ExecutionOrchestrator {
               postAttemptFingerprint: postAttemptSnapshot.fingerprint,
             });
             appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
-            if (decision.disposition === "fatal") {
-              syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-              throw new Error(`Slice recovery stopped: ${decision.reason}`);
+          emit({ type: "recovery.classified", decision, phase: "implementation" });
+            if (decision.disposition === "retry") {
+              const recoveryPreflight = performPreflight("no_progress_recovery");
+              repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
+              createCheckpointSnapshot(task, "pre_repair");
             }
-            const recoveryPreflight = performPreflight("no_progress_recovery");
-            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
-            task = scheduleImplementationRetry(task, emit, decision.action, decision);
+            const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
+              retryKind: "technical_repair",
+              eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
+            });
+            adoptCoreMutation(recoveryOutcome);
+            if (recoveryOutcome.action === "retry") {
+              emit({
+                type: "recovery.scheduled",
+                attempt: recoveryOutcome.task.attempts,
+                maximum: maxRepairAttempts,
+                reason: decision.reason,
+                category: decision.category,
+                action: decision.action,
+                message: decision.action,
+              });
+            }
+            if (recoveryOutcome.action === "block") {
+              emit({ type: "stream.blocked", message: decision.action });
+              return;
+            }
             continue;
           }
         }
@@ -433,8 +479,8 @@ export class ExecutionOrchestrator {
         }, emit);
         const verifierModel = teamPolicies.modelFor(teamPolicy, "verifier", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "verifier", primaryDiscipline, verifierModel, packs, emit);
-        setExecutionState("VERIFY");
-        task = transitionTask(task, "VERIFYING", emit);
+        const implementationOutcome = workflow.completeImplementation(task);
+        adoptCoreMutation(implementationOutcome, "implementation_complete");
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_verifying", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Implementation produced source changes. Deterministic and browser verification are running." });
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
         let verificationResult: Awaited<ReturnType<VerificationService["run"]>>;
@@ -454,14 +500,31 @@ export class ExecutionOrchestrator {
           activeRoleAssignment = null;
           const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "verification" });
-          if (decision.disposition === "fatal") {
-            syncWorkflowProjection(task, workflow.recovery(task, decision.category, decision.action, true));
-            throw error;
+          if (decision.disposition === "retry") {
+            const recoveryPreflight = performPreflight("verification_recovery");
+            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+            createCheckpointSnapshot(task, "pre_repair");
           }
-          const recoveryPreflight = performPreflight("verification_recovery");
-          repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
-          setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, decision.action, decision);
+          const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
+            retryKind: "technical_repair",
+            eventType: "REPAIR_SCHEDULED",
+          });
+          adoptCoreMutation(recoveryOutcome);
+          if (recoveryOutcome.action === "retry") {
+            emit({
+              type: "recovery.scheduled",
+              attempt: recoveryOutcome.task.attempts,
+              maximum: maxRepairAttempts,
+              reason: decision.reason,
+              category: decision.category,
+              action: decision.action,
+              message: decision.action,
+            });
+          }
+          if (recoveryOutcome.action === "block") {
+            emit({ type: "stream.blocked", message: decision.action });
+            return;
+          }
           continue;
         }
         const {
@@ -486,7 +549,13 @@ export class ExecutionOrchestrator {
           appendTaskEvent(taskId, "VISUAL_REGRESSION_COMPLETED", { report: verification.visualRegression, attempt: task.attempts });
           emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
         }
-        if (!verification.passed) {
+        const verificationAttempt = task.attempts;
+        const verificationOutcome = workflow.applyVerificationOutcome(task, {
+          maximumRepairAttempts: maxRepairAttempts,
+          reason: verificationFailure,
+        });
+
+        if (verificationOutcome.action !== "quality_review") {
           finishRole(activeRoleAssignment, "completed", emit);
           recordHandoff({
             task,
@@ -499,25 +568,43 @@ export class ExecutionOrchestrator {
           }, emit);
           activeRoleAssignment = null;
           emit({ type: "stage.updated", stage: "Verification", status: "failed" });
-          if (task.attempts >= maxRepairAttempts) {
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
-            appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, verification });
-            emit({ type: "stream.blocked", message: `Verification still failed after ${maxRepairAttempts} repair attempts. Changes remain isolated for inspection.` });
-            
+          createCheckpointSnapshot(task, "pre_repair");
+          adoptCoreMutation(verificationOutcome);
+
+          if (verificationOutcome.action === "block") {
+            appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", {
+              attempts: verificationAttempt,
+              verification,
+            });
+            emit({
+              type: "stream.blocked",
+              message: `Verification still failed after ${maxRepairAttempts} repair attempts. Changes remain isolated for inspection.`,
+            });
             return;
           }
-          const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
+
+          const status = await tools.execute(
+            { function: { name: "git_status", arguments: {} } },
+            "agent",
+            taskContext,
+            "verifier",
+            activeDisciplines,
+          ) as { stdout?: string };
           const recentChanges = (status.stdout ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).trim());
-          const context = buildRepairContext({ sliceId: compiledFocus?.sliceId ?? compiledSlice?.sliceId, attempt: task.attempts, results: deterministicVerification.results, recentChanges });
-          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({ browserEvidence: verification.browserEvidence, specialistEvidence: verification.specialistEvidence }).slice(0, 40_000)}`;
+          const context = buildRepairContext({
+            sliceId: compiledFocus?.sliceId ?? compiledSlice?.sliceId,
+            attempt: verificationAttempt,
+            results: deterministicVerification.results,
+            recentChanges,
+          });
+          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({
+            browserEvidence: verification.browserEvidence,
+            specialistEvidence: verification.specialistEvidence,
+          }).slice(0, 40_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
-          setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, verificationFailure);
           continue;
         }
 
-        if (verification.browserEvidence || designBrief) setExecutionState("BROWSER_VERIFY");
         const visualDecision = await qualityGateService.evaluateVisual({
           taskId,
           request: task.request,
@@ -539,6 +626,18 @@ export class ExecutionOrchestrator {
         if (visualDecision.action === "repair_current_slice") {
           finishRole(activeRoleAssignment, "completed", emit);
           activeRoleAssignment = null;
+          createCheckpointSnapshot(task, "pre_repair");
+
+          const requestedQualityAction = visualDecision.source === "local_vision"
+            ? "technical_repair" as const
+            : "design_refinement" as const;
+          const qualityOutcome = workflow.applyQualityOutcome(task, {
+            action: requestedQualityAction,
+            reason: visualDecision.reason,
+            maximumRepairAttempts: maxRepairAttempts,
+            maximumDesignRefinements: maxDesignRefinements,
+          });
+          adoptCoreMutation(qualityOutcome);
 
           if (visualDecision.source === "local_vision") {
             recordHandoff({
@@ -553,38 +652,35 @@ export class ExecutionOrchestrator {
             recordCompletedReview(task, visualDecision.findings, "repair", visualDecision.reason);
             emit({ type: "review.history.updated" });
             emit({ type: "stage.updated", stage: "Verification", status: "failed" });
-            if (task.attempts >= maxRepairAttempts) {
-              setExecutionState("BLOCKED");
-              task = transitionTask(task, "BLOCKED", emit);
+            if (qualityOutcome.action === "block") {
               appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", {
                 attempts: task.attempts,
                 visionReview: visualDecision.visionReview,
               });
-              emit({ type: "stream.blocked", message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.` });
+              emit({
+                type: "stream.blocked",
+                message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.`,
+              });
               return;
             }
             repairEvidence = visualDecision.repairEvidence;
-            setExecutionState("REPAIR");
-            task = scheduleRepair(task, emit, visualDecision.reason);
             continue;
           }
 
           emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
-          const refinements = designRefinementCount(taskId);
-          if (refinements >= maxDesignRefinements) {
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
+          if (qualityOutcome.action === "block") {
             appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", {
-              refinements,
+              refinements: qualityOutcome.workflow.designRefinementAttempt,
               maximum: maxDesignRefinements,
               review: visualDecision.designReview,
             });
-            emit({ type: "stream.blocked", message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
+            emit({
+              type: "stream.blocked",
+              message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.`,
+            });
             return;
           }
           repairEvidence = visualDecision.repairEvidence;
-          setExecutionState("REPAIR");
-          task = scheduleDesignRefinement(task, emit, visualDecision.reason);
           continue;
         }
 
@@ -594,8 +690,13 @@ export class ExecutionOrchestrator {
           emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
 
           if (!projectPlan || !sliceState || !websiteProject) {
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
+            const blocked = workflow.applyQualityOutcome(task, {
+              action: "block",
+              reason: visualDecision.reason,
+              maximumRepairAttempts: maxRepairAttempts,
+              maximumDesignRefinements: maxDesignRefinements,
+            });
+            adoptCoreMutation(blocked);
             appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
               reason: visualDecision.reason,
               review: visualDecision.designReview,
@@ -607,14 +708,14 @@ export class ExecutionOrchestrator {
 
           const revisionReason = visualDecision.reason;
           const checkpoint = createCheckpointSnapshot(task, "pre_repair");
-          const recovered = workflow.markRecoveryRequired(task, {
-            category: "plan_repair_required",
-            checkpointId: checkpoint.id,
-            resumeAction: "replan",
+          const recovered = workflow.applyQualityOutcome(task, {
+            action: "replan",
             reason: revisionReason,
+            maximumRepairAttempts: maxRepairAttempts,
+            maximumDesignRefinements: maxDesignRefinements,
+            checkpointId: checkpoint.id,
           });
-          task = recovered.task;
-          syncWorkflowProjection(task, recovered.workflow);
+          adoptCoreMutation(recovered);
           appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", {
             review: visualDecision.designReview,
             repairScope: visualDecision.scope,
@@ -630,9 +731,7 @@ export class ExecutionOrchestrator {
           });
 
           const revising = workflow.beginPlanRevision(task, revisionReason);
-          task = revising.task;
-          syncWorkflowProjection(task, revising.workflow);
-          setExecutionState("BLOCKED");
+          adoptCoreMutation(revising);
           emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The current slice cannot satisfy the product-quality review. Revising the project plan without discarding the existing worktree." });
 
           const revisionModel = teamPolicies.modelFor(teamPolicy, "architect", model, primaryDiscipline);
@@ -662,8 +761,7 @@ export class ExecutionOrchestrator {
               resumeAction: "replan",
               reason: revision.reason,
             });
-            task = failedRevision.task;
-            syncWorkflowProjection(task, failedRevision.workflow);
+            adoptCoreMutation(failedRevision);
             appendTaskEvent(taskId, "PLAN_REVISION_FAILED", {
               reason: revision.reason,
               validation: revision.validation,
@@ -733,8 +831,13 @@ export class ExecutionOrchestrator {
         if (visualDecision.action === "block") {
           finishRole(activeRoleAssignment, "completed", emit);
           activeRoleAssignment = null;
-          setExecutionState("BLOCKED");
-          task = transitionTask(task, "BLOCKED", emit);
+          const blocked = workflow.applyQualityOutcome(task, {
+            action: "block",
+            reason: visualDecision.reason,
+            maximumRepairAttempts: maxRepairAttempts,
+            maximumDesignRefinements: maxDesignRefinements,
+          });
+          adoptCoreMutation(blocked);
           emit({
             type: "design.review.blocked",
             designReview: visualDecision.designReview,
@@ -761,8 +864,13 @@ export class ExecutionOrchestrator {
         }, emit);
         activeRoleAssignment = null;
         emit({ type: "stage.updated", stage: "Verification", status: "complete" });
-        setExecutionState("REVIEW");
-        task = transitionTask(task, "REVIEWING", emit);
+        const qualityPass = workflow.applyQualityOutcome(task, {
+          action: "pass",
+          reason: "Visual and product quality gates passed.",
+          maximumRepairAttempts: maxRepairAttempts,
+          maximumDesignRefinements: maxDesignRefinements,
+        });
+        adoptCoreMutation(qualityPass, "verification_complete");
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_reviewing", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Verification passed. Fresh review and visual quality gates are running." });
         emit({ type: "stage.updated", stage: "Review", status: "active" });
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
@@ -828,16 +936,22 @@ export class ExecutionOrchestrator {
             requiredNextAction: "Repair only the blocking findings from independent review.",
           }, emit);
           emit({ type: "stage.updated", stage: "Review", status: "failed" });
-          if (task.attempts >= maxRepairAttempts) {
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
+          createCheckpointSnapshot(task, "pre_repair");
+          const reviewOutcome = workflow.applyReviewOutcome(task, {
+            action: "repair",
+            reason: freshDecision.reason,
+            maximumRepairAttempts: maxRepairAttempts,
+          });
+          adoptCoreMutation(reviewOutcome);
+          if (reviewOutcome.action === "block") {
             appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, review });
-            emit({ type: "stream.blocked", message: `Fresh review still found a blocking issue after ${maxRepairAttempts} repair attempts.` });
+            emit({
+              type: "stream.blocked",
+              message: `Fresh review still found a blocking issue after ${maxRepairAttempts} repair attempts.`,
+            });
             return;
           }
           repairEvidence = freshDecision.repairEvidence;
-          setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, freshDecision.reason);
           continue;
         }
 
@@ -847,8 +961,13 @@ export class ExecutionOrchestrator {
           appendTaskEvent(taskId, "DELIVERY_BLOCKED_BY_REVIEW_HISTORY", {
             findingIds: unresolvedBlocking.map((record) => record.id),
           });
+          const reviewOutcome = workflow.applyReviewOutcome(task, {
+            action: "block",
+            reason: `${unresolvedBlocking.length} unresolved high/critical review finding(s) block delivery.`,
+            maximumRepairAttempts: maxRepairAttempts,
+          });
+          adoptCoreMutation(reviewOutcome);
           emit({ type: "stream.blocked", message: `${unresolvedBlocking.length} unresolved high/critical review finding(s) block delivery. Resolve them in Review History.` });
-          
           return;
         }
 
@@ -871,8 +990,12 @@ export class ExecutionOrchestrator {
         appendTaskEvent(taskId, "CHANGESET_CAPTURED", { status: status.stdout ?? "", diff: diff.stdout ?? "" });
         emit({ type: "implementation.summary", status, diff, worktreePath: approval.worktreePath });
         emit({ type: "stage.updated", stage: "Review", status: "complete" });
-        setExecutionState("COMPLETE");
-        task = transitionTask(task, "DELIVERY_READY", emit);
+        const reviewOutcome = workflow.applyReviewOutcome(task, {
+          action: "pass",
+          reason: "Fresh review passed with no unresolved blocking findings.",
+          maximumRepairAttempts: maxRepairAttempts,
+        });
+        adoptCoreMutation(reviewOutcome, "pre_delivery");
         appendTaskEvent(taskId, "DELIVERY_READY", { worktreePath: approval.worktreePath });
         emit({ type: "delivery.ready", worktreePath: approval.worktreePath, message: "Verified and independently reviewed. Choose how to deliver the isolated changes." });
         emit({ type: "stream.completed" });
@@ -892,7 +1015,9 @@ export class ExecutionOrchestrator {
         setFrontendWorkflowStage(approvedWorktreePath, "blocked", { currentSlice: failedSlice.current, totalSlices: failedSlice.total, taskId, detail: message });
       }
       appendTaskEvent(taskId, "IMPLEMENTATION_FAILED", { message });
-      if (task && !["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "FAILED", emit);
+      if (task && !["CANCELLED", "COMPLETE"].includes(task.state)) {
+        adoptCoreMutation(workflow.applyExecutionFailure(task, message));
+      }
       emit({ type: "runtime.failed", message });
       
 

@@ -43,6 +43,8 @@ function baseWorkflowState(taskId: string, projectId: string): WorkflowState {
       reason: "",
       updatedAt: null,
     },
+    attemptPhase: null,
+    designRefinementAttempt: 0,
     repairAttempt: 0,
     recoveryCategory: null,
     detail: "test",

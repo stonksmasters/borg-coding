@@ -24,9 +24,12 @@
 10. The outer project loop and inner slice mini-loop are explicit workflow domains. A slice mini-loop cannot restart project planning.
 11. Recovery is bounded and classified by `RecoveryService`; unknown and exhausted failures stop.
 12. Recovery state is durable: category, previous task state, checkpoint ID, safe resume action, and reason are stored with the workflow.
-13. Restart recovery reads SQLite. Generated build documents may be recreated from it.
-14. Canonical UI activity is projected from raw task telemetry into stable workflow event categories/kinds; raw event provenance remains available for diagnostics.
-15. Internal slices reuse the primary chat session; they are workflow steps, not child conversations.
+13. Mutation attempt state is durable but minimal. TaskState owns lifecycle; `attemptPhase` distinguishes only `implementation`, `technical_repair`, and `design_refinement`, while `designRefinementAttempt` owns the dedicated visual-refinement budget.
+14. Tool permissions derive from durable TaskState + attempt phase. Missing attempt phase on a legacy IMPLEMENTING task fails closed to the bounded repair toolset.
+15. Application services produce evidence/classifications; `WorkflowEngine` outcome APIs decide retry, block, quality review, fresh review, replan, and delivery readiness.
+16. Restart recovery reads SQLite. Generated build documents may be recreated from it.
+17. Canonical UI activity is projected from raw task telemetry into stable workflow event categories/kinds; raw event provenance remains available for diagnostics.
+18. Internal slices reuse the primary chat session; they are workflow steps, not child conversations.
 
 ## Migration
 
@@ -49,7 +52,7 @@ Workspace preflight runs before execution and every retry. It repairs only contr
 
 `WorkflowState.verification` records the current verification status, repair attempt, profile, summary, browser/specialist verdicts, evidence hash, and completion time.
 
-Entering `VERIFYING` or starting a repair resets the gate to pending. The verifier records the result through `WorkflowEngine.recordVerification()`. A failed gate schedules repair; a successful gate is required before review, delivery readiness, or delivery may proceed. This prevents an agent response, raw event, or UI action from bypassing quality verification.
+Entering `VERIFYING` or starting a technical/design repair resets the gate to pending. The verifier records evidence through `WorkflowEngine.recordVerification()`. Core then evaluates that persisted gate through `applyVerificationOutcome()`: failure can repair/block, while success yields the explicit `quality_review` action. Product/visual quality is submitted through `applyQualityOutcome()`; only a pass enters REVIEWING and yields `review`. Fresh review is submitted through `applyReviewOutcome()`; only a pass reaches DELIVERY_READY/`checkpoint`. This prevents an agent response, raw event, server conditional, or UI action from bypassing any quality gate.
 
 ## Canonical events
 
@@ -57,4 +60,17 @@ Raw `TaskEvent` records remain append-only evidence. `packages/core/src/workflow
 
 ## Restart recovery
 
-Interrupted mutation-capable tasks are converted through `WorkflowEngine.markRecoveryRequired()`. The workflow records the interrupted task state, recovery category, recovery checkpoint, reason, and explicit safe resume action. Checkpoints snapshot workflow version, verification, and recovery state so continuation can restore evidence rather than infer it.
+Interrupted mutation-capable tasks are converted through `WorkflowEngine.markRecoveryRequired()`. The workflow records the interrupted task state, recovery category, recovery checkpoint, reason, and explicit safe resume action. Checkpoints snapshot workflow version, verification, recovery, `attemptPhase`, and `designRefinementAttempt`. Continuation back to IMPLEMENTING restores that durable mutation phase; if a legacy checkpoint lacks one, Core defaults to bounded technical repair rather than broad implementation authority.
+
+
+## Outcome authority
+
+The server does not answer “what happens next?” after execution evidence. It submits results to Core:
+
+- `completeImplementation()` moves approved mutation into VERIFYING.
+- `applyRecoveryDecision()` consumes RecoveryService classification and durably chooses retry or block.
+- `applyVerificationOutcome()` consumes the persisted verification gate and chooses quality review, technical repair, or block.
+- `applyQualityOutcome()` chooses fresh review, technical repair, design refinement, plan repair, or block.
+- `applyReviewOutcome()` chooses delivery readiness, technical repair, or block.
+
+Low-level retry and design-refinement mutations are private WorkflowEngine implementation details. SQLite remains the only source that a restart needs to determine the active lifecycle and mutation phase.

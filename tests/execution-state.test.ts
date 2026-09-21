@@ -1,18 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assertExecutionTransition, buildRepairContext, executionAllowsTool, formatRepairContext, parseVerificationErrors } from "../packages/core/src/execution-state.ts";
+import { buildRepairContext, executionAllowsTool, formatRepairContext, parseVerificationErrors } from "../packages/core/src/execution-state.ts";
 
-test("repair state rejects a restart into implementation", () => {
-  assert.throws(() => assertExecutionTransition("REPAIR", "IMPLEMENT"), /Invalid execution transition/);
-  assert.doesNotThrow(() => assertExecutionTransition("REPAIR", "VERIFY"));
+test("durable implementation phase permits approved mutation while missing phase fails closed", () => {
+  assert.equal(executionAllowsTool("IMPLEMENTING", "implementation", "worktree_patch"), true);
+  assert.equal(executionAllowsTool("IMPLEMENTING", null, "worktree_patch"), true);
+  assert.equal(executionAllowsTool("IMPLEMENTING", null, "repository_list"), false);
+  assert.equal(executionAllowsTool("IMPLEMENTING", "technical_repair", "repository_list"), false);
+  assert.equal(executionAllowsTool("IMPLEMENTING", "technical_repair", "worktree_patch"), true);
+  assert.equal(executionAllowsTool("IMPLEMENTING", "design_refinement", "worktree_patch"), true);
 });
 
-test("repair tools exclude broad repository discovery and verification mutation", () => {
-  assert.equal(executionAllowsTool("REPAIR", "repository_list"), false);
-  assert.equal(executionAllowsTool("REPAIR", "repository_search"), false);
-  assert.equal(executionAllowsTool("REPAIR", "worktree_patch"), true);
-  assert.equal(executionAllowsTool("VERIFY", "worktree_patch"), false);
-  assert.equal(executionAllowsTool("VERIFY", "verification_run"), true);
+test("verification and review phases cannot mutate source", () => {
+  assert.equal(executionAllowsTool("VERIFYING", null, "worktree_patch"), false);
+  assert.equal(executionAllowsTool("VERIFYING", null, "verification_run"), true);
+  assert.equal(executionAllowsTool("VERIFYING", null, "browser_responsive"), true);
+  assert.equal(executionAllowsTool("REVIEWING", null, "git_diff"), true);
+  assert.equal(executionAllowsTool("REVIEWING", null, "worktree_patch"), false);
 });
 
 test("TypeScript evidence produces a compact implicated-file repair context", () => {

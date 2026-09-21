@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyImplementationFailure, compactRecoveryEvidence } from "../apps/server/src/recovery-policy.ts";
+import { classifyImplementationFailure, classifyObservedToolFailures, compactRecoveryEvidence } from "../apps/server/src/recovery-policy.ts";
 import type { WorkspacePreflightReport } from "../packages/web-builder/src/workspace-preflight.ts";
 
 test("recovery policy classifies bounded implementation mistakes as recoverable", () => {
@@ -80,3 +80,28 @@ test("compact recovery evidence preserves only the current failure and determini
   assert.doesNotMatch(text, /rediscover.*whole repository/i);
 });
 
+
+
+test("observed tool failures prioritize concrete safety and recovery evidence over generic no-progress", () => {
+  const missing = classifyObservedToolFailures(
+    ["ENOENT: no such file or directory, realpath src/features/recovery/Missing.tsx"],
+    0,
+    2,
+    "No source progress.",
+  );
+  assert.equal(missing.disposition, "retry");
+  assert.equal(missing.category, "missing_path");
+
+  const escape = classifyObservedToolFailures(
+    ["Unsafe worktree path.", "Blocked repeated identical tool call."],
+    0,
+    2,
+    "No source progress.",
+  );
+  assert.equal(escape.disposition, "fatal");
+  assert.equal(escape.category, "path_escape");
+
+  const fallback = classifyObservedToolFailures([], 0, 2, "No source progress.");
+  assert.equal(fallback.disposition, "retry");
+  assert.equal(fallback.category, "no_progress");
+});

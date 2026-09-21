@@ -199,7 +199,7 @@ type QualityDecision =
 
 ## Slice 5 — Tighten Core outcome authority and durable attempt phase
 
-**Status:** next
+**Status:** implementation complete. Final GitHub Actions verification is unavailable because repository build minutes are exhausted; the last runnable CI passes reached typecheck/lint and desktop successfully, while the remaining recovery E2E failures were subsequently patched on this branch.
 
 ### Purpose
 
@@ -207,15 +207,21 @@ Finish the ownership move so application services report outcomes and Core consi
 
 ### Work
 
-- Review the ephemeral `ExecutionState` machine (`IMPLEMENT/VERIFY/REPAIR/BROWSER_VERIFY/REVIEW/...`).
-- Persist only the attempt phase needed for restart/tool-permission correctness; do not duplicate TaskState unnecessarily.
-- Add outcome-oriented Core APIs where server code still manually chooses transitions, for example:
-  - verification outcome -> repair/review/block,
-  - quality outcome -> repair/replan/block/pass,
-  - review outcome -> repair/delivery-ready/block.
-- Make ToolBroker permission policy depend on authoritative/durable attempt state when mutation safety requires it.
-- Remove remaining server-side progression conditionals that answer “what happens next?”
-- Update workflow architecture documentation and restart-recovery tests.
+- Removed the ephemeral `ExecutionState` progression machine from execution authority.
+- Persisted only the missing mutation metadata: `attemptPhase` (`implementation | technical_repair | design_refinement`) plus `designRefinementAttempt`.
+- ToolBroker permissions now derive from durable TaskState + attempt phase; an IMPLEMENTING task with missing legacy phase receives repair-level permissions rather than broad discovery.
+- Added outcome-oriented Core APIs:
+  - `completeImplementation()` -> verify,
+  - `applyRecoveryDecision()` -> retry/block,
+  - `applyVerificationOutcome()` -> quality-review/repair/block,
+  - `applyQualityOutcome()` -> review/repair/design-refinement/replan/block,
+  - `applyReviewOutcome()` -> delivery-ready/repair/block.
+- Added explicit durable `quality_review` and `review` next actions so verification no longer reports checkpoint readiness before quality/review complete.
+- Moved repair and design-refinement budgets into Core.
+- Fatal runtime recovery now persists category, previous task state, checkpoint, safe resume action, and reason.
+- Review-history blockers now transition durable TaskState to BLOCKED instead of only terminating the response stream.
+- Removed server repair/retry/design-refinement progression helpers and hid low-level Core retry mutations behind the public outcome APIs.
+- Added outcome-authority and SQLite restart regressions.
 
 ### Acceptance criteria
 
