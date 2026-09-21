@@ -7,6 +7,8 @@ test("durable implementation phase permits approved mutation while missing phase
   assert.equal(executionAllowsTool("IMPLEMENTING", null, "worktree_patch"), true);
   assert.equal(executionAllowsTool("IMPLEMENTING", null, "repository_list"), false);
   assert.equal(executionAllowsTool("IMPLEMENTING", "technical_repair", "repository_list"), false);
+  assert.equal(executionAllowsTool("IMPLEMENTING", "technical_repair", "repository_diagnostics"), false);
+  assert.equal(executionAllowsTool("IMPLEMENTING", "technical_repair", "repository_definition"), false);
   assert.equal(executionAllowsTool("IMPLEMENTING", "technical_repair", "worktree_patch"), true);
   assert.equal(executionAllowsTool("IMPLEMENTING", "design_refinement", "worktree_patch"), true);
 });
