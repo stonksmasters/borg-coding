@@ -200,7 +200,7 @@ test("verification is a durable gate before review and delivery", () => {
 
   const passed = passVerification(engine, task);
   assert.equal(passed.verification.status, "passed");
-  assert.equal(passed.nextAction, "checkpoint");
+  assert.equal(passed.nextAction, "quality_review");
   task = engine.transition(task, "REVIEWING").task;
   task = engine.transition(task, "DELIVERY_READY").task;
   assert.equal(engine.get(task.projectId)?.verification.status, "passed");
