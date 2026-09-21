@@ -506,7 +506,7 @@ export function BorgWorkspaceV2() {
     setMessages(result.messages);
     if (resetWorkspace) {
       const restoredPlan = [...result.messages].reverse().find((message) => message.role === "assistant" && message.kind === "plan")?.text?.trim();
-      if (restoredPlan && ["PLANNING", "AWAITING_APPROVAL", "CANCELLED"].includes(result.task?.state ?? "")) setRightPanel(isWebsite ? "sitemap" : "plan");
+      if (restoredPlan && ["PLANNING", "AWAITING_APPROVAL", "CANCELLED"].includes(result.task?.state ?? "")) setRightPanel(result.session.repositoryPath ? "sitemap" : "plan");
       else if (result.session.repositoryPath) setRightPanel("preview");
     }
     setLiveActivity([]);
@@ -1584,7 +1584,7 @@ export function BorgWorkspaceV2() {
           </div>
         </div></div>{(activeTaskId || previewUrl || previewError || latestPlan || changes.files.length > 0) && <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden overscroll-contain border-t border-white/8 lg:min-h-0 lg:basis-[65%] lg:flex-none lg:border-l lg:border-t-0">
           <div className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b border-white/8 bg-[#0a0d12] px-3 py-2">
-            <nav aria-label="Workspace views" className="grid min-w-0 flex-1 grid-cols-6 gap-1 rounded-lg border border-white/8 bg-black/20 p-1">
+            <nav aria-label="Workspace views" className="grid min-w-0 flex-1 grid-cols-5 gap-1 rounded-lg border border-white/8 bg-black/20 p-1">
               <button type="button" disabled={!isWebsite} onClick={() => { setRightPanel("preview"); if (activeSession && !previewUrl) void activatePreview(activeSession.id); }} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "preview" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Preview</button>
               {isWebsite
                 ? <button type="button" disabled={!activeTaskId} onClick={() => setRightPanel("sitemap")} className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition ${panelGroup === "blueprint" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300 disabled:opacity-40"}`}>Blueprint</button>
