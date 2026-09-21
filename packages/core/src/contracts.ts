@@ -317,8 +317,8 @@ export function createApproval(input: Pick<Approval, "id" | "taskId">): Approval
 
 
 export function createTaskCheckpoint(
-  input: Omit<TaskCheckpoint, "createdAt" | "workflowVersion" | "verification" | "recovery">
-    & Partial<Pick<TaskCheckpoint, "workflowVersion" | "verification" | "recovery">>,
+  input: Omit<TaskCheckpoint, "createdAt" | "workflowVersion" | "verification" | "recovery" | "attemptPhase" | "designRefinementAttempt">
+    & Partial<Pick<TaskCheckpoint, "workflowVersion" | "verification" | "recovery" | "attemptPhase" | "designRefinementAttempt">>,
 ): TaskCheckpoint {
   return TaskCheckpointSchema.parse({ ...input, createdAt: new Date().toISOString() });
 }
