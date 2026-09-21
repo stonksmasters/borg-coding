@@ -17,6 +17,35 @@ type CommandEvidence = { label?: string; command?: string; args?: string[]; exit
 
 function normalizePath(path: string): string { return path.replaceAll("\\", "/").replace(/^\.\//, ""); }
 
+function relativeModuleTargets(error: VerificationError): string[] {
+  if (!error.file) return [];
+  const match = error.message.match(/Cannot find module ['"]([^'"]+)['"]/i);
+  const specifier = match?.[1]?.trim();
+  if (!specifier?.startsWith(".")) return [];
+
+  const source = normalizePath(error.file);
+  const stack = source.split("/").slice(0, -1);
+  for (const segment of specifier.replaceAll("\\", "/").split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (!stack.length) return [];
+      stack.pop();
+      continue;
+    }
+    stack.push(segment);
+  }
+  const target = stack.join("/");
+  if (!target || target.startsWith("../")) return [];
+  if (/\.[a-z0-9]+$/i.test(target)) return [target];
+
+  const preferred = /\.tsx$/i.test(source) ? ".tsx"
+    : /\.jsx$/i.test(source) ? ".jsx"
+      : /\.ts$/i.test(source) ? ".ts"
+        : /\.js$/i.test(source) ? ".js"
+          : ".tsx";
+  return [`${target}${preferred}`, target, `${target}/index${preferred}`];
+}
+
 export function parseVerificationErrors(results: readonly CommandEvidence[]): VerificationError[] {
   const errors: VerificationError[] = [];
   for (const result of results.filter((item) => Number(item.exitCode ?? 0) !== 0)) {
@@ -41,7 +70,12 @@ export function buildRepairContext(input: { sliceId?: string; attempt: number; r
   const failed = results.find((item) => Number(item.exitCode ?? 0) !== 0) ?? {};
   const errors = parseVerificationErrors(results);
   const implicatedFiles = [...new Set(errors.flatMap((error) => error.file ? [error.file] : []))];
-  const allowedFiles = [...new Set([...implicatedFiles, ...(input.directDependencies ?? []).map(normalizePath)])].slice(0, 12);
+  const inferredTargets = errors.flatMap(relativeModuleTargets);
+  const allowedFiles = [...new Set([
+    ...implicatedFiles,
+    ...inferredTargets,
+    ...(input.directDependencies ?? []).map(normalizePath),
+  ])].slice(0, 12);
   const command = failed.label ?? ([failed.command, ...(failed.args ?? [])].filter(Boolean).join(" ") || "deterministic verification");
   const joined = errors.map((error) => `${error.code ?? ""} ${error.message}`).join(" ");
   const classification: RepairClassification = /TS\d+|type|assignable|compiler/i.test(joined) ? "type" : /test|assert|expect/i.test(`${command} ${joined}`) ? "test" : "runtime";
