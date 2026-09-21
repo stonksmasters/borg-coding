@@ -616,6 +616,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
   try {
     const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
     const raw = parsedJson.value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Project Plan JSON root must be an object.");
     const rawSlices = Array.isArray(raw.slices) ? raw.slices.slice(0, 12) : [];
     const slices = rawSlices.map((item, index) => {
       const value = item as Record<string, unknown>;
