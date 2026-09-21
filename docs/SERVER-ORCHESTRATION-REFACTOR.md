@@ -50,7 +50,7 @@ Create a stable seam around the repeated scope-classification logic currently em
 
 ## Slice 2 — Extract PlanningOrchestrator
 
-**Status:** in progress
+**Status:** complete
 
 ### Purpose
 
@@ -91,6 +91,8 @@ HTTP/SSE
 - Characterization tests from Slice 1 remain unchanged and green.
 
 ## Slice 3 — Extract ExecutionOrchestrator and VerificationService
+
+**Status:** next
 
 ### Purpose
 
