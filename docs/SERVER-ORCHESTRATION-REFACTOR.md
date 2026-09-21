@@ -134,7 +134,33 @@ approved execute command
 
 ## Slice 4 — Extract QualityGateService and ProjectPlanRevisionService
 
-**Status:** next
+**Status:** in progress
+
+### Detailed implementation contract
+
+Slice 4 is deliberately split into two evidence/proposal services while preserving Core as the only progression authority.
+
+`QualityGateService` has two phases so durable task state can still move through VERIFYING -> REVIEWING in Core between them:
+
+1. `evaluateVisual()`
+   - optional legacy/local vision review when no Design Brief exists,
+   - mandatory Visual Director review when a Design Brief exists,
+   - returns only one of: `pass`, `repair_current_slice`, `revise_project_plan`, or `block`,
+   - never transitions TaskState, schedules repair, increments attempts, or mutates the plan.
+2. `evaluateFreshReview()`
+   - runs fresh-context acceptance/code review over the verified diff,
+   - returns `pass` or `repair_current_slice` plus normalized review evidence,
+   - never transitions TaskState or decides delivery.
+
+`ProjectPlanRevisionService` is proposal-only:
+
+1. Generate the bounded revision with the Architect.
+2. Parse it and allow one semantic repair retry.
+3. Return a validated candidate plan or a typed invalid result.
+4. The caller submits the candidate to `WorkflowEngine.setProjectPlan()`; Core alone assigns the revision number, proposed status, and resume slice.
+5. After Core returns the authoritative proposed plan, the service validates coverage again, computes the delta, and writes the replaceable build-doc projection.
+
+The service may emit evidence/activity events, but it may not call WorkflowEngine, transition TaskState, request approval, schedule repair, or select a slice.
 
 ### Purpose
 
