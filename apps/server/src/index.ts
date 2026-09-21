@@ -56,6 +56,7 @@ import { runFreshReview } from "./fresh-review.ts";
 import { deriveWorkflowStatus } from "./workflow-status.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { PlanningOrchestrator } from "./planning-orchestrator.ts";
+import { VerificationService } from "./verification-service.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
 import { buildChangeLog } from "./change-log.ts";
@@ -151,6 +152,8 @@ const planningOrchestrator = new PlanningOrchestrator({
   recordHandoff,
   createCheckpointSnapshot,
 });
+
+const verificationService = new VerificationService({ tools, processRuntime });
 
 function changedSourcePaths(status: string) {
   return status.split(/\r?\n/)
@@ -1624,18 +1627,18 @@ const server = createServer((request, response) => {
         task = transitionTask(task, "VERIFYING", emit);
         if (sliceState && projectPlan) setFrontendWorkflowStage(approvedWorktreePath, "slice_verifying", { currentSlice: sliceState.current, totalSlices: projectPlan.slices.length, taskId, detail: "Implementation produced source changes. Deterministic and browser verification are running." });
         emit({ type: "stage.updated", stage: "Verification", status: "active" });
-        emit({ type: "tool.started", tool: "verification_run", input: { profile: verificationProfile } });
-        let deterministicVerification: {
-          passed?: boolean;
-          results?: Array<{ label?: string; command?: string; args?: string[]; exitCode?: number; stdout?: string; stderr?: string }>;
-          browserEvidence?: BrowserEvidenceReport | null;
-          visualRegression?: VisualRegressionReport;
-        };
+        let verificationResult: Awaited<ReturnType<VerificationService["run"]>>;
         try {
-          deterministicVerification = await tools.execute(
-            { function: { name: "verification_run", arguments: { profile: verificationProfile } } },
-            "agent", taskContext, "verifier", activeDisciplines,
-          ) as typeof deterministicVerification;
+          verificationResult = await verificationService.run({
+            taskId,
+            taskContext,
+            activeDisciplines,
+            packs,
+            verificationProfile,
+            specialistInstructions: specialistInstructions.verifier,
+            focusedScope: focusedExecutionScope,
+            focusedBrowserRoute,
+          }, emit, (type, payload) => appendTaskEvent(taskId, type, payload), task.attempts);
         } catch (error) {
           if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
           activeRoleAssignment = null;
@@ -1651,71 +1654,21 @@ const server = createServer((request, response) => {
           task = scheduleRepair(task, emit, decision.action, decision);
           continue;
         }
-        let focusedBrowserEvidence: BrowserEvidenceReport | null = null;
-        let focusedBrowserFailure: string | null = null;
-        if (focusedBrowserRoute) {
-          const serverUrl = processRuntime.findRunning(taskId, "dev_server")?.url;
-          if (!serverUrl) {
-            focusedBrowserFailure = "Focused route verification requires the managed development server.";
-          } else {
-            const focusedUrl = new URL(focusedBrowserRoute, serverUrl).toString();
-            try {
-              await tools.execute(
-                { function: { name: "browser_responsive", arguments: { url: focusedUrl, accessibility: true } } },
-                "agent", taskContext, "verifier", activeDisciplines,
-              );
-              const closed = await tools.execute(
-                { function: { name: "browser_close", arguments: {} } },
-                "agent", taskContext, "verifier", activeDisciplines,
-              ) as { report?: BrowserEvidenceReport | null };
-              focusedBrowserEvidence = closed.report ?? null;
-              appendTaskEvent(taskId, "FOCUSED_BROWSER_VERIFICATION_COMPLETED", {
-                scope: focusedExecutionScope,
-                route: focusedBrowserRoute,
-                passed: focusedBrowserEvidence?.passed ?? false,
-              });
-            } catch (error) {
-              focusedBrowserFailure = error instanceof Error ? error.message : String(error);
-              appendTaskEvent(taskId, "FOCUSED_BROWSER_VERIFICATION_FAILED", {
-                scope: focusedExecutionScope,
-                route: focusedBrowserRoute,
-                message: focusedBrowserFailure,
-              });
-            }
-          }
-        }
-        const verificationEvidence = focusedBrowserEvidence
-          ? { ...deterministicVerification, browserEvidence: focusedBrowserEvidence }
-          : deterministicVerification;
-        const specialistEvidence = evaluateSpecialistEvidence(packs, verificationEvidence);
-        const verification = {
-          ...deterministicVerification,
-          browserEvidence: focusedBrowserEvidence ?? deterministicVerification.browserEvidence,
-          focusedBrowserRoute,
-          focusedBrowserFailure,
-          passed: Boolean(deterministicVerification.passed)
-            && !focusedBrowserFailure
-            && (focusedBrowserEvidence?.passed ?? true)
-            && specialistEvidence.passed,
-          specialistEvidence,
-          specialistInstructions: specialistInstructions.verifier,
-        };
-        emit({ type: "tool.completed", tool: "verification_run", output: verification });
-        const verificationFailure = [
-          ...(verification.browserEvidence?.issues ?? []),
-          ...(verification.specialistEvidence?.failures ?? []),
-        ].filter(Boolean).join(" ") || "Deterministic verification failed.";
-        const verificationSummary = verification.passed
-          ? `${verificationProfile} verification passed for repair attempt ${task.attempts}.`
-          : verificationFailure;
+        const {
+          deterministic: deterministicVerification,
+          verification,
+          failure: verificationFailure,
+          summary: verificationSummary,
+          resultSha256,
+        } = verificationResult;
         const verifiedWorkflow = workflow.recordVerification(task, {
           passed: verification.passed,
           attempt: task.attempts,
           profile: verificationProfile,
           summary: verificationSummary,
-          browserPassed: verification.browserEvidence?.passed ?? (focusedBrowserFailure ? false : null),
+          browserPassed: verification.browserEvidence?.passed ?? (verification.focusedBrowserFailure ? false : null),
           specialistPassed: verification.specialistEvidence?.passed ?? null,
-          resultSha256: createHash("sha256").update(JSON.stringify(verification)).digest("hex"),
+          resultSha256,
           evidence: verification,
         });
         syncWorkflowProjection(task, verifiedWorkflow);
