@@ -15,7 +15,7 @@ import { SqliteChatRepository } from "../../../packages/persistence/src/sqlite-c
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
-import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { createWebsiteProject, inferWebsiteTemplate, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { readProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import type { ProjectPlan } from "../../../packages/core/src/project-domain.ts";
 
@@ -676,8 +676,12 @@ const server = createServer((request, response) => {
     void readJson(request).then(async (input) => {
       const name = typeof input.name === "string" ? input.name.trim() : "";
       const brief = typeof input.brief === "string" ? input.brief.trim() : "";
-      const requestedTemplate = typeof input.template === "string" ? input.template : "";
-      const template: WebsiteTemplate = websiteTemplates.includes(requestedTemplate as WebsiteTemplate) ? requestedTemplate as WebsiteTemplate : "saas-landing";
+      const requestedTemplate = typeof input.template === "string" ? input.template : "auto";
+      const template: WebsiteTemplate = requestedTemplate === "auto"
+        ? inferWebsiteTemplate(brief)
+        : websiteTemplates.includes(requestedTemplate as WebsiteTemplate)
+          ? requestedTemplate as WebsiteTemplate
+          : inferWebsiteTemplate(brief);
       if (!name) return send(response, 400, { error: "Website name is required." });
       const project = await createWebsiteProject(name, undefined, undefined, { template, originalBrief: brief });
       const savedAccess = access.save({ repositoryPath: project.path, documents: [] });
