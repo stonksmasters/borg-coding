@@ -444,7 +444,7 @@ export class PlanningOrchestrator {
       this.deps.syncWorkflowProjection(task, recovery.workflow);
       emit({ type: "task.state", state: task.state, workflow: recovery.workflow });
       emit({ type: "stage.updated", stage, status: "failed", message });
-      emit({ type: "runtime.failed", stage, message });
+      emit({ type: "runtime.failed", stage, message, state: task.state });
       return { task, status: "failed" };
     };
 
