@@ -239,11 +239,19 @@ function styleContractViolations(root: string, paths: readonly string[]): StyleC
   for (const relativePath of paths.slice(0, 40)) {
     const absolute = join(root, relativePath);
     if (!existsSync(absolute) || !lstatSync(absolute).isFile() || statSync(absolute).size > MAX_FILE_BYTES) continue;
-    const lines = readFileSync(absolute, "utf8").split(/\r?\n/);
+    const content = readFileSync(absolute, "utf8");
+    const lines = content.split(/\r?\n/);
+    const interactivePillLines = new Set<number>();
+    if (forbidsPills) {
+      for (const match of content.matchAll(/<(?:button|a)\b[^>]{0,800}\bclass(?:Name)?\s*=\s*["'`][^"'`]*\brounded-full\b[^"'`]*["'`][^>]*>/gi)) {
+        const offset = match.index ?? 0;
+        interactivePillLines.add(content.slice(0, offset).split(/\r?\n/).length);
+      }
+    }
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
-      if (forbidsPills && /\brounded-full\b/.test(line)) {
-        violations.push({ path: relativePath, line: index + 1, message: "Approved global styles forbid pill-shaped treatment; rounded-full violates the style contract." });
+      if (interactivePillLines.has(index + 1)) {
+        violations.push({ path: relativePath, line: index + 1, message: "Approved global styles forbid pill-shaped action treatment; rounded-full on a button/link violates the style contract." });
       }
       if (forbidsGradients && /\b(?:bg-gradient-|from-[\w\[-]|via-[\w\[-]|to-[\w\[-])|(?:linear|radial)-gradient\s*\(/i.test(line)) {
         violations.push({ path: relativePath, line: index + 1, message: "Approved global styles forbid gradients; remove the gradient treatment." });
