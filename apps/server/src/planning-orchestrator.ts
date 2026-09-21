@@ -448,7 +448,8 @@ export class PlanningOrchestrator {
       ? recoveredStyleArtifact
       : null;
     const recoveredDesignBrief = blueprintRecoveryEvents.findLast((event) => event.type === "DESIGN_BRIEF_CREATED")?.payload.brief as DesignBrief | undefined;
-    let stagedProductMap: ProductMap | null = blueprintRecoveryCategory === "blueprint_design_system_invalid"
+    let stagedProductMap: ProductMap | null = blueprintRecoveryCategory === "blueprint_design_direction_invalid"
+      || blueprintRecoveryCategory === "blueprint_design_system_invalid"
       || blueprintRecoveryCategory === "blueprint_component_architecture_invalid"
       ? recoveredProductMap
       : null;
@@ -583,10 +584,13 @@ export class PlanningOrchestrator {
           return { task, status: "cancelled" };
         }
         appendTaskEvent(task.id, "DESIGN_BRIEF_FAILED", { model: architectModel, message });
+        if (projectPlanning && websiteProject && !["RECOVERY_REQUIRED", "FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) {
+          return failBlueprintStage("Design Direction", "blueprint_design_direction_invalid", message);
+        }
         if (!["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) {
           task = this.deps.transitionTask(task, "FAILED", emit);
         }
-        emit({ type: "runtime.failed", stage: "Design Direction", message });
+        emit({ type: "runtime.failed", stage: "Design Direction", message, state: task.state });
         emit({ type: "stage.updated", stage: "Design Direction", status: "failed", message });
         return { task, status: "failed" };
       }
