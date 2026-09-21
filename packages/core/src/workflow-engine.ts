@@ -210,6 +210,8 @@ export class WorkflowEngine {
       lastConsumedCommandId: sliceSelection?.supersededCommandId ?? existing?.lastConsumedCommandId ?? null,
       verification: pendingVerification(0),
       recovery: inactiveWorkflowRecovery,
+      attemptPhase: null,
+      designRefinementAttempt: 0,
       repairAttempt: 0,
       recoveryCategory: null,
       detail,
@@ -343,6 +345,7 @@ export class WorkflowEngine {
         ? { ...interruptedCommand, claimedByTaskId: null, claimedAt: null }
         : current.pendingCommand,
       verification: to === "VERIFYING" || to === "IMPLEMENTING" ? pendingVerification(updatedTask.attempts) : current.verification,
+      attemptPhase: to === "IMPLEMENTING" ? (current.attemptPhase ?? "implementation") : null,
       recovery: to === "RECOVERY_REQUIRED"
         ? {
             status: "required",
@@ -440,6 +443,8 @@ export class WorkflowEngine {
       pendingCommand: projectPlanApproved ? command(task.projectId, nextVersion, "start_slice", now, 0) : null,
       verification: planRevisionApproved ? pendingVerification(updatedTask.attempts) : current.verification,
       recovery: planRevisionApproved ? inactiveWorkflowRecovery : current.recovery,
+      attemptPhase: approval.status === "APPROVED" && (kind === "execution" || planRevision) ? "implementation" : current.attemptPhase,
+      designRefinementAttempt: planRevisionApproved ? 0 : current.designRefinementAttempt,
       recoveryCategory: planRevisionApproved ? null : current.recoveryCategory,
       detail: approval.status === "REJECTED"
         ? "Approval was rejected."
@@ -584,6 +589,7 @@ export class WorkflowEngine {
   retry(task: Task, input: {
     reason: string;
     eventType: "REPAIR_SCHEDULED" | "IMPLEMENTATION_RETRY_SCHEDULED";
+    phase?: "implementation" | "technical_repair";
     category?: string | null;
     action?: string | null;
   }): { task: Task; workflow: WorkflowState } {
@@ -602,6 +608,7 @@ export class WorkflowEngine {
       nextAction: "implement",
       pendingCommand: null,
       verification: pendingVerification(updatedTask.attempts),
+      attemptPhase: input.phase ?? (input.eventType === "REPAIR_SCHEDULED" ? "technical_repair" : "implementation"),
       recovery: {
         status: "repairing",
         category: input.category ?? current.recovery.category,
@@ -687,6 +694,10 @@ export class WorkflowEngine {
         : continuation.resultingState === "REVIEWING" || continuation.resultingState === "DELIVERY_READY"
           ? checkpointVerification
           : current.verification,
+      attemptPhase: continuation.resultingState === "IMPLEMENTING"
+        ? (options.checkpoint?.attemptPhase ?? current.attemptPhase ?? "technical_repair")
+        : null,
+      designRefinementAttempt: options.checkpoint?.designRefinementAttempt ?? current.designRefinementAttempt,
       recovery: continuation.status === "recovery_required" || continuation.resultingState === "PAUSED"
         ? {
             status: "required",
