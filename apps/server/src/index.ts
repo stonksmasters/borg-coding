@@ -26,7 +26,6 @@ import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import { normalizeWorkflowEvents } from "../../../packages/core/src/workflow-events.ts";
 import { DebugSnapshotSchema, evaluateDebugInvariants, redactDebugValue, type DebugSnapshot } from "../../../packages/core/src/control-plane-debug.ts";
 import { taskRepositoryPath } from "../../../packages/core/src/task-repository-binding.ts";
-import { assertExecutionTransition, buildRepairContext, formatRepairContext, type ExecutionState } from "../../../packages/core/src/execution-state.ts";
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
 import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
@@ -38,43 +37,32 @@ import { inspectProjectTree, resolveProjectPath } from "../../../packages/reposi
 import { ToolBroker, type PermissionMode } from "../../../packages/tools/src/tool-broker.ts";
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { ProjectEnvironmentStore } from "../../../packages/tools/src/project-environment.ts";
-import type { BrowserEvidenceReport } from "../../../packages/browser-verification/src/index.ts";
-import { OllamaVisionProvider, VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
+import { OllamaVisionProvider, VisionReviewService } from "../../../packages/vision-review/src/index.ts";
 import { VisualRegressionService, type BaselineCandidate, type VisualRegressionReport } from "../../../packages/visual-regression/src/index.ts";
 import {
   DisciplineRouter,
   TeamPolicyService,
-  evaluateSpecialistEvidence,
   roleCapabilities,
-  selectSpecialistPacks,
   specialistPackRefs,
-  specialistSystemInstructions,
-  verificationProfileFor,
   type SpecialistCapabilityPack,
 } from "../../../packages/orchestration/src/index.ts";
-import { runFreshReview } from "./fresh-review.ts";
 import { deriveWorkflowStatus } from "./workflow-status.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { PlanningOrchestrator } from "./planning-orchestrator.ts";
 import { ExecutionOrchestrator } from "./execution-orchestrator.ts";
 import { VerificationService } from "./verification-service.ts";
-import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
-import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
+import type { RecoveryDecision } from "./recovery-policy.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
-import { preflightFailureMessage, runWorkspacePreflight } from "../../../packages/web-builder/src/workspace-preflight.ts";
 import { projectWorkflowState } from "../../../packages/web-builder/src/workflow-projection.ts";
 import { ensurePreviewDependencies } from "../../../packages/web-builder/src/preview-dependencies.ts";
-import { websiteGenerationContext } from "../../../packages/web-builder/src/generation-context.ts";
-import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext, type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
-import { updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
-import { approveProjectPlan, currentSlice, markSliceReady, parseProjectPlanResult, persistProposedProjectPlan, prepareSlice, projectDeliveredFrontendCheckpoint, projectPlanDelta, projectPlanRepairPrompt, projectPlanRevisionPrompt, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, slicePrompt, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
+import { type CompiledContext, type ContextItem } from "../../../packages/web-builder/src/context-compiler.ts";
+import { approveProjectPlan, currentSlice, prepareSlice, projectDeliveredFrontendCheckpoint, readPersistedDesignBrief, readProjectDocs, readProjectPlan, readSliceState, setFrontendWorkflowStage, validateProjectPlanCoverage, type ProjectPlan, type SliceAction, type SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
   DesignDirectorService,
   VisualDirectorService,
-  designBriefPrompt,
   type DesignBrief,
   type DesignReviewResult,
 } from "../../../packages/design-intelligence/src/index.ts";
