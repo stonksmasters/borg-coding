@@ -683,6 +683,7 @@ export class WorkflowEngine {
         ? { ...current.pendingCommand, claimedByTaskId: null, claimedAt: null }
         : current.pendingCommand,
       recoveryCategory: input.category,
+      attemptPhase: null,
       recovery: {
         status: "required",
         category: input.category,
