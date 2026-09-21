@@ -10,6 +10,7 @@ import {
   type TaskState,
   type WorkflowState,
 } from "../../../packages/core/src/contracts.ts";
+import type { ProjectStyleSystem } from "../../../packages/core/src/project-domain.ts";
 import type { PermissionMode } from "../../../packages/core/src/chat-session.ts";
 import type { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import type { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
@@ -54,6 +55,8 @@ import {
   productMapPlanningPrompt,
   styleSystemPlanningPrompt,
   validateBlueprintCompletion,
+  validateProductMap,
+  validateStyleSystem,
   type ProductMap,
 } from "../../../packages/web-builder/src/blueprint-planning.ts";
 import {
@@ -163,6 +166,13 @@ export class PlanningOrchestrator {
     const selectedPath = access.load().repositoryPath;
     const selectedWebsite = selectedPath ? websiteInfo(selectedPath) : null;
     const durableWorkflow = workflow.get(authorityProjectId);
+    const blueprintRecoveryTaskId = durableWorkflow?.status === "recovery_required"
+      && durableWorkflow.recovery.resumeAction === "replan"
+      && durableWorkflow.recovery.category?.startsWith("blueprint_")
+      ? durableWorkflow.taskId
+      : null;
+    const blueprintRecoveryCategory = blueprintRecoveryTaskId ? durableWorkflow?.recovery.category ?? null : null;
+    const blueprintRecoveryEvents = blueprintRecoveryTaskId ? tasks.listEvents(blueprintRecoveryTaskId) : [];
     const projectPlan = selectedWebsite
       ? this.deps.projectPlanFromWorkflow(durableWorkflow, selectedWebsite.path)
       : null;
@@ -429,8 +439,21 @@ export class PlanningOrchestrator {
     const planningBrief = websiteProject?.originalBrief || requestText;
     const planningFeedback = projectPlanning && projectPlan ? requestText : "";
     const blueprintFallback = projectPlanning && websiteProject ? fallbackProjectPlan(planningBrief, websiteProject.template) : null;
-    let stagedProductMap: ProductMap | null = null;
-    let stagedStyleSystem = blueprintFallback?.styles ?? null;
+    const recoveredProductMapArtifact = blueprintRecoveryEvents.findLast((event) => event.type === "BLUEPRINT_PRODUCT_MAP_COMPLETED")?.payload.artifact as ProductMap | undefined;
+    const recoveredProductMap = recoveredProductMapArtifact && validateProductMap(recoveredProductMapArtifact).valid
+      ? recoveredProductMapArtifact
+      : null;
+    const recoveredStyleArtifact = blueprintRecoveryEvents.findLast((event) => event.type === "BLUEPRINT_STYLE_SYSTEM_COMPLETED")?.payload.artifact as ProjectStyleSystem | undefined;
+    const recoveredStyleSystem = recoveredStyleArtifact && validateStyleSystem(recoveredStyleArtifact).valid
+      ? recoveredStyleArtifact
+      : null;
+    let stagedProductMap: ProductMap | null = blueprintRecoveryCategory === "blueprint_design_system_invalid"
+      || blueprintRecoveryCategory === "blueprint_component_architecture_invalid"
+      ? recoveredProductMap
+      : null;
+    let stagedStyleSystem = blueprintRecoveryCategory === "blueprint_component_architecture_invalid"
+      ? recoveredStyleSystem ?? blueprintFallback?.styles ?? null
+      : blueprintFallback?.styles ?? null;
 
     const failBlueprintStage = (stage: string, category: string, reason: string): PlanningOutcome => {
       const message = reason.trim().slice(0, 4_000);
