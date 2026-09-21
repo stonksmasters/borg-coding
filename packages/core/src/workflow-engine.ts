@@ -13,6 +13,7 @@ import {
   type WorkflowState,
 } from "./contracts.ts";
 import { assertTransition } from "./state-machine.ts";
+import type { RecoveryDecision } from "./recovery-service.ts";
 
 export type WorkflowMutation = {
   state: WorkflowState;
@@ -102,7 +103,7 @@ function taskProjection(state: TaskState): Pick<WorkflowState, "status" | "nextA
     case "AWAITING_APPROVAL": return { status: "awaiting_approval", nextAction: "await_approval" };
     case "IMPLEMENTING": return { status: "running", nextAction: "implement" };
     case "VERIFYING": return { status: "verifying", nextAction: "verify" };
-    case "REVIEWING": return { status: "reviewing", nextAction: "checkpoint" };
+    case "REVIEWING": return { status: "reviewing", nextAction: "review" };
     case "DELIVERY_READY": return { status: "awaiting_feedback", nextAction: "checkpoint" };
     case "DELIVERING": return { status: "running", nextAction: "deliver" };
     case "RECOVERY_REQUIRED": case "PAUSED": return { status: "recovery_required", nextAction: "recover" };
@@ -523,7 +524,7 @@ export class WorkflowEngine {
       recovery: input.passed ? inactiveWorkflowRecovery : current.recovery,
       recoveryCategory: input.passed ? null : current.recoveryCategory,
       status: "verifying",
-      nextAction: input.passed ? "checkpoint" : "repair",
+      nextAction: input.passed ? "quality_review" : "repair",
       detail: gate.summary || (input.passed ? "Verification passed." : "Verification failed."),
       version: current.version + 1,
       updatedAt: now,
@@ -538,6 +539,130 @@ export class WorkflowEngine {
       }, now)],
     });
     return state;
+  }
+
+  completeImplementation(task: Task): { task: Task; workflow: WorkflowState; action: "verify" } {
+    const result = this.transition(task, "VERIFYING");
+    return { ...result, action: "verify" };
+  }
+
+  applyRecoveryDecision(
+    task: Task,
+    decision: RecoveryDecision,
+    input: { retryKind: "implementation" | "technical_repair"; eventType: "IMPLEMENTATION_RETRY_SCHEDULED" | "REPAIR_SCHEDULED" },
+  ): { task: Task; workflow: WorkflowState; action: "retry" | "block" } {
+    if (decision.disposition === "fatal") {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    const retried = this.retry(task, {
+      reason: decision.reason,
+      eventType: input.eventType,
+      phase: input.retryKind,
+      category: decision.category,
+      action: decision.action,
+    });
+    return { ...retried, action: "retry" };
+  }
+
+  applyVerificationOutcome(
+    task: Task,
+    input: { maximumRepairAttempts: number; reason: string },
+  ): { task: Task; workflow: WorkflowState; action: "quality_review" | "repair" | "block" } {
+    const current = this.requireTask(task);
+    if (task.state !== "VERIFYING") throw new Error("Verification outcome requires a VERIFYING task.");
+    if (current.verification.status === "pending") throw new Error("Verification outcome requires a recorded verification result.");
+    if (current.verification.attempt !== task.attempts) {
+      throw new Error(`Verification outcome belongs to attempt ${current.verification.attempt}, not current attempt ${task.attempts}.`);
+    }
+    if (current.verification.status === "passed") {
+      return { task, workflow: current, action: "quality_review" };
+    }
+    if (task.attempts >= input.maximumRepairAttempts) {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    const retried = this.retry(task, {
+      reason: input.reason,
+      eventType: "REPAIR_SCHEDULED",
+      phase: "technical_repair",
+    });
+    return { ...retried, action: "repair" };
+  }
+
+  applyQualityOutcome(
+    task: Task,
+    input:
+      | { action: "pass"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number }
+      | { action: "technical_repair"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number }
+      | { action: "design_refinement"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number }
+      | { action: "replan"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number; checkpointId: string }
+      | { action: "block"; reason: string; maximumRepairAttempts: number; maximumDesignRefinements: number },
+  ): { task: Task; workflow: WorkflowState; action: "review" | "repair" | "design_refinement" | "replan" | "block" } {
+    const current = this.requireTask(task);
+    if (task.state !== "VERIFYING") throw new Error("Quality outcome requires a VERIFYING task.");
+    assertVerificationPassed(task, current, "Quality review");
+    if (input.action === "pass") {
+      const reviewing = this.transition(task, "REVIEWING");
+      return { task: reviewing.task, workflow: reviewing.workflow, action: "review" };
+    }
+    if (input.action === "replan") {
+      const recovery = this.markRecoveryRequired(task, {
+        category: "plan_repair_required",
+        checkpointId: input.checkpointId,
+        resumeAction: "replan",
+        reason: input.reason,
+      });
+      return { ...recovery, action: "replan" };
+    }
+    if (input.action === "block") {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    if (input.action === "design_refinement") {
+      if (current.designRefinementAttempt >= input.maximumDesignRefinements) {
+        const blocked = this.transition(task, "BLOCKED");
+        return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+      }
+      const refinement = this.beginDesignRefinement(task, {
+        reason: input.reason,
+        maximum: input.maximumDesignRefinements,
+      });
+      return { ...refinement, action: "design_refinement" };
+    }
+    if (task.attempts >= input.maximumRepairAttempts) {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    const repaired = this.retry(task, {
+      reason: input.reason,
+      eventType: "REPAIR_SCHEDULED",
+      phase: "technical_repair",
+    });
+    return { ...repaired, action: "repair" };
+  }
+
+  applyReviewOutcome(
+    task: Task,
+    input: { action: "pass" | "repair" | "block"; reason: string; maximumRepairAttempts: number },
+  ): { task: Task; workflow: WorkflowState; action: "delivery_ready" | "repair" | "block" } {
+    const current = this.requireTask(task);
+    if (task.state !== "REVIEWING") throw new Error("Review outcome requires a REVIEWING task.");
+    assertVerificationPassed(task, current, "Review outcome");
+    if (input.action === "pass") {
+      const ready = this.transition(task, "DELIVERY_READY");
+      return { task: ready.task, workflow: ready.workflow, action: "delivery_ready" };
+    }
+    if (input.action === "block" || task.attempts >= input.maximumRepairAttempts) {
+      const blocked = this.transition(task, "BLOCKED");
+      return { task: blocked.task, workflow: blocked.workflow, action: "block" };
+    }
+    const repaired = this.retry(task, {
+      reason: input.reason,
+      eventType: "REPAIR_SCHEDULED",
+      phase: "technical_repair",
+    });
+    return { ...repaired, action: "repair" };
   }
 
   markRecoveryRequired(task: Task, input: {
