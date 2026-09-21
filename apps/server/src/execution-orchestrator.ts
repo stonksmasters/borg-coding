@@ -354,7 +354,7 @@ export class ExecutionOrchestrator {
             createCheckpointSnapshot(task, "pre_repair");
           }
           const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
-            retryKind: "implementation",
+            retryKind: "technical_repair",
             eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
           });
           adoptCoreMutation(recoveryOutcome);
@@ -404,7 +404,7 @@ export class ExecutionOrchestrator {
               createCheckpointSnapshot(task, "pre_repair");
             }
             const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
-              retryKind: "implementation",
+              retryKind: "technical_repair",
               eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
             });
             adoptCoreMutation(recoveryOutcome);
