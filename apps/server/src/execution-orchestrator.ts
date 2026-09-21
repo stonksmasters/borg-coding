@@ -348,6 +348,7 @@ export class ExecutionOrchestrator {
           activeRoleAssignment = null;
           const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
+          emit({ type: "recovery.classified", decision, phase: "implementation" });
           if (decision.disposition === "retry") {
             const recoveryPreflight = performPreflight("implementation_recovery");
             repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
@@ -418,6 +419,7 @@ export class ExecutionOrchestrator {
               postAttemptFingerprint: postAttemptSnapshot.fingerprint,
             });
             appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
+          emit({ type: "recovery.classified", decision, phase: "implementation" });
             if (decision.disposition === "retry") {
               const recoveryPreflight = performPreflight("no_progress_recovery");
               repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
