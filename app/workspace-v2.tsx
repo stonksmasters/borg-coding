@@ -27,6 +27,7 @@ import { Switch } from "@/components/ui/switch";
 
 const API = (process.env.NEXT_PUBLIC_BORG_API_URL ?? "http://127.0.0.1:4312").replace(/\/$/, "");
 const WEBSITE_TEMPLATES = [
+  { id: "auto", label: "Auto", detail: "Let BORG choose the closest starting point from the brief." },
   { id: "saas-landing", label: "SaaS landing", detail: "Product story, proof, pricing, and conversion." },
   { id: "portfolio", label: "Portfolio", detail: "Personal brand, selected work, and contact." },
   { id: "ecommerce", label: "Ecommerce", detail: "Products, collections, merchandising, and purchase paths." },
@@ -192,7 +193,7 @@ export function BorgWorkspaceV2() {
   const [websiteOpen, setWebsiteOpen] = useState(false);
   const [websiteName, setWebsiteName] = useState("");
   const [websiteBrief, setWebsiteBrief] = useState("");
-  const [websiteTemplate, setWebsiteTemplate] = useState<WebsiteTemplate>("saas-landing");
+  const [websiteTemplate, setWebsiteTemplate] = useState<WebsiteTemplate>("auto");
   const [websiteBusy, setWebsiteBusy] = useState(false);
   const [websiteError, setWebsiteError] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
