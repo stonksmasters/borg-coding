@@ -1134,6 +1134,7 @@ const server = createServer((request, response) => {
     const baselineCandidates = pendingVisualBaselineCandidates(taskId);
     return send(response, 200, {
       status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length }),
+      blueprint: ownedWorkflow?.projectPlan ?? null,
       baselineCandidates,
     });
   }
