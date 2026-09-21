@@ -643,7 +643,6 @@ export class PlanningOrchestrator {
 
       let proposedProjectPlan: ProjectPlan | null = null;
       if (projectPlanning && websiteProject) {
-        const planningBrief = websiteProject.originalBrief || requestText;
         let parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
 
         if (parseResult.source === "fallback" && parseResult.retryRecommended) {
