@@ -695,9 +695,14 @@ export class PlanningOrchestrator {
           messages: [
             architectRequest.messages[0],
             architectRequest.messages[1],
-            { role: "user" as const, content: architectRepairPrompt(validation.reason ?? "was not a valid plan") },
+            {
+              role: "user" as const,
+              content: blueprintCompletionPlanning
+                ? `The Stage 3-4 artifact was rejected because ${validation.reason ?? "it was invalid"}. Return exactly one complete <borg-project-plan> JSON artifact. Do not use tools, commentary, markdown fences, or implementation claims.`
+                : architectRepairPrompt(validation.reason ?? "was not a valid plan"),
+            },
           ],
-          limits: { toolRounds: 3, toolCalls: 2 },
+          ...(blueprintCompletionPlanning ? {} : { limits: { toolRounds: 3, toolCalls: 2 } }),
         });
         answer = repaired.answer;
         usedTools ||= repaired.usedTools;
@@ -754,6 +759,9 @@ export class PlanningOrchestrator {
             reason: parseResult.fallbackReason,
             validation: parseResult.validation,
           });
+          if (blueprintCompletionPlanning) {
+            throw new Error(`Stage 3-4 Blueprint output remained invalid after bounded repair: ${parseResult.fallbackReason ?? "project plan could not be parsed"}`);
+          }
         }
 
         let candidatePlan = parseResult.plan;
@@ -891,11 +899,14 @@ export class PlanningOrchestrator {
         role: "architect",
         message,
       });
+      if (projectPlanning && websiteProject && !["RECOVERY_REQUIRED", "FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) {
+        return failBlueprintStage("Component Architecture", "blueprint_component_architecture_invalid", message);
+      }
       if (!["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) {
         task = this.deps.transitionTask(task, "FAILED", emit);
       }
-      emit({ type: "runtime.failed", message });
-      emit({ type: "stage.updated", stage: "Implementation", status: "failed" });
+      emit({ type: "runtime.failed", message, state: task.state });
+      emit({ type: "stage.updated", stage: projectPlanning ? "Component Architecture" : "Plan", status: "failed" });
       return { task, status: "failed" };
     }
   }
