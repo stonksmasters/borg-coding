@@ -31,7 +31,6 @@ import {
   verificationProfileFor,
   type SpecialistCapabilityPack,
 } from "../../../packages/orchestration/src/index.ts";
-import { VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { preflightFailureMessage, runWorkspacePreflight } from "../../../packages/web-builder/src/workspace-preflight.ts";
 import { websiteGenerationContext } from "../../../packages/web-builder/src/generation-context.ts";
@@ -46,29 +45,20 @@ import { updateVerifiedProjectModel } from "../../../packages/web-builder/src/pr
 import {
   currentSlice,
   markSliceReady,
-  parseProjectPlanResult,
-  persistProposedProjectPlan,
-  projectPlanDelta,
-  projectPlanRepairPrompt,
-  projectPlanRevisionPrompt,
   readPersistedDesignBrief,
   readProjectDocs,
   readSliceState,
   setFrontendWorkflowStage,
   slicePrompt,
-  validateProjectPlanCoverage,
   type ProjectPlan,
   type SliceState,
 } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
-  VisualDirectorService,
   designBriefPrompt,
   type DesignBrief,
-  type DesignReviewResult,
 } from "../../../packages/design-intelligence/src/index.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
-import { runFreshReview } from "./fresh-review.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
 import { VerificationService } from "./verification-service.ts";
