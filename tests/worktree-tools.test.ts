@@ -113,6 +113,10 @@ test("worktree mutation requires approval and remains inside the recorded task w
     const command = await tools.execute("worktree_command", { command: "node", args: ["-e", "process.stdout.write('bounded')"], timeout_seconds: 5 }, context) as { exitCode: number; stdout: string };
     assert.equal(command.exitCode, 0);
     assert.equal(command.stdout, "bounded");
+    await assert.rejects(
+      () => tools.execute("worktree_command", { command: "npm", args: ["run", "test"] }, context),
+      /npm script "test" is not defined in package\.json/i,
+    );
     await assert.rejects(() => tools.execute("worktree_command", { command: "npm", args: ["run", "dev"] }, context), /browser_server_start/);
 
     const verification = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
