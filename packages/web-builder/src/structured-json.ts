@@ -9,8 +9,8 @@ export type StructuredJsonParseResult<T> = {
 function stripMarkdownFence(value: string) {
   return value
     .trim()
-    .replace(/^\`\`\`(?:json|javascript|js)?\s*/i, "")
-    .replace(/\s*\`\`\`$/i, "")
+    .replace(/^```(?:json|javascript|js)?\s*/i, "")
+    .replace(/\s*```$/i, "")
     .trim();
 }
 
