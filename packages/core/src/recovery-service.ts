@@ -14,7 +14,7 @@ const retryRules: Array<{ category: RecoveryCategory; pattern: RegExp; action: s
   { category: "port_conflict", pattern: /EADDRINUSE|address already in use|port .*?(?:occupied|in use)|strictPort/i, action: "Release or replace the managed preview process/port and retry verification." },
   { category: "process_interrupted", pattern: /process .*?(?:crashed|exited|terminated)|connection refused|ECONNRESET|socket hang up|preview.*(?:stopped|crashed)|browser.*closed/i, action: "Restart only the required managed process and continue from the current slice state." },
   { category: "missing_reference", pattern: /cannot find module|could not resolve|module not found|referenced file.*does not exist|failed to resolve import/i, action: "Inspect the referenced source path, repair the missing source/config reference, and retry the same slice." },
-  { category: "tool_usage", pattern: /worktree file already exists|unknown worktree tool|tool .* unavailable|cannot invoke|invalid tool/i, action: "Correct the tool choice using the existing slice context and retry without repository rediscovery." },
+  { category: "tool_usage", pattern: /worktree file already exists|unknown worktree tool|tool .* unavailable|cannot invoke|invalid tool|npm script .* not defined|npm run .* cannot run because no package\.json/i, action: "Correct the tool choice using the existing slice context and retry without repository rediscovery." },
 ];
 
 export class RecoveryService {
