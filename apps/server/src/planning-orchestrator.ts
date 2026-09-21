@@ -602,58 +602,70 @@ export class PlanningOrchestrator {
     }
 
     if (projectPlanning && websiteProject && stagedProductMap && blueprintFallback) {
-      emit({ type: "stage.updated", stage: "Design System", status: "active", message: "Turning the product map and Design Director brief into concrete shared visual primitives." });
-      appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_STARTED", { pages: stagedProductMap.sitemap.length });
-      const stylePrompt = styleSystemPlanningPrompt({
-        brief: planningBrief,
-        map: stagedProductMap,
-        designBrief: designBrief ?? {},
-        feedback: planningFeedback,
-      });
-      const styleRequest = {
-        ollamaUrl: this.deps.ollamaUrl,
-        model: architectModel,
-        tools,
-        mode,
-        role: "architect" as const,
-        disciplines: ["frontend"] as EngineeringDiscipline[],
-        streamText: false,
-        allowTools: false,
-        maxRequestCharacters: 34_000,
-        emit,
-        onRequestBody: (body: string) => this.deps.recordModelInput(task.id, "blueprint_design_system", architectModel, null, [], body),
-        messages: [
-          { role: "system" as const, content: stylePrompt },
-          { role: "user" as const, content: "Produce only the Stage 2 global design-system artifact. Do not research, inspect files, or change the frozen Product Map." },
-        ],
-      };
-      let styleAnswer = (await this.deps.runAgent(styleRequest)).answer;
-      let styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
-      if (styleResult.source === "fallback") {
-        appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_RETRY", { reason: styleResult.reason });
-        styleAnswer = (await this.deps.runAgent({
-          ...styleRequest,
+      if (blueprintRecoveryCategory === "blueprint_component_architecture_invalid" && recoveredStyleSystem) {
+        stagedStyleSystem = recoveredStyleSystem;
+        appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_REUSED", {
+          sourceTaskId: blueprintRecoveryTaskId,
+          recoveryCategory: blueprintRecoveryCategory,
+        });
+      } else {
+        emit({ type: "stage.updated", stage: "Design System", status: "active", message: "Turning the product map and Design Director brief into concrete shared visual primitives." });
+        appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_STARTED", { pages: stagedProductMap.sitemap.length });
+        const stylePrompt = styleSystemPlanningPrompt({
+          brief: planningBrief,
+          map: stagedProductMap,
+          designBrief: designBrief ?? {},
+          feedback: planningFeedback,
+        });
+        const styleRequest = {
+          ollamaUrl: this.deps.ollamaUrl,
+          model: architectModel,
+          tools,
+          mode,
+          role: "architect" as const,
+          disciplines: ["frontend"] as EngineeringDiscipline[],
+          streamText: false,
+          allowTools: false,
+          maxRequestCharacters: 34_000,
+          emit,
+          onRequestBody: (body: string) => this.deps.recordModelInput(task.id, "blueprint_design_system", architectModel, null, [], body),
           messages: [
-            ...styleRequest.messages,
-            { role: "assistant" as const, content: styleAnswer },
-            { role: "user" as const, content: `The design system was too vague or invalid: ${styleResult.reason ?? "unknown reason"}. Return a concrete <borg-style-system> with semantic color values, numeric typography/spacing scales, layout constraints, responsive rules, and anti-patterns.` },
+            { role: "system" as const, content: stylePrompt },
+            { role: "user" as const, content: "Produce only the Stage 2 global design-system artifact. Do not research, inspect files, or change the frozen Product Map." },
           ],
-        })).answer;
-        styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
+        };
+        let styleAnswer = (await this.deps.runAgent(styleRequest)).answer;
+        let styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
+        if (styleResult.source === "fallback") {
+          appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_RETRY", { reason: styleResult.reason });
+          styleAnswer = (await this.deps.runAgent({
+            ...styleRequest,
+            messages: [
+              ...styleRequest.messages,
+              { role: "assistant" as const, content: styleAnswer },
+              { role: "user" as const, content: `The design system was too vague or invalid: ${styleResult.reason ?? "unknown reason"}. Return a concrete <borg-style-system> with semantic color values, numeric typography/spacing scales, layout constraints, responsive rules, and anti-patterns.` },
+            ],
+          })).answer;
+          styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
+        }
+        if (styleResult.source === "fallback") {
+          return failBlueprintStage(
+            "Design System",
+            "blueprint_design_system_invalid",
+            `Global Design System could not be generated after a bounded repair: ${styleResult.reason ?? "unknown validation failure"}`,
+          );
+        }
+        stagedStyleSystem = styleResult.styles;
+        appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_COMPLETED", {
+          source: styleResult.source,
+          reason: styleResult.reason,
+          artifact: stagedStyleSystem,
+        });
       }
-      if (styleResult.source === "fallback") {
-        return failBlueprintStage(
-          "Design System",
-          "blueprint_design_system_invalid",
-          `Global Design System could not be generated after a bounded repair: ${styleResult.reason ?? "unknown validation failure"}`,
-        );
+
+      if (!stagedStyleSystem) {
+        return failBlueprintStage("Design System", "blueprint_design_system_invalid", "Global Design System is unavailable after planning.");
       }
-      stagedStyleSystem = styleResult.styles;
-      appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_COMPLETED", {
-        source: styleResult.source,
-        reason: styleResult.reason,
-        artifact: stagedStyleSystem,
-      });
       repositoryContext += `\n\nFROZEN GLOBAL STYLE SYSTEM (Stage 2 authority for component architecture):\n${JSON.stringify(stagedStyleSystem, null, 2)}`;
       sliceDirective = blueprintCompletionPrompt({
         brief: planningBrief,
@@ -661,7 +673,14 @@ export class PlanningOrchestrator {
         styles: stagedStyleSystem,
         feedback: planningFeedback,
       });
-      emit({ type: "stage.updated", stage: "Design System", status: "complete", message: "Global visual primitives are concrete and ready to constrain component architecture." });
+      emit({
+        type: "stage.updated",
+        stage: "Design System",
+        status: "complete",
+        message: blueprintRecoveryCategory === "blueprint_component_architecture_invalid" && recoveredStyleSystem
+          ? "Reused the validated Global Design System from the prior Blueprint attempt."
+          : "Global visual primitives are concrete and ready to constrain component architecture.",
+      });
       emit({ type: "stage.updated", stage: "Component Architecture", status: "active", message: "Deriving reusable components and implementation slices from the frozen product map and design system." });
     }
 
