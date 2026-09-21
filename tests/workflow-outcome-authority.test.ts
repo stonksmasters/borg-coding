@@ -204,3 +204,20 @@ test("fresh review repair and explicit blocking are Core-owned", () => {
   assert.equal(blocked.task.state, "BLOCKED");
   assert.equal(blocked.workflow.status, "blocked");
 });
+
+
+test("unexpected execution failure is a durable Core outcome", () => {
+  const engine = new WorkflowEngine(new MemoryWorkflowStore());
+  const task = approvedGeneral(engine, "unexpected-failure", "unexpected-failure-project");
+  const failed = engine.applyExecutionFailure(task, "Unexpected orchestrator failure.");
+
+  assert.equal(failed.action, "failed");
+  assert.equal(failed.task.state, "FAILED");
+  assert.equal(failed.workflow.status, "failed");
+  assert.equal(failed.workflow.nextAction, "recover");
+  assert.equal(failed.workflow.attemptPhase, null);
+  assert.equal(failed.workflow.recovery.status, "blocked");
+  assert.equal(failed.workflow.recovery.category, "execution_failure");
+  assert.equal(failed.workflow.recovery.previousTaskState, "IMPLEMENTING");
+  assert.match(failed.workflow.recovery.reason, /unexpected orchestrator failure/i);
+});
