@@ -64,7 +64,7 @@ test("VerificationService normalizes deterministic verification without owning w
   const h = serviceHarness({ deterministic: { passed: true, results: [{ label: "build", exitCode: 0 }] } });
   const result = await h.service.run({
     taskId: "task-backend",
-    taskContext: { taskId: "task-backend", executionState: "VERIFY" },
+    taskContext: { taskId: "task-backend", taskState: "VERIFYING", attemptPhase: null },
     activeDisciplines: ["backend"],
     packs: selectSpecialistPacks(["backend"]),
     verificationProfile: "quick",
@@ -87,7 +87,7 @@ test("focused verification fails closed when the managed preview server is unava
   const h = serviceHarness({ deterministic: { passed: true, results: [] }, runningUrl: null });
   const result = await h.service.run({
     taskId: "task-focused-missing-server",
-    taskContext: { taskId: "task-focused-missing-server", executionState: "VERIFY" },
+    taskContext: { taskId: "task-focused-missing-server", taskState: "VERIFYING", attemptPhase: null },
     activeDisciplines: ["frontend"],
     packs: selectSpecialistPacks(["frontend"]),
     verificationProfile: "quick",
@@ -112,7 +112,7 @@ test("focused browser evidence can satisfy frontend specialist verification", as
   });
   const result = await h.service.run({
     taskId: "task-focused-success",
-    taskContext: { taskId: "task-focused-success", executionState: "VERIFY" },
+    taskContext: { taskId: "task-focused-success", taskState: "VERIFYING", attemptPhase: null },
     activeDisciplines: ["frontend"],
     packs: selectSpecialistPacks(["frontend"]),
     verificationProfile: "quick",
