@@ -106,6 +106,8 @@ function meaningfulStyleSignal(styles: ProjectStyleSystem) {
     ...styles.colors,
     ...styles.typography,
     ...styles.spacing,
+    ...styles.radii,
+    ...styles.shadows,
     ...styles.layoutPrinciples,
     ...styles.motion,
     ...styles.responsive,
@@ -205,7 +207,16 @@ export function parseProductMap(answer: string, fallback: ProjectPlan): ProductM
   try {
     const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
     const raw = parsedJson.value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Product Map JSON root must be an object.");
     const rawPages = Array.isArray(raw.sitemap) ? raw.sitemap.slice(0, 40) : [];
+    const productSignal = rawPages.length
+      + (clean(raw.siteGoal) ? 1 : 0)
+      + (clean(raw.audience) ? 1 : 0)
+      + (Array.isArray(raw.features) && raw.features.length ? 1 : 0);
+    if (productSignal < 2) {
+      const issues = ["Product Map did not contain enough usable product decisions to normalize safely."];
+      return { map: fallbackMap, source: "fallback", reason: issues[0], issues, candidate: null };
+    }
     const sitemap = rawPages.map((item, index) => {
       const value = item as Record<string, unknown>;
       const name = clean(value.name, `Page ${index + 1}`);
@@ -338,6 +349,9 @@ export function parseStyleSystem(answer: string, fallback: ProjectStyleSystem): 
   const artifact = structuredJsonArtifactBody(answer, "borg-style-system");
   try {
     const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
+    if (!parsedJson.value || typeof parsedJson.value !== "object" || Array.isArray(parsedJson.value)) {
+      throw new Error("Design System JSON root must be an object.");
+    }
     const candidate = styleCandidate(parsedJson.value);
     if (meaningfulStyleSignal(candidate) < 2) {
       const issues = ["Design system did not contain enough usable design decisions to compile safely."];
@@ -412,6 +426,7 @@ export function applyStyleSystemAugmentation(
   try {
     const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
     const raw = parsedJson.value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Design-system augmentation JSON root must be an object.");
     const merge = (key: keyof Omit<ProjectStyleSystem, "direction">) =>
       uniqueRules([...(base[key] as string[]), ...list(raw[key])]);
     const augmented: ProjectStyleSystem = {
