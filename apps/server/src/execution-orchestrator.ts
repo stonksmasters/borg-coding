@@ -893,15 +893,22 @@ export class ExecutionOrchestrator {
             requiredNextAction: "Repair only the blocking findings from independent review.",
           }, emit);
           emit({ type: "stage.updated", stage: "Review", status: "failed" });
-          if (task.attempts >= maxRepairAttempts) {
-            task = transitionTask(task, "BLOCKED", emit);
+          createCheckpointSnapshot(task, "pre_repair");
+          const reviewOutcome = workflow.applyReviewOutcome(task, {
+            action: "repair",
+            reason: freshDecision.reason,
+            maximumRepairAttempts: maxRepairAttempts,
+          });
+          adoptCoreMutation(reviewOutcome);
+          if (reviewOutcome.action === "block") {
             appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, review });
-            emit({ type: "stream.blocked", message: `Fresh review still found a blocking issue after ${maxRepairAttempts} repair attempts.` });
+            emit({
+              type: "stream.blocked",
+              message: `Fresh review still found a blocking issue after ${maxRepairAttempts} repair attempts.`,
+            });
             return;
           }
           repairEvidence = freshDecision.repairEvidence;
-          task = scheduleRepair(task, emit, freshDecision.reason);
-          refreshTaskContext();
           continue;
         }
 
@@ -911,8 +918,13 @@ export class ExecutionOrchestrator {
           appendTaskEvent(taskId, "DELIVERY_BLOCKED_BY_REVIEW_HISTORY", {
             findingIds: unresolvedBlocking.map((record) => record.id),
           });
+          const reviewOutcome = workflow.applyReviewOutcome(task, {
+            action: "block",
+            reason: `${unresolvedBlocking.length} unresolved high/critical review finding(s) block delivery.`,
+            maximumRepairAttempts: maxRepairAttempts,
+          });
+          adoptCoreMutation(reviewOutcome);
           emit({ type: "stream.blocked", message: `${unresolvedBlocking.length} unresolved high/critical review finding(s) block delivery. Resolve them in Review History.` });
-          
           return;
         }
 
@@ -935,7 +947,12 @@ export class ExecutionOrchestrator {
         appendTaskEvent(taskId, "CHANGESET_CAPTURED", { status: status.stdout ?? "", diff: diff.stdout ?? "" });
         emit({ type: "implementation.summary", status, diff, worktreePath: approval.worktreePath });
         emit({ type: "stage.updated", stage: "Review", status: "complete" });
-        task = transitionTask(task, "DELIVERY_READY", emit);
+        const reviewOutcome = workflow.applyReviewOutcome(task, {
+          action: "pass",
+          reason: "Fresh review passed with no unresolved blocking findings.",
+          maximumRepairAttempts: maxRepairAttempts,
+        });
+        adoptCoreMutation(reviewOutcome, "pre_delivery");
         appendTaskEvent(taskId, "DELIVERY_READY", { worktreePath: approval.worktreePath });
         emit({ type: "delivery.ready", worktreePath: approval.worktreePath, message: "Verified and independently reviewed. Choose how to deliver the isolated changes." });
         emit({ type: "stream.completed" });
@@ -955,7 +972,9 @@ export class ExecutionOrchestrator {
         setFrontendWorkflowStage(approvedWorktreePath, "blocked", { currentSlice: failedSlice.current, totalSlices: failedSlice.total, taskId, detail: message });
       }
       appendTaskEvent(taskId, "IMPLEMENTATION_FAILED", { message });
-      if (task && !["FAILED", "CANCELLED", "COMPLETE"].includes(task.state)) task = transitionTask(task, "FAILED", emit);
+      if (task && !["FAILED", "CANCELLED", "COMPLETE", "BLOCKED"].includes(task.state)) {
+        adoptCoreMutation(workflow.transition(task, "FAILED"));
+      }
       emit({ type: "runtime.failed", message });
       
 
