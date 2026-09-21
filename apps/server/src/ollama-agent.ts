@@ -186,6 +186,7 @@ export async function runOllamaAgent(options: AgentOptions) {
   let usedTools = false;
   let toolCallCount = 0;
   let toolOutputCharacters = 0;
+  const toolFailures: string[] = [];
   let budgetReason = "tool-round limit";
   const repeatedCalls = new Map<string, number>();
   const invalidToolFailures = new Map<string, number>();
@@ -211,7 +212,7 @@ export async function runOllamaAgent(options: AgentOptions) {
 
     if (!calls.length) {
       if (toolDefinitions.length) options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "complete" });
-      return { answer, usedTools };
+      return { answer, usedTools, toolFailures };
     }
 
     usedTools = true;
@@ -237,6 +238,7 @@ export async function runOllamaAgent(options: AgentOptions) {
           options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ acknowledged: true, activity }) });
         } catch (error) {
           const message = error instanceof Error ? error.message : "Activity update failed";
+          toolFailures.push(message);
           options.emit({ type: "tool.failed", tool: call.function.name, message });
           options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message }) });
         }
@@ -245,6 +247,7 @@ export async function runOllamaAgent(options: AgentOptions) {
       options.emit({ type: "tool.started", tool: call.function.name, input: call.function.arguments });
       if (repeats > limits.identicalCalls) {
         const message = "Blocked repeated identical tool call. Use the results already provided.";
+        toolFailures.push(message);
         options.emit({ type: "tool.failed", tool: call.function.name, message });
         options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message }) });
         continue;
@@ -259,6 +262,7 @@ export async function runOllamaAgent(options: AgentOptions) {
         options.messages.push({ role: "tool", tool_name: call.function.name, content });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Tool failed";
+        toolFailures.push(message);
         options.emit({ type: "tool.failed", tool: call.function.name, message });
         options.messages.push({ role: "tool", tool_name: call.function.name, content: JSON.stringify({ error: message, available_tools: availableToolNames }) });
         const invalid = /unknown|unavailable|cannot invoke|requires EDIT or AGENT|not configured/i.test(message);
@@ -281,5 +285,5 @@ export async function runOllamaAgent(options: AgentOptions) {
   const finalAssistant = await runTurn(options, false);
   answer += finalAssistant.content;
   options.emit({ type: "stage.updated", stage: options.phase === "implementation" ? "Implementation" : "Plan", status: "complete" });
-  return { answer, usedTools, budgetExhausted: true };
+  return { answer, usedTools, budgetExhausted: true, toolFailures };
 }
