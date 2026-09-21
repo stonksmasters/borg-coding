@@ -777,57 +777,57 @@ export class ExecutionOrchestrator {
         emit({ type: "stage.updated", stage: "Review", status: "active" });
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, packs, emit);
-        const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
-        const styleAcceptance = styleWorkspace && projectPlan?.styles
-          ? [
-              projectPlan.styles.direction,
-              ...projectPlan.styles.layoutPrinciples,
-              ...projectPlan.styles.responsive,
-              ...projectPlan.styles.accessibility,
-              ...projectPlan.styles.avoid.map((item) => `Avoid: ${item}`),
-            ]
-          : [];
-        const focusedAcceptance = focusedExecutionScope && projectPlan
-          ? focusedExecutionScope.type === "page"
-            ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
-            : projectPlan.components.find((component) => component.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
-          : [];
-        const review = await runFreshReview({
-          ollamaUrl,
-          model: reviewerModel,
+        const freshDecision = await qualityGateService.evaluateFreshReview({
           taskId,
           request: task.request,
-          projectGoal: projectPlan?.siteGoal,
-          sliceTitle: activeSlice?.title,
-          sliceOutcome: activeSlice?.outcome,
-          acceptanceCriteria: focusedAcceptance.length ? focusedAcceptance : styleAcceptance.length ? styleAcceptance : activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
+          projectPlan,
+          sliceState,
+          focusedScope: focusedExecutionScope,
+          styleWorkspace,
           implementationBudgetExhausted,
           diff: diff.stdout ?? "",
           verification,
+          reviewerModel,
           specialistInstructions: specialistInstructions.reviewer,
-          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, [], body) : undefined,
+          onRequestBody: websiteProject
+            ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, [], body)
+            : undefined,
         });
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
+        const review = freshDecision.review;
+        const focusedAcceptance = freshDecision.acceptanceCriteria;
         const reviewHistory = recordCompletedReview(
           task,
           [...(visionReview?.findings ?? []), ...review.findings],
           review.verdict,
           review.summary,
           task.attempts > 0
-            ? [`Deterministic verification passed on repair attempt ${task.attempts}.`, `Fresh review run did not reproduce the prior finding.`]
+            ? [`Deterministic verification passed on repair attempt ${task.attempts}.`, "Fresh review run did not reproduce the prior finding."]
             : [],
         );
         emit({ type: "review.history.updated" });
         const reviewedRepository = taskProjectRepository(taskId);
         if (reviewedRepository) for (const finding of review.findings) recordMemoryNote(reviewedRepository, {
-          id: `finding:${finding.id}`, kind: "finding", text: `${finding.severity}: ${finding.title} — ${finding.description}`,
-          taskId, path: finding.file && access.allowsRepositoryFile(finding.file) ? finding.file : null,
-          line: finding.line ?? null, createdAt: new Date().toISOString(),
+          id: `finding:${finding.id}`,
+          kind: "finding",
+          text: `${finding.severity}: ${finding.title} — ${finding.description}`,
+          taskId,
+          path: finding.file && access.allowsRepositoryFile(finding.file) ? finding.file : null,
+          line: finding.line ?? null,
+          createdAt: new Date().toISOString(),
         });
-        appendTaskEvent(taskId, "REVIEW_COMPLETED", { review, status, worktreePath: approval.worktreePath, model: reviewerModel, role: "reviewer", attempt: task.attempts });
+        appendTaskEvent(taskId, "REVIEW_COMPLETED", {
+          review,
+          status,
+          worktreePath: approval.worktreePath,
+          model: reviewerModel,
+          role: "reviewer",
+          attempt: task.attempts,
+        });
         emit({ type: "review.completed", review });
-        if (review.verdict === "repair") {
+
+        if (freshDecision.action === "repair_current_slice") {
           recordHandoff({
             task,
             fromRole: "reviewer",
@@ -843,12 +843,11 @@ export class ExecutionOrchestrator {
             task = transitionTask(task, "BLOCKED", emit);
             appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, review });
             emit({ type: "stream.blocked", message: `Fresh review still found a blocking issue after ${maxRepairAttempts} repair attempts.` });
-            
             return;
           }
-          repairEvidence = `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 60_000)}`;
+          repairEvidence = freshDecision.repairEvidence;
           setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, "Fresh-context review found a blocking issue.");
+          task = scheduleRepair(task, emit, freshDecision.reason);
           continue;
         }
 
