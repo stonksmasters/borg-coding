@@ -31,7 +31,7 @@ import {
   verificationProfileFor,
   type SpecialistCapabilityPack,
 } from "../../../packages/orchestration/src/index.ts";
-import { OllamaVisionProvider, VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
+import { VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { preflightFailureMessage, runWorkspacePreflight } from "../../../packages/web-builder/src/workspace-preflight.ts";
 import { websiteGenerationContext } from "../../../packages/web-builder/src/generation-context.ts";
