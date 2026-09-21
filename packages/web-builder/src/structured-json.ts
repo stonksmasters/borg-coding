@@ -269,8 +269,8 @@ export function parseStructuredJson<T = unknown>(input: string): StructuredJsonP
 }
 
 export function taggedJsonBody(answer: string, tag: string): string | null {
-  const escaped = tag.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
-  const match = answer.match(new RegExp(`<${escaped}>([\\s\\S]*?)<\\/${escaped}>`, "i"));
+  if (!/^[a-z0-9-]+$/i.test(tag)) throw new Error("Structured artifact tag is invalid.");
+  const match = answer.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i"));
   return match?.[1]?.trim() ?? null;
 }
 
