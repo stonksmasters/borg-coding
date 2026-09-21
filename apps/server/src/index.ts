@@ -171,7 +171,6 @@ const executionOrchestrator = new ExecutionOrchestrator({
   maxRepairAttempts,
   maxDesignRefinements,
   appendTaskEvent,
-  transitionTask,
   syncWorkflowProjection,
   taskProjectRepository,
   latestDesignBrief,
@@ -184,9 +183,6 @@ const executionOrchestrator = new ExecutionOrchestrator({
   finishRole,
   recordHandoff,
   createCheckpointSnapshot,
-  scheduleImplementationRetry,
-  scheduleRepair,
-  scheduleDesignRefinement,
   recordCompletedReview,
   recordMemoryNote,
   contextSourceHints,
@@ -858,53 +854,6 @@ function recordHandoff(input: {
   syncWorkflowProjection(input.task, handoffWorkflow);
   emit?.({ type: "role.handoff", handoff });
   return handoff;
-}
-
-function scheduleDesignRefinement(task: Task, emit: (event: Record<string, unknown>) => void, reason: string): Task {
-  createCheckpointSnapshot(task, "pre_repair");
-  const result = workflow.beginDesignRefinement(task, { reason, maximum: maxDesignRefinements });
-  syncWorkflowProjection(result.task, result.workflow);
-  emit({
-    type: "design.refinement.scheduled",
-    refinement: result.workflow.designRefinementAttempt,
-    maximum: maxDesignRefinements,
-    message: reason,
-  });
-  emit({ type: "task.state", taskId: task.id, state: result.task.state, workflow: result.workflow });
-  return result.task;
-}
-
-function recoveryPayload(updated: Task, reason: string, recovery?: RecoveryDecision) {
-  return { attempt: updated.attempts, maximum: maxRepairAttempts, reason, category: recovery?.category ?? null, action: recovery?.action ?? null };
-}
-
-function scheduleRepair(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
-  createCheckpointSnapshot(task, "pre_repair");
-  const result = workflow.retry(task, {
-    reason,
-    eventType: "REPAIR_SCHEDULED",
-    category: recovery?.category ?? null,
-    action: recovery?.action ?? null,
-  });
-  syncWorkflowProjection(result.task, result.workflow);
-  const payload = recoveryPayload(result.task, reason, recovery);
-  emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
-  emit({ type: "task.state", taskId: task.id, state: result.task.state, workflow: result.workflow });
-  return result.task;
-}
-
-function scheduleImplementationRetry(task: Task, emit: (event: Record<string, unknown>) => void, reason: string, recovery?: RecoveryDecision): Task {
-  createCheckpointSnapshot(task, "pre_repair");
-  const result = workflow.retry(task, {
-    reason,
-    eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
-    category: recovery?.category ?? null,
-    action: recovery?.action ?? null,
-  });
-  syncWorkflowProjection(result.task, result.workflow);
-  const payload = recoveryPayload(result.task, reason, recovery);
-  emit({ type: recovery ? "recovery.scheduled" : "repair.scheduled", ...payload, message: reason });
-  return result.task;
 }
 
 const server = createServer((request, response) => {
