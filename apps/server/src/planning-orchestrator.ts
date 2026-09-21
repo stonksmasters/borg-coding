@@ -35,17 +35,27 @@ import { ensureProjectModel } from "../../../packages/web-builder/src/project-mo
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import {
+  fallbackProjectPlan,
   parseProjectPlanResult,
   persistDesignBrief,
   persistProposedProjectPlan,
   projectPlanRepairPrompt,
-  projectPlanningPrompt,
   readProjectDocs,
   slicePlanningPrompt,
   validateProjectPlanCoverage,
   type ProjectPlan,
   type SliceState,
 } from "../../../packages/web-builder/src/slice-docs.ts";
+import {
+  applyBlueprintFoundation,
+  blueprintCompletionPrompt,
+  parseProductMap,
+  parseStyleSystem,
+  productMapPlanningPrompt,
+  styleSystemPlanningPrompt,
+  validateBlueprintCompletion,
+  type ProductMap,
+} from "../../../packages/web-builder/src/blueprint-planning.ts";
 import {
   DesignDirectorService,
   designBriefPrompt,
@@ -319,7 +329,6 @@ export class PlanningOrchestrator {
     let compiledArchitectContext: ReturnType<typeof compileFrontendContext> | null = null;
 
     if (projectPlanning && websiteProject) {
-      sliceDirective = projectPlanningPrompt(websiteProject.originalBrief || requestText);
       if (projectPlan) {
         const planningDocs = readProjectDocs(websiteProject.path)
           .filter((doc) => ["brief.md", "plan.md", "decisions.md", "site-map.md"].some((name) => doc.path.endsWith(`/${name}`)))
@@ -403,6 +412,56 @@ export class PlanningOrchestrator {
       repositoryContext += `\n\nFRONTEND HANDOFF: Plan backend and database work in this new session using the frontend contracts and decisions below. Do not rebuild the frontend.\n${handoff}`;
     }
 
+    const planningBrief = websiteProject?.originalBrief || requestText;
+    const planningFeedback = projectPlanning && projectPlan ? requestText : "";
+    const blueprintFallback = projectPlanning && websiteProject ? fallbackProjectPlan(planningBrief, websiteProject.template) : null;
+    let stagedProductMap: ProductMap | null = null;
+    let stagedStyleSystem = blueprintFallback?.styles ?? null;
+
+    if (projectPlanning && websiteProject && blueprintFallback) {
+      emit({ type: "stage.updated", stage: "Product Map", status: "active", message: "Mapping pages, routes, sections, and user journeys before design/component planning." });
+      appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_STARTED", { revision: projectPlan?.revision ?? null });
+      const mapRequest = {
+        ollamaUrl: this.deps.ollamaUrl,
+        model: architectModel,
+        tools,
+        mode,
+        role: "architect" as const,
+        disciplines: route.disciplines,
+        streamText: false,
+        emit,
+        messages: [
+          { role: "system" as const, content: `${productMapPlanningPrompt(planningBrief, planningFeedback)}\n\n<approved_context>\n${repositoryContext}\n</approved_context>` },
+          { role: "user" as const, content: "Produce only the Stage 1 product map artifact." },
+        ],
+        limits: { toolRounds: 3, toolCalls: 4 },
+      };
+      let mapAnswer = (await this.deps.runAgent(mapRequest)).answer;
+      let mapResult = parseProductMap(mapAnswer, blueprintFallback);
+      if (mapResult.source === "fallback") {
+        appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_RETRY", { reason: mapResult.reason });
+        mapAnswer = (await this.deps.runAgent({
+          ...mapRequest,
+          messages: [
+            ...mapRequest.messages,
+            { role: "assistant" as const, content: mapAnswer },
+            { role: "user" as const, content: `The product map was invalid: ${mapResult.reason ?? "unknown reason"}. Regenerate the complete <borg-product-map> artifact and satisfy every Stage 1 rule.` },
+          ],
+          limits: { toolRounds: 2, toolCalls: 2 },
+        })).answer;
+        mapResult = parseProductMap(mapAnswer, blueprintFallback);
+      }
+      stagedProductMap = mapResult.map;
+      appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_COMPLETED", {
+        source: mapResult.source,
+        reason: mapResult.reason,
+        pages: stagedProductMap.sitemap.length,
+        flows: stagedProductMap.flows.length,
+      });
+      repositoryContext += `\n\nFROZEN PRODUCT MAP (Stage 1 authority for subsequent blueprint stages):\n${JSON.stringify(stagedProductMap, null, 2)}`;
+      emit({ type: "stage.updated", stage: "Product Map", status: "complete", message: `${stagedProductMap.sitemap.length} pages and ${stagedProductMap.flows.length} user journeys mapped.` });
+    }
+
     const isGreenfieldDesign = isBorgWebsite && websiteWorkflow === "initial_generation";
     const designRequired = mode !== "ask" && !miniLoop && requiresDesignDirection({
       request: requestText,
@@ -452,6 +511,58 @@ export class PlanningOrchestrator {
       appendTaskEvent(task.id, "DESIGN_BRIEF_CREATED", { brief: designBrief, model: architectModel });
       emit({ type: "design.brief.created", brief: designBrief });
       emit({ type: "stage.updated", stage: "Design Direction", status: "complete" });
+    }
+
+    if (projectPlanning && websiteProject && stagedProductMap && blueprintFallback) {
+      emit({ type: "stage.updated", stage: "Design System", status: "active", message: "Turning the product map and Design Director brief into concrete shared visual primitives." });
+      appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_STARTED", { pages: stagedProductMap.sitemap.length });
+      const stylePrompt = styleSystemPlanningPrompt({
+        brief: planningBrief,
+        map: stagedProductMap,
+        designBrief: designBrief ?? {},
+        feedback: planningFeedback,
+      });
+      const styleRequest = {
+        ollamaUrl: this.deps.ollamaUrl,
+        model: architectModel,
+        tools,
+        mode,
+        role: "architect" as const,
+        disciplines: route.disciplines,
+        streamText: false,
+        emit,
+        messages: [
+          { role: "system" as const, content: `${stylePrompt}\n\n<approved_context>\n${repositoryContext}\n</approved_context>` },
+          { role: "user" as const, content: "Produce only the Stage 2 global design-system artifact." },
+        ],
+        limits: { toolRounds: 2, toolCalls: 3 },
+      };
+      let styleAnswer = (await this.deps.runAgent(styleRequest)).answer;
+      let styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
+      if (styleResult.source === "fallback") {
+        appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_RETRY", { reason: styleResult.reason });
+        styleAnswer = (await this.deps.runAgent({
+          ...styleRequest,
+          messages: [
+            ...styleRequest.messages,
+            { role: "assistant" as const, content: styleAnswer },
+            { role: "user" as const, content: `The design system was too vague or invalid: ${styleResult.reason ?? "unknown reason"}. Return a concrete <borg-style-system> with semantic color values, numeric typography/spacing scales, layout constraints, responsive rules, and anti-patterns.` },
+          ],
+          limits: { toolRounds: 1, toolCalls: 1 },
+        })).answer;
+        styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
+      }
+      stagedStyleSystem = styleResult.styles;
+      appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_COMPLETED", { source: styleResult.source, reason: styleResult.reason });
+      repositoryContext += `\n\nFROZEN GLOBAL STYLE SYSTEM (Stage 2 authority for component architecture):\n${JSON.stringify(stagedStyleSystem, null, 2)}`;
+      sliceDirective = blueprintCompletionPrompt({
+        brief: planningBrief,
+        map: stagedProductMap,
+        styles: stagedStyleSystem,
+        feedback: planningFeedback,
+      });
+      emit({ type: "stage.updated", stage: "Design System", status: "complete", message: "Global visual primitives are concrete and ready to constrain component architecture." });
+      emit({ type: "stage.updated", stage: "Component Architecture", status: "active", message: "Deriving reusable components and implementation slices from the frozen product map and design system." });
     }
 
     const architectAssignment = this.deps.beginRole(
@@ -573,7 +684,48 @@ export class PlanningOrchestrator {
           });
         }
 
-        const planWorkflow = workflow.setProjectPlan(task, parseResult.plan);
+        let candidatePlan = parseResult.plan;
+        if (stagedProductMap && stagedStyleSystem) {
+          candidatePlan = applyBlueprintFoundation(candidatePlan, stagedProductMap, stagedStyleSystem);
+          let blueprintValidation = validateBlueprintCompletion(candidatePlan);
+          if (!blueprintValidation.valid) {
+            appendTaskEvent(task.id, "BLUEPRINT_COMPLETION_RETRY", { issues: blueprintValidation.issues });
+            emit({
+              type: "stage.updated",
+              stage: "Component Architecture",
+              status: "active",
+              message: "Component/slice coverage was incomplete. Repairing the blueprint before approval.",
+            });
+            const repaired = await this.deps.runAgent({
+              ...architectRequest,
+              messages: [
+                architectRequest.messages[0],
+                architectRequest.messages[1],
+                { role: "assistant" as const, content: answer },
+                { role: "user" as const, content: `Repair the Stage 3-4 blueprint only. Keep the frozen product map and style system unchanged. Fix these issues:\n- ${blueprintValidation.issues.join("\n- ")}\nReturn a complete <borg-project-plan> block.` },
+              ],
+              limits: { toolRounds: 2, toolCalls: 2 },
+            });
+            answer = repaired.answer;
+            usedTools ||= repaired.usedTools;
+            parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+            candidatePlan = applyBlueprintFoundation(parseResult.plan, stagedProductMap, stagedStyleSystem);
+            blueprintValidation = validateBlueprintCompletion(candidatePlan);
+            if (!blueprintValidation.valid) {
+              throw new Error(`Project blueprint cannot enter approval: ${blueprintValidation.issues.join(" ")}`);
+            }
+          }
+          appendTaskEvent(task.id, "BLUEPRINT_COMPLETED", {
+            pages: candidatePlan.sitemap.length,
+            flows: candidatePlan.flows.length,
+            components: candidatePlan.components.length,
+            slices: candidatePlan.slices.length,
+          });
+          emit({ type: "stage.updated", stage: "Component Architecture", status: "complete" });
+          emit({ type: "stage.updated", stage: "Build Roadmap", status: "complete", message: `${candidatePlan.slices.length} bounded implementation slices planned with visual foundation first.` });
+        }
+
+        const planWorkflow = workflow.setProjectPlan(task, candidatePlan);
         this.deps.syncWorkflowProjection(task, planWorkflow);
         proposedProjectPlan = planWorkflow.projectPlan as ProjectPlan;
         const coverage = validateProjectPlanCoverage(proposedProjectPlan, planningBrief);
