@@ -1,23 +1,4 @@
-export const executionStates = ["IMPLEMENT", "VERIFY", "REPAIR", "BROWSER_VERIFY", "REVIEW", "COMPLETE", "BLOCKED"] as const;
-export type ExecutionState = (typeof executionStates)[number];
-
-const executionTransitions: Record<ExecutionState, readonly ExecutionState[]> = {
-  IMPLEMENT: ["VERIFY", "BLOCKED"],
-  VERIFY: ["REPAIR", "BROWSER_VERIFY", "REVIEW", "BLOCKED"],
-  REPAIR: ["VERIFY", "BLOCKED"],
-  BROWSER_VERIFY: ["REPAIR", "REVIEW", "BLOCKED"],
-  REVIEW: ["REPAIR", "COMPLETE", "BLOCKED"],
-  COMPLETE: [],
-  BLOCKED: [],
-};
-
-export function canTransitionExecution(from: ExecutionState, to: ExecutionState): boolean {
-  return executionTransitions[from].includes(to);
-}
-
-export function assertExecutionTransition(from: ExecutionState, to: ExecutionState): void {
-  if (!canTransitionExecution(from, to)) throw new Error(`Invalid execution transition: ${from} -> ${to}`);
-}
+import type { TaskState, WorkflowState } from "./contracts.ts";
 
 export type RepairClassification = "syntax" | "type" | "test" | "runtime" | "interaction" | "visual" | "tooling";
 export interface VerificationError { file?: string; line?: number; column?: number; code?: string; message: string; }
@@ -72,10 +53,24 @@ export function formatRepairContext(context: RepairContext): string {
   return [`REPAIR ${context.attempt + 1}`, `Category: ${context.classification}`, `Failure: ${context.verification.command} (exit ${context.verification.exitCode})`, errors, `Relevant files:\n${context.allowedFiles.length ? context.allowedFiles.map((file) => `- ${file}`).join("\n") : "- No file path was reported; inspect only the failing command evidence."}`, context.recentChanges.length ? `Recent changes:\n${context.recentChanges.map((file) => `- ${file}`).join("\n")}` : "", "Repair only this failure. Do not restart implementation or perform repository-wide discovery."].filter(Boolean).join("\n\n");
 }
 
+
 const repairTools = new Set(["activity_update", "worktree_list", "worktree_read", "worktree_write", "worktree_patch", "worktree_command", "git_diff", "git_status", "repository_diagnostics", "repository_file_graph", "repository_definition", "repository_references", "repository_symbol_info", "browser_open", "browser_click", "browser_dom", "browser_console", "browser_network", "browser_responsive", "browser_screenshot", "browser_accessibility", "browser_close", "browser_server_start"]);
-export function executionAllowsTool(state: ExecutionState | undefined, tool: string): boolean {
-  if (!state || state === "IMPLEMENT") return true;
-  if (state === "REPAIR") return repairTools.has(tool);
-  if (state === "VERIFY" || state === "BROWSER_VERIFY") return tool === "activity_update" || tool === "verification_run" || tool === "verification_profiles" || tool.startsWith("browser_") || tool === "worktree_read" || tool === "git_diff" || tool === "git_status";
-  return tool === "activity_update" || tool === "worktree_read" || tool === "git_diff" || tool === "git_status";
+const verificationTools = new Set(["activity_update", "verification_run", "verification_profiles", "worktree_read", "git_diff", "git_status"]);
+const reviewTools = new Set(["activity_update", "worktree_read", "git_diff", "git_status"]);
+
+export function executionAllowsTool(
+  taskState: TaskState | undefined,
+  attemptPhase: WorkflowState["attemptPhase"] | undefined,
+  tool: string,
+): boolean {
+  if (!taskState) return true;
+  if (taskState === "IMPLEMENTING") {
+    if (attemptPhase === "implementation") return true;
+    return repairTools.has(tool);
+  }
+  if (taskState === "VERIFYING") {
+    return verificationTools.has(tool) || tool.startsWith("browser_");
+  }
+  if (taskState === "REVIEWING") return reviewTools.has(tool);
+  return reviewTools.has(tool);
 }
