@@ -274,12 +274,43 @@ export function taggedJsonBody(answer: string, tag: string): string | null {
   return match?.[1]?.trim() ?? null;
 }
 
+export function structuredJsonArtifactBody(answer: string, tag: string): { body: string; framed: boolean; framingRepair: string | null } {
+  const tagged = taggedJsonBody(answer, tag);
+  if (tagged) return { body: tagged, framed: true, framingRepair: null };
+
+  const fenced = answer.match(/\`\`\`(?:json|javascript|js)?\s*([\s\S]*?)\s*\`\`\`/i);
+  if (fenced?.[1]?.trim()) {
+    return {
+      body: fenced[1].trim(),
+      framed: false,
+      framingRepair: `accepted JSON without <${tag}> framing`,
+    };
+  }
+
+  const objectStart = answer.indexOf("{");
+  const arrayStart = answer.indexOf("[");
+  const starts = [objectStart, arrayStart].filter((value) => value >= 0);
+  if (starts.length) {
+    return {
+      body: answer.slice(Math.min(...starts)).trim(),
+      framed: false,
+      framingRepair: `accepted raw JSON without <${tag}> framing`,
+    };
+  }
+
+  return {
+    body: answer.trim(),
+    framed: false,
+    framingRepair: `<${tag}> framing was missing`,
+  };
+}
+
 export function structuredJsonSyntaxRepairPrompt(input: {
   tag: string;
   parserError: string;
   malformedArtifact: string;
 }) {
-  const body = taggedJsonBody(input.malformedArtifact, input.tag) ?? input.malformedArtifact.trim();
+  const body = structuredJsonArtifactBody(input.malformedArtifact, input.tag).body;
   return [
     "STRUCTURED ARTIFACT SYNTAX REPAIR.",
     "Repair JSON syntax only. Preserve the existing product decisions, wording, arrays, ids, routes, ordering, and values unless a character-level syntax correction requires a change.",
