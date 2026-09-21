@@ -320,16 +320,23 @@ test("approved slice recovers from a missing target, verifies, and reaches its c
   }
 });
 
-test("path traversal stays fatal and never consumes the bounded recovery loop", { timeout: 45_000 }, async () => {
+test("path traversal stays fatally blocked and never consumes the bounded recovery loop", { timeout: 45_000 }, async () => {
   const result = await runRuntimeCase("fatal_path_escape");
   try {
-    assert.ok(result.events.some((event) => event.type === "runtime.failed"));
+    assert.ok(result.events.some((event) => event.type === "stream.blocked"));
     assert.equal(result.events.some((event) => event.type === "recovery.scheduled"), false);
     assert.equal(existsSync(join(result.runtimeRoot, "escape.ts")), false);
     const repository = new SqliteTaskRepository(result.databasePath);
     const task = repository.findTask(result.taskId);
+    const workflow = repository.findWorkflow("recovery-project");
     const classifications = repository.listEvents(result.taskId).filter((event) => event.type === "IMPLEMENTATION_FAILURE_CLASSIFIED");
-    assert.equal(task?.state, "FAILED");
+    assert.equal(task?.state, "BLOCKED");
+    assert.equal(workflow?.status, "blocked");
+    assert.equal(workflow?.recovery.status, "blocked");
+    assert.equal(workflow?.recovery.category, "path_escape");
+    assert.equal(workflow?.recovery.previousTaskState, "IMPLEMENTING");
+    assert.equal(workflow?.recovery.resumeAction, "inspect_worktree");
+    assert.match(workflow?.recovery.reason ?? "", /operator inspection|requested path/i);
     assert.ok(classifications.some((event) => {
       const decision = event.payload.decision as { category?: string; disposition?: string };
       return decision.category === "path_escape" && decision.disposition === "fatal";
