@@ -289,20 +289,27 @@ function complexApplicationBrief(brief: string) {
 function fallbackStyles(commerce: boolean): ProjectStyleSystem {
   return {
     direction: commerce
-      ? "Premium mobile-first commerce with strong product imagery, disciplined hierarchy, and trustworthy transaction surfaces."
-      : "A coherent premium visual system derived from the approved brief and Design Director direction.",
+      ? "Premium mobile-first commerce with strong product imagery, disciplined editorial hierarchy, dense discovery where useful, and calm trustworthy transaction surfaces."
+      : "A premium, restrained product interface with editorial hierarchy, deliberate whitespace, strong type contrast, and reusable visual primitives that create coherence before feature components are introduced.",
     colors: commerce
-      ? ["Use a restrained neutral foundation.", "Reserve accent color for interaction, status, and merchandising emphasis.", "Maintain WCAG-aware foreground/background contrast."]
-      : ["Define semantic background, surface, text, muted, border, accent, success, warning, and danger roles.", "Avoid arbitrary one-off colors outside the shared token system."],
-    typography: ["Define display, heading, body, label, and code roles.", "Use a deliberate type scale and line-height rhythm.", "Preserve readable measure and hierarchy on mobile."],
-    spacing: ["Use a consistent spacing scale for page gutters, sections, stacks, and component internals.", "Prefer shared spacing tokens over isolated pixel values."],
-    radii: ["Define a small radius scale and use it consistently by component role."],
-    shadows: ["Use elevation sparingly and consistently; avoid random decorative shadows."],
-    layoutPrinciples: ["Use a shared content width and page gutter system.", "Vary section composition intentionally instead of repeating identical centered card grids.", "Keep alignment and visual rhythm consistent across routes."],
-    motion: ["Motion should reinforce hierarchy or state change.", "Respect reduced-motion preferences.", "Avoid decorative motion that competes with content."],
-    responsive: ["Recompose important layouts for narrow screens rather than merely shrinking desktop.", "Keep touch targets, spacing, and navigation intentional at mobile widths."],
-    accessibility: ["Maintain visible focus states.", "Do not rely on color alone for meaning.", "Keep text and interactive contrast accessible."],
-    avoid: ["Centered-everything layouts", "Repetitive generic card grids", "Arbitrary gradients", "Excessive pill styling", "One-off style values that bypass shared tokens"],
+      ? ["canvas: #0B0D10", "surface: #12161C", "surface-raised: #181E27", "text-primary: #F5F7FA", "text-secondary: #98A2B3", "border-subtle: #2A313C", "accent: #B7FF5A", "danger: #FF6B6B", "success: #66D9A3"]
+      : ["canvas: #0D1015", "surface: #141922", "surface-raised: #1B2230", "text-primary: #F4F7FB", "text-secondary: #9AA6B6", "border-subtle: #2B3442", "accent: #A7FF4F", "danger: #FF6B72", "success: #64D8A3"],
+    typography: [
+      "display-xl: 48px/52px, weight 650, tracking -0.035em",
+      "heading-lg: 32px/38px, weight 620, tracking -0.025em",
+      "heading-md: 24px/30px, weight 600, tracking -0.018em",
+      "body-lg: 17px/28px, weight 400",
+      "body: 15px/24px, weight 400",
+      "label: 12px/16px, weight 600, tracking 0.02em",
+    ],
+    spacing: ["space-1: 4px", "space-2: 8px", "space-3: 12px", "space-4: 16px", "space-6: 24px", "space-8: 32px", "space-12: 48px", "space-16: 64px", "section-rhythm: 72-112px desktop / 48-72px mobile"],
+    radii: ["radius-sm: 6px", "radius-md: 10px", "radius-lg: 16px"],
+    shadows: ["elevation-1: 0 1px 2px rgba(0,0,0,.18)", "elevation-2: 0 12px 32px rgba(0,0,0,.22)"],
+    layoutPrinciples: ["content-max: 1440px with 40px desktop gutters", "reading-max: 720px for long-form copy", "Use a 12-column desktop grid and composition-specific spans rather than repeated equal cards.", "Preserve strong alignment anchors while varying section density and visual weight."],
+    motion: ["interactive: 160ms cubic-bezier(.2,.8,.2,1)", "enter: 240ms cubic-bezier(.16,1,.3,1)", "Reduced motion removes transforms and nonessential entrance animation while preserving state feedback."],
+    responsive: ["desktop >= 1200px: full navigation and multi-column compositions", "tablet 768-1199px: reduce grid spans and gutters to 24px", "mobile < 768px: 16px gutters and intentional recomposition rather than mechanical stacking", "Touch targets remain at least 44px and primary actions stay reachable without horizontal overflow."],
+    accessibility: ["Maintain visible keyboard focus with a dedicated accent focus ring.", "Target WCAG AA contrast for body text and interactive controls.", "Do not rely on color alone for status or validation meaning.", "Preserve semantic heading order and reduced-motion preference."],
+    avoid: ["Centered-everything layouts", "Repetitive generic card grids", "Arbitrary gradients", "Excessive pill styling", "One-off color/spacing/radius values that bypass shared tokens", "Mobile layouts that merely stack desktop without reprioritizing content"],
   };
 }
 function fallbackSitemap(brief: string, commerce: boolean, dashboard: boolean, contentHeavy: boolean, seller: boolean, admin: boolean, accounts: boolean): ProjectSitemapPage[] {
