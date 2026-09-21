@@ -64,7 +64,9 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
   mkdirSync(root, { recursive: true });
   prepareWebsiteWorkspace(projectPath, "vite-react");
   const title = name.trim();
-  const template = websiteTemplates.includes(options.template as WebsiteTemplate) ? options.template as WebsiteTemplate : "saas-landing";
+  const template = websiteTemplates.includes(options.template as WebsiteTemplate)
+    ? options.template as WebsiteTemplate
+    : inferWebsiteTemplate(options.originalBrief ?? title);
   const createdAt = new Date().toISOString();
   const files: Record<string, string> = {
     "package.json": JSON.stringify({
