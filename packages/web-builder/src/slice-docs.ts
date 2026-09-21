@@ -48,6 +48,7 @@ const stateFile = "state.md";
 const workflowFile = "workflow.md";
 const designBriefFile = "design-brief.md";
 const legacyStateFile = "state.json";
+const planMarker = /<borg-project-plan>([\s\S]*?)<\/borg-project-plan>/i;
 
 function docsDirectory(root: string) {
   const parent = join(resolve(root), ".localcode");
