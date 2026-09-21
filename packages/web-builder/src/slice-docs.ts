@@ -4,6 +4,7 @@ import type { WorkflowState } from "../../core/src/contracts.ts";
 import type { ProjectComponent, ProjectPage, ProjectPlan, ProjectSlice, ProjectStyleSystem } from "../../core/src/project-domain.ts";
 import { fallbackFlows } from "./blueprint-planning.ts";
 import { initializeProjectModel } from "./project-model.ts";
+import { parseStructuredJson } from "./structured-json.ts";
 
 export type SliceAction = "initial" | "revise" | "advance";
 export type { ProjectPlan, ProjectSlice, ProjectStyleSystem };
@@ -276,8 +277,9 @@ export function validateProjectPlanCoverage(plan: ProjectPlan, brief: string): P
 
 export type ProjectPlanParseResult = {
   plan: ProjectPlan;
-  source: "model" | "fallback";
+  source: "model" | "repaired" | "fallback";
   fallbackReason: string | null;
+  repairReason?: string | null;
   validation: ProjectPlanValidation;
   retryRecommended: boolean;
 };
@@ -614,7 +616,8 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
   const match = answer.match(planMarker);
   if (!match) return selectFallback("Planner response did not contain a <borg-project-plan> block.");
   try {
-    const raw = JSON.parse(match[1]) as Record<string, unknown>;
+    const parsedJson = parseStructuredJson<Record<string, unknown>>(match[1]);
+    const raw = parsedJson.value;
     const rawSlices = Array.isArray(raw.slices) ? raw.slices.slice(0, 12) : [];
     const slices = rawSlices.map((item, index) => {
       const value = item as Record<string, unknown>;
@@ -720,7 +723,14 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
     };
     const validation = validateProjectPlanCoverage(candidate, brief);
     if (!validation.valid) return selectFallback(validation.issues.join(" "), validation);
-    return { plan: candidate, source: "model", fallbackReason: null, validation, retryRecommended: false };
+    return {
+      plan: candidate,
+      source: parsedJson.source,
+      fallbackReason: null,
+      repairReason: parsedJson.repairSummary,
+      validation,
+      retryRecommended: false,
+    };
   } catch (error) {
     return selectFallback(`Planner project-plan JSON could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
   }

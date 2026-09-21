@@ -4,6 +4,7 @@ import type {
   ProjectStyleSystem,
   ProjectUserFlow,
 } from "../../core/src/project-domain.ts";
+import { parseStructuredJson } from "./structured-json.ts";
 
 export type ProductMap = {
   siteGoal: string;
@@ -70,7 +71,7 @@ Original brief:
 ${brief}${feedback.trim() ? `\n\nOperator blueprint feedback to incorporate:\n${feedback.trim()}` : ""}`;
 }
 
-export function parseProductMap(answer: string, fallback: ProjectPlan): { map: ProductMap; source: "model" | "fallback"; reason: string | null } {
+export function parseProductMap(answer: string, fallback: ProjectPlan): { map: ProductMap; source: "model" | "repaired" | "fallback"; reason: string | null } {
   const fallbackMap: ProductMap = {
     siteGoal: fallback.siteGoal,
     audience: fallback.audience,
@@ -82,7 +83,8 @@ export function parseProductMap(answer: string, fallback: ProjectPlan): { map: P
   const match = answer.match(productMapMarker);
   if (!match) return { map: fallbackMap, source: "fallback", reason: "Product-map marker was missing." };
   try {
-    const raw = JSON.parse(match[1]) as Record<string, unknown>;
+    const parsedJson = parseStructuredJson<Record<string, unknown>>(match[1]);
+    const raw = parsedJson.value;
     const rawPages = Array.isArray(raw.sitemap) ? raw.sitemap.slice(0, 40) : [];
     const sitemap = rawPages.map((item, index) => {
       const value = item as Record<string, unknown>;
@@ -119,7 +121,7 @@ export function parseProductMap(answer: string, fallback: ProjectPlan): { map: P
     };
     const validation = validateProductMap(map);
     return validation.valid
-      ? { map, source: "model", reason: null }
+      ? { map, source: parsedJson.source, reason: parsedJson.repairSummary }
       : { map: fallbackMap, source: "fallback", reason: validation.issues.join(" ") };
   } catch (error) {
     return { map: fallbackMap, source: "fallback", reason: `Product map could not be parsed: ${error instanceof Error ? error.message : String(error)}` };
@@ -196,11 +198,12 @@ ${JSON.stringify(input.designBrief, null, 2)}
 ${input.feedback?.trim() ? `\nOperator blueprint feedback:\n${input.feedback.trim()}` : ""}`;
 }
 
-export function parseStyleSystem(answer: string, fallback: ProjectStyleSystem): { styles: ProjectStyleSystem; source: "model" | "fallback"; reason: string | null } {
+export function parseStyleSystem(answer: string, fallback: ProjectStyleSystem): { styles: ProjectStyleSystem; source: "model" | "repaired" | "fallback"; reason: string | null } {
   const match = answer.match(styleMarker);
   if (!match) return { styles: fallback, source: "fallback", reason: "Style-system marker was missing." };
   try {
-    const raw = JSON.parse(match[1]) as Record<string, unknown>;
+    const parsedJson = parseStructuredJson<Record<string, unknown>>(match[1]);
+    const raw = parsedJson.value;
     const styles: ProjectStyleSystem = {
       direction: clean(raw.direction, fallback.direction),
       colors: list(raw.colors, fallback.colors),
@@ -216,7 +219,7 @@ export function parseStyleSystem(answer: string, fallback: ProjectStyleSystem): 
     };
     const validation = validateStyleSystem(styles);
     return validation.valid
-      ? { styles, source: "model", reason: null }
+      ? { styles, source: parsedJson.source, reason: parsedJson.repairSummary }
       : { styles: fallback, source: "fallback", reason: validation.issues.join(" ") };
   } catch (error) {
     return { styles: fallback, source: "fallback", reason: `Style system could not be parsed: ${error instanceof Error ? error.message : String(error)}` };
