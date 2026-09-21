@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PlanningOrchestrator, type PlanningOrchestratorDependencies } from "../apps/server/src/planning-orchestrator.ts";
+import { PlanningOrchestrator, resolvePlanningDisciplineRoute, type PlanningOrchestratorDependencies } from "../apps/server/src/planning-orchestrator.ts";
 import { createRoleAssignment, type Approval, type RoleAssignment, type Task, type TaskCheckpoint, type WorkflowState } from "../packages/core/src/contracts.ts";
 import { DisciplineRouter, TeamPolicyService } from "../packages/orchestration/src/index.ts";
 
@@ -160,6 +160,24 @@ function harness() {
     emit: (event: Record<string, unknown>) => events.push(event),
   };
 }
+
+
+test("website blueprint planning forces frontend authority over generic keyword routing", () => {
+  const routed = new DisciplineRouter().route(
+    "Build a production-quality frontend website. Do not implement backend infrastructure. Run verification after the build.",
+  );
+  assert.equal(routed.primary, "devops");
+  const blueprint = resolvePlanningDisciplineRoute(routed, { websiteFrontend: true, projectPlanning: true });
+  assert.equal(blueprint.primary, "frontend");
+  assert.deepEqual(blueprint.disciplines, ["frontend"]);
+  assert.deepEqual(blueprint.reasons, ["BORG website blueprint planning"]);
+
+  const focusedFrontend = resolvePlanningDisciplineRoute(routed, { websiteFrontend: true, projectPlanning: false });
+  assert.equal(focusedFrontend.primary, "frontend");
+  assert.ok(!focusedFrontend.disciplines.includes("devops"));
+  assert.ok(!focusedFrontend.disciplines.includes("backend"));
+  assert.ok(!focusedFrontend.disciplines.includes("qa"));
+});
 
 test("PlanningOrchestrator keeps ASK planning read-only and completes without approval", async () => {
   const h = harness();

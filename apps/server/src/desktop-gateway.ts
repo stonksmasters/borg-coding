@@ -15,7 +15,7 @@ import { SqliteChatRepository } from "../../../packages/persistence/src/sqlite-c
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
-import { createWebsiteProject, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { createWebsiteProject, inferWebsiteTemplate, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { readProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import type { ProjectPlan } from "../../../packages/core/src/project-domain.ts";
 
@@ -40,6 +40,7 @@ type CoreWorkflowState = {
   status: string;
   nextAction: string;
   planApproved?: boolean;
+  recovery?: { status?: string; category?: string | null; resumeAction?: string; reason?: string } | null;
   pendingCommand?: CoreWorkflowCommand | null;
   lastConsumedCommandId?: string | null;
   projectPlan?: ProjectPlan | null;
@@ -402,7 +403,7 @@ async function approveCoreTask(taskId: string) {
 async function coreTaskRuntime(taskId: string) {
   const response = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/approval`, { signal: AbortSignal.timeout(10_000) });
   const body = await response.json().catch(() => ({})) as {
-    task?: { id?: string; state?: string };
+    task?: { id?: string; state?: string; request?: string };
     workflow?: CoreWorkflowState | null;
     approval?: { status?: string } | null;
     projectPlanApproval?: boolean;
@@ -676,8 +677,12 @@ const server = createServer((request, response) => {
     void readJson(request).then(async (input) => {
       const name = typeof input.name === "string" ? input.name.trim() : "";
       const brief = typeof input.brief === "string" ? input.brief.trim() : "";
-      const requestedTemplate = typeof input.template === "string" ? input.template : "";
-      const template: WebsiteTemplate = websiteTemplates.includes(requestedTemplate as WebsiteTemplate) ? requestedTemplate as WebsiteTemplate : "saas-landing";
+      const requestedTemplate = typeof input.template === "string" ? input.template : "auto";
+      const template: WebsiteTemplate = requestedTemplate === "auto"
+        ? inferWebsiteTemplate(brief)
+        : websiteTemplates.includes(requestedTemplate as WebsiteTemplate)
+          ? requestedTemplate as WebsiteTemplate
+          : inferWebsiteTemplate(brief);
       if (!name) return send(response, 400, { error: "Website name is required." });
       const project = await createWebsiteProject(name, undefined, undefined, { template, originalBrief: brief });
       const savedAccess = access.save({ repositoryPath: project.path, documents: [] });
@@ -1016,11 +1021,34 @@ const server = createServer((request, response) => {
     const session = chats.sessionForTask(taskId);
     if (!session) return send(response, 404, { error: "Chat session for task was not found." });
     if (activeStreams.has(session.id)) return send(response, 409, { error: "This session already has an active runtime." });
+    const runtime = await coreTaskRuntime(taskId).catch(() => null);
     const controller = new AbortController();
     request.once("aborted", () => controller.abort());
     response.once("close", () => { if (!response.writableEnded) controller.abort(); });
     activeStreams.set(session.id, controller);
     response.writeHead(200, headers("application/x-ndjson; charset=utf-8"));
+
+    if (runtime?.task?.state === "RECOVERY_REQUIRED" && runtime.workflow?.recovery?.resumeAction === "replan") {
+      void (async () => {
+        const prompt = runtime.task?.request?.trim();
+        if (!prompt) throw new Error("The Blueprint recovery task no longer has its original request.");
+        appendMessage({
+          sessionId: session.id,
+          taskId,
+          role: "system",
+          kind: "status",
+          text: `Retrying Blueprint planning from the last durable stage boundary (${runtime.workflow?.recovery?.category ?? "planning recovery"}).`,
+        });
+        writeEvent(response, { type: "task.state", taskId, state: "PLANNING", workflow: runtime.workflow ?? null });
+        await streamChat(session, prompt, (event) => writeEvent(response, event), "initial", null, controller.signal);
+      })().catch((error) => writeEvent(response, { type: "runtime.failed", taskId, message: error instanceof Error ? error.message : "Blueprint retry failed" }))
+        .finally(() => {
+          if (activeStreams.get(session.id) === controller) activeStreams.delete(session.id);
+          response.end();
+        });
+      return;
+    }
+
     void (async () => {
       const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/retry`, {
         method: "POST",

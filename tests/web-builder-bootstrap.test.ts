@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createWebsiteProject, prepareWebsiteWorkspace, websiteInfo, websiteSlug, websiteWorkspaceDirectories } from "../packages/web-builder/src/project-bootstrap.ts";
+import { createWebsiteProject, inferWebsiteTemplate, prepareWebsiteWorkspace, websiteInfo, websiteSlug, websiteWorkspaceDirectories } from "../packages/web-builder/src/project-bootstrap.ts";
 import { websiteGenerationContext } from "../packages/web-builder/src/generation-context.ts";
 
 test("website bootstrap creates a committed React project and can be restored from its path", async () => {
@@ -64,6 +64,15 @@ test("website bootstrap creates a committed React project and can be restored fr
     assert.ok(existsSync(join(worktreePath, "src", "features")));
     await assert.rejects(() => createWebsiteProject("Miller's Glass", root, async () => {}), /already exists/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("website template inference follows product intent instead of defaulting every brief to SaaS", () => {
+  assert.equal(inferWebsiteTemplate("Build a luxury architecture and interior design atelier with selected work, project case studies, and an editorial journal."), "portfolio");
+  assert.equal(inferWebsiteTemplate("Build a social commerce shop with collections, product detail, cart, and checkout."), "ecommerce");
+  assert.equal(inferWebsiteTemplate("Build an internal operations dashboard with KPIs and an admin workspace."), "dashboard");
+  assert.equal(inferWebsiteTemplate("Build a pre-launch waitlist for early access."), "waitlist");
+  assert.equal(inferWebsiteTemplate("Build a B2B SaaS platform landing page with pricing and subscription plans."), "saas-landing");
 });
 
 test("website names cannot escape their project root", () => {

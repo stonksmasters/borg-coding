@@ -71,6 +71,46 @@ test("tool budget forces a final synthesis instead of failing the task", async (
   } finally { globalThis.fetch = originalFetch; }
 });
 
+
+test("tool-free planning never exposes tools and respects the stage request budget", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody = "";
+  const fakeTools = {
+    toolDefinitions: () => { throw new Error("tool definitions must not be requested"); },
+  } as unknown as ToolBroker;
+
+  globalThis.fetch = async (_input, init) => {
+    requestBody = String(init?.body ?? "");
+    const parsed = JSON.parse(requestBody) as { tools?: unknown[]; messages?: Array<{ content?: string }> };
+    assert.deepEqual(parsed.tools, []);
+    return new Response(`${JSON.stringify({ message: { content: "<borg-product-map>{\"siteGoal\":\"x\"}</borg-product-map>" } })}\n`, {
+      status: 200,
+      headers: { "content-type": "application/x-ndjson" },
+    });
+  };
+
+  try {
+    const result = await runOllamaAgent({
+      ollamaUrl: "http://127.0.0.1:11434",
+      model: "test",
+      mode: "plan",
+      tools: fakeTools,
+      allowTools: false,
+      maxRequestCharacters: 16_000,
+      messages: [
+        { role: "system", content: "contract " + "x".repeat(30_000) },
+        { role: "user", content: "produce the artifact" },
+      ],
+      emit: () => {},
+    });
+    assert.equal(result.usedTools, false);
+    assert.ok(requestBody.length <= 17_500, `request body exceeded bounded planner envelope: ${requestBody.length}`);
+    assert.match(result.answer, /borg-product-map/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("a terminated model turn retries without repeating completed tools", async () => {
   const originalFetch = globalThis.fetch;
   let requests = 0;

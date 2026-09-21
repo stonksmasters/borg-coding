@@ -62,7 +62,8 @@ Rules:
 - Include product/application routes even when the original brief only describes the capability.
 - Internal applications must not be converted into marketing-site architecture.
 
-Return exactly one machine-readable block:
+Return exactly one machine-readable block and nothing else.
+Do not use markdown fences, commentary, or pseudo-JSON. The content inside the marker must be strict JSON accepted by JSON.parse: double-quoted keys/strings, no comments, no trailing commas.
 <borg-product-map>{"siteGoal":"...","audience":"...","features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["..."],"acceptanceCriteria":["..."]}],"flows":[{"id":"primary","name":"Primary journey","purpose":"...","steps":["home","detail"]}],"backendRequired":false}</borg-product-map>
 
 Original brief:
@@ -180,7 +181,8 @@ Requirements:
 - Accessibility: focus, contrast, target-size and non-color meaning rules.
 - Avoid: at least 5 explicit anti-patterns.
 
-Return exactly:
+Return exactly one machine-readable block and nothing else.
+Do not use markdown fences, commentary, or pseudo-JSON. The content inside the marker must be strict JSON accepted by JSON.parse: double-quoted keys/strings, no comments, no trailing commas.
 <borg-style-system>{"direction":"...","colors":["canvas: #..."],"typography":["display-xl: 48/52 ..."],"spacing":["space-1: 4px"],"radii":["radius-sm: 6px"],"shadows":["..."],"layoutPrinciples":["..."],"motion":["..."],"responsive":["..."],"accessibility":["..."],"avoid":["..."]}</borg-style-system>
 
 Original brief:
@@ -264,7 +266,7 @@ BUILD ROADMAP:
 - every planned component must appear in at least one slice scope;
 - include a final cross-page frontend completion review slice.
 
-Return a complete <borg-project-plan> block. Use the frozen sitemap fields exactly except componentIds. Include the frozen style system exactly. Include the frozen user flows exactly.
+Return exactly one complete <borg-project-plan> block and nothing else. Do not use markdown fences or commentary. The content inside the marker must be strict JSON accepted by JSON.parse: double-quoted keys/strings, no comments, no trailing commas. Use the frozen sitemap fields exactly except componentIds. Include the frozen style system exactly. Include the frozen user flows exactly.
 
 Frozen product map:
 ${JSON.stringify(input.map, null, 2)}
