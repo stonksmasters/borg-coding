@@ -115,6 +115,17 @@ test("structured model plans replace the fixed slice list", () => {
   assert.match(plan.styles.direction, /Editorial dark/);
 });
 
+test("project-plan parser deterministically repairs malformed JSON before semantic coverage", () => {
+  const brief = "Build a premium expedition portfolio with Home, Expeditions, Journal, About, and Inquiry pages.";
+  const source = fallbackProjectPlan(brief, "portfolio");
+  const validJson = JSON.stringify(source);
+  const malformed = validJson.replace('","audience"', '" "audience"');
+  const result = parseProjectPlanResult(`<borg-project-plan>${malformed}</borg-project-plan>`, brief, "portfolio");
+  assert.equal(result.source, "repaired");
+  assert.equal(result.validation.valid, true);
+  assert.match(result.repairReason ?? "", /missing comma/i);
+});
+
 test("project plan approval is separate from slice execution", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-project-plan-"));
   try {
