@@ -753,7 +753,7 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow };
   }
 
-  retry(task: Task, input: {
+  private retry(task: Task, input: {
     reason: string;
     eventType: "REPAIR_SCHEDULED" | "IMPLEMENTATION_RETRY_SCHEDULED";
     phase?: "implementation" | "technical_repair";
@@ -807,7 +807,7 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow };
   }
 
-  beginDesignRefinement(task: Task, input: { reason: string; maximum: number }): { task: Task; workflow: WorkflowState } {
+  private beginDesignRefinement(task: Task, input: { reason: string; maximum: number }): { task: Task; workflow: WorkflowState } {
     const current = this.requireTask(task);
     if (current.designRefinementAttempt >= input.maximum) {
       throw new Error(`Design refinement limit reached (${current.designRefinementAttempt}/${input.maximum}).`);
@@ -849,28 +849,6 @@ export class WorkflowEngine {
     ];
     this.store.commitWorkflowMutation({ task: updatedTask, state: workflow, events });
     return { task: updatedTask, workflow };
-  }
-
-  recovery(task: Task, category: string, detail: string, fatal: boolean): WorkflowState {
-    const current = this.requireTask(task);
-    const now = new Date().toISOString();
-    return this.update(task, current, {
-      status: fatal ? "blocked" : "recovery_required",
-      nextAction: fatal ? "recover" : "repair",
-      pendingCommand: null,
-      recoveryCategory: category,
-      recovery: {
-        status: fatal ? "blocked" : "required",
-        category,
-        previousTaskState: task.state,
-        checkpointId: current.recovery.checkpointId,
-        resumeAction: fatal ? "inspect_worktree" : "retry_current_scope",
-        reason: detail.trim().slice(0, 4_000),
-        updatedAt: now,
-      },
-      detail,
-      repairAttempt: task.attempts,
-    }, "WORKFLOW_RECOVERY_UPDATED", { category, detail, fatal });
   }
 
   continueFromCheckpoint(
