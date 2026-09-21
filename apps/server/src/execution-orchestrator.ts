@@ -95,7 +95,6 @@ export type ExecutionOrchestratorDependencies = {
   maxRepairAttempts: number;
   maxDesignRefinements: number;
   appendTaskEvent(taskId: string, type: string, payload: Record<string, unknown>): void;
-  transitionTask(task: Task, state: TaskState, emit?: ExecutionEventSink): Task;
   syncWorkflowProjection(task: Task, state: WorkflowState): WorkflowState;
   taskProjectRepository(taskId: string): string | null;
   latestDesignBrief(taskId: string): DesignBrief | null;
@@ -108,9 +107,6 @@ export type ExecutionOrchestratorDependencies = {
   finishRole(assignment: RoleAssignment, status: "completed" | "failed", emit?: ExecutionEventSink): RoleAssignment;
   recordHandoff(input: HandoffInput, emit?: ExecutionEventSink): unknown;
   createCheckpointSnapshot(task: Task, kind: TaskCheckpoint["kind"]): TaskCheckpoint;
-  scheduleImplementationRetry(task: Task, emit: ExecutionEventSink, reason: string, recovery?: RecoveryDecision): Task;
-  scheduleRepair(task: Task, emit: ExecutionEventSink, reason: string, recovery?: RecoveryDecision): Task;
-  scheduleDesignRefinement(task: Task, emit: ExecutionEventSink, reason: string): Task;
   recordCompletedReview(task: Task, findings: Finding[], verdict: "pass" | "repair" | "unknown", summary: string, resolutionEvidence?: string[]): { records: ReviewFindingRecord[] };
   recordMemoryNote(root: string, note: MemoryNote): void;
   contextSourceHints(root: string, query: string): string[];
@@ -143,7 +139,6 @@ export class ExecutionOrchestrator {
       maxRepairAttempts,
       maxDesignRefinements,
       appendTaskEvent,
-      transitionTask,
       syncWorkflowProjection,
       taskProjectRepository,
       latestDesignBrief,
@@ -156,9 +151,6 @@ export class ExecutionOrchestrator {
       finishRole,
       recordHandoff,
       createCheckpointSnapshot,
-      scheduleImplementationRetry,
-      scheduleRepair,
-      scheduleDesignRefinement,
       recordCompletedReview,
       recordMemoryNote,
       contextSourceHints,
@@ -199,6 +191,16 @@ export class ExecutionOrchestrator {
       const currentWorkflow = workflow.get(task.projectId);
       taskContext.taskState = task.state;
       taskContext.attemptPhase = currentWorkflow?.taskId === task.id ? currentWorkflow.attemptPhase : null;
+    };
+    const adoptCoreMutation = (
+      result: { task: Task; workflow: WorkflowState },
+      checkpointKind?: TaskCheckpoint["kind"],
+    ) => {
+      task = result.task;
+      syncWorkflowProjection(task, result.workflow);
+      if (checkpointKind) createCheckpointSnapshot(task, checkpointKind);
+      emit({ type: "task.state", taskId, state: task.state, workflow: result.workflow });
+      refreshTaskContext();
     };
     const authorityProjectId = taskWorkflowAuthorityProjectId(task.id) ?? task.projectId;
     const authorityWorkflow = workflow.get(authorityProjectId);
@@ -515,7 +517,6 @@ export class ExecutionOrchestrator {
           continue;
         }
 
-        if (verification.browserEvidence || designBrief) setExecutionState("BROWSER_VERIFY");
         const visualDecision = await qualityGateService.evaluateVisual({
           taskId,
           request: task.request,
