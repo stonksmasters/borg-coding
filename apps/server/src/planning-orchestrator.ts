@@ -104,17 +104,18 @@ export function resolvePlanningDisciplineRoute(
     };
   }
   if (!input.websiteFrontend) return routed;
+  const disciplines: EngineeringDiscipline[] = [
+    "frontend",
+    ...routed.disciplines.filter((discipline) =>
+      discipline !== "frontend"
+      && discipline !== "devops"
+      && discipline !== "infrastructure"
+      && discipline !== "backend"
+      && discipline !== "qa"),
+  ].slice(0, 6);
   return {
     primary: "frontend",
-    disciplines: [
-      "frontend",
-      ...routed.disciplines.filter((discipline) =>
-        discipline !== "frontend"
-        && discipline !== "devops"
-        && discipline !== "infrastructure"
-        && discipline !== "backend"
-        && discipline !== "qa"),
-    ].slice(0, 6),
+    disciplines,
     reasons: ["BORG website frontend phase", ...routed.reasons],
   };
 }
