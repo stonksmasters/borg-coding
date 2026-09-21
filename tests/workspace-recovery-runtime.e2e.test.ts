@@ -84,7 +84,7 @@ async function ndjsonRequest(url: string, init?: RequestInit) {
   return body.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-type FailureMode = "recoverable_missing_path" | "fatal_path_escape";
+type FailureMode = "recoverable_missing_path" | "recoverable_with_stale_failure" | "fatal_path_escape";
 
 async function startFakeOllama(mode: FailureMode, implementerPrompts: string[]) {
   const server = createServer((request, response) => {
@@ -301,7 +301,7 @@ async function seedApprovedTask(databasePath: string, input: {
 
 async function runRuntimeCase(mode: FailureMode) {
   const runtimeRoot = mkdtempSync(join(tmpdir(), `borg-runtime-recovery-${mode}-`));
-  const taskId = mode === "recoverable_missing_path" ? "slice-recover" : "slice-fatal";
+  const taskId = mode === "fatal_path_escape" ? "slice-fatal" : mode === "recoverable_with_stale_failure" ? "slice-stale" : "slice-recover";
   const databasePath = join(runtimeRoot, ".borg", "borg.db");
   const prompts: string[] = [];
   let core: LoggedChild | null = null;
@@ -330,6 +330,17 @@ async function runRuntimeCase(mode: FailureMode) {
       baseCommit: fixture.baseCommit,
       approvedPlan: fixture.approvedPlan,
     });
+    if (mode === "recoverable_with_stale_failure") {
+      const seeded = new SqliteTaskRepository(databasePath);
+      seeded.appendEvent({
+        id: "stale-tool-failure",
+        taskId,
+        type: "TOOL_FAILED",
+        payload: { message: "Unsafe worktree path from an old, already-resolved attempt." },
+        occurredAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+      seeded.close();
+    }
     const events = await ndjsonRequest(`${coreUrl}/api/tasks/${taskId}/execute`, { method: "POST" });
     return { runtimeRoot, databasePath, prompts, events, fixture, taskId, core, ollama };
   } catch (error) {
@@ -378,6 +389,31 @@ test("approved slice recovers from a missing target, verifies, and reaches its c
       return report.repairedDirectories?.includes("src/features");
     }));
     assert.ok(checkpoints.some((checkpoint) => checkpoint.kind === "pre_delivery"));
+    repository.close();
+  } finally {
+    await cleanupRuntime(result);
+  }
+});
+
+test("stale prior tool failures cannot override current-attempt recovery evidence", { timeout: 45_000 }, async () => {
+  const result = await runRuntimeCase("recoverable_with_stale_failure");
+  try {
+    assert.ok(
+      result.events.some((event) => event.type === "recovery.scheduled" && event.category === "missing_path"),
+      `Expected current missing_path evidence to win. Events: ${JSON.stringify(result.events)}`,
+    );
+    assert.equal(
+      result.events.some((event) => event.type === "stream.blocked"),
+      false,
+      "A stale historical path error must not block the current attempt.",
+    );
+    assert.ok(result.events.some((event) => event.type === "delivery.ready"));
+    const repository = new SqliteTaskRepository(result.databasePath);
+    const classifications = repository.listEvents(result.taskId).filter((event) => event.type === "IMPLEMENTATION_FAILURE_CLASSIFIED");
+    assert.equal(classifications.some((event) => {
+      const decision = event.payload.decision as { category?: string };
+      return decision.category === "path_escape";
+    }), false);
     repository.close();
   } finally {
     await cleanupRuntime(result);
