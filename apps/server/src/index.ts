@@ -51,6 +51,8 @@ import { runOllamaAgent } from "./ollama-agent.ts";
 import { PlanningOrchestrator } from "./planning-orchestrator.ts";
 import { ExecutionOrchestrator } from "./execution-orchestrator.ts";
 import { VerificationService } from "./verification-service.ts";
+import { QualityGateService } from "./quality-gate-service.ts";
+import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
 import type { RecoveryDecision } from "./recovery-policy.ts";
 import { buildChangeLog } from "./change-log.ts";
 import { ProcessRuntime, findAvailableLoopbackPort, type ProcessRuntimeEvent } from "../../../packages/process-runtime/src/index.ts";
@@ -143,6 +145,16 @@ const planningOrchestrator = new PlanningOrchestrator({
 });
 
 const verificationService = new VerificationService({ tools, processRuntime });
+const qualityGateService = new QualityGateService({
+  vision,
+  visualDirector,
+  ollamaUrl,
+  runReview: runFreshReview,
+});
+const projectPlanRevisionService = new ProjectPlanRevisionService({
+  ollamaUrl,
+  runAgent: runOllamaAgent,
+});
 
 const executionOrchestrator = new ExecutionOrchestrator({
   tasks,
@@ -150,9 +162,10 @@ const executionOrchestrator = new ExecutionOrchestrator({
   tools,
   teamPolicies,
   vision,
-  visualDirector,
   access,
   verificationService,
+  qualityGateService,
+  projectPlanRevisionService,
   ollamaUrl,
   model,
   maxRepairAttempts,
