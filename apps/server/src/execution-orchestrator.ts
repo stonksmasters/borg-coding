@@ -530,8 +530,8 @@ export class ExecutionOrchestrator {
           attempt: task.attempts,
           emit,
           appendTaskEvent: (type, payload) => appendTaskEvent(taskId, type, payload),
-          onVisionRequestBody: (body) => recordModelInput(taskId, "vision_reviewer", vision.status().model, compiledSlice?.sliceId ?? null, [], body),
-          onDesignRequestBody: (body) => recordModelInput(taskId, "visual_director", vision.status().model, compiledSlice?.sliceId ?? null, [], body),
+          onVisionRequestBody: (body, selectedModel) => recordModelInput(taskId, "vision_reviewer", selectedModel, compiledSlice?.sliceId ?? null, [], body),
+          onDesignRequestBody: (body, selectedModel) => recordModelInput(taskId, "visual_director", selectedModel, compiledSlice?.sliceId ?? null, [], body),
         });
         const visionReview = visualDecision.visionReview;
         const designReview = visualDecision.designReview;
