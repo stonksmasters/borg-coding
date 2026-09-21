@@ -387,6 +387,7 @@ export class ExecutionOrchestrator {
           emit({ type: "recovery.classified", decision, phase: "implementation" });
           if (decision.disposition === "retry") {
             const recoveryPreflight = performPreflight("implementation_recovery");
+            activeRepairContext = null;
             repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
             createCheckpointSnapshot(task, "pre_repair");
           }
@@ -461,6 +462,7 @@ export class ExecutionOrchestrator {
           emit({ type: "recovery.classified", decision, phase: "implementation" });
             if (decision.disposition === "retry") {
               const recoveryPreflight = performPreflight("no_progress_recovery");
+              activeRepairContext = null;
               repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
               createCheckpointSnapshot(task, "pre_repair");
             }
@@ -541,6 +543,7 @@ export class ExecutionOrchestrator {
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "verification" });
           if (decision.disposition === "retry") {
             const recoveryPreflight = performPreflight("verification_recovery");
+            activeRepairContext = null;
             repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
             createCheckpointSnapshot(task, "pre_repair");
           }
@@ -636,10 +639,11 @@ export class ExecutionOrchestrator {
             results: deterministicVerification.results,
             recentChanges,
           });
+          activeRepairContext = context;
           repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({
             browserEvidence: verification.browserEvidence,
             specialistEvidence: verification.specialistEvidence,
-          }).slice(0, 40_000)}`;
+          }).slice(0, 12_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
           continue;
         }
@@ -719,6 +723,7 @@ export class ExecutionOrchestrator {
             });
             return;
           }
+          activeRepairContext = null;
           repairEvidence = visualDecision.repairEvidence;
           continue;
         }
@@ -990,6 +995,7 @@ export class ExecutionOrchestrator {
             });
             return;
           }
+          activeRepairContext = null;
           repairEvidence = freshDecision.repairEvidence;
           continue;
         }
