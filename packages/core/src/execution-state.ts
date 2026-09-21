@@ -54,7 +54,7 @@ export function formatRepairContext(context: RepairContext): string {
 }
 
 
-const repairTools = new Set(["activity_update", "worktree_list", "worktree_read", "worktree_write", "worktree_patch", "worktree_command", "git_diff", "git_status", "repository_diagnostics", "repository_file_graph", "repository_definition", "repository_references", "repository_symbol_info", "browser_open", "browser_click", "browser_dom", "browser_console", "browser_network", "browser_responsive", "browser_screenshot", "browser_accessibility", "browser_close", "browser_server_start"]);
+const repairTools = new Set(["activity_update", "worktree_list", "worktree_read", "worktree_write", "worktree_patch", "worktree_command", "git_diff", "git_status", "browser_open", "browser_click", "browser_dom", "browser_console", "browser_network", "browser_responsive", "browser_screenshot", "browser_accessibility", "browser_close", "browser_server_start"]);
 const verificationTools = new Set(["activity_update", "verification_run", "verification_profiles", "worktree_read", "git_diff", "git_status"]);
 const reviewTools = new Set(["activity_update", "worktree_read", "git_diff", "git_status", "browser_close"]);
 
