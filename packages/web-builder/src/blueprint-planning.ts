@@ -42,6 +42,19 @@ function clean(value: unknown, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+export function briefForcesFrontendOnly(brief: string) {
+  return /\bfrontend[- ]only\b/i.test(brief)
+    || /\b(?:no|without)\s+(?:a\s+)?backend\b/i.test(brief)
+    || /\bdo\s+not\s+(?:add|build|implement|create)[^.\n]{0,100}\bbackend\b/i.test(brief);
+}
+
+export function normalizeStyleDirection(value: unknown) {
+  const direction = clean(value);
+  if (!direction) return "";
+  if (/^(?:ltr|rtl)$/i.test(direction)) return "";
+  return direction.replace(/^(?:ltr|rtl)\s*[.:;\-]\s*/i, "").trim();
+}
+
 function list(value: unknown, fallback: string[] = []) {
   if (!Array.isArray(value)) return [...fallback];
   return value.map((item) => clean(item)).filter(Boolean);
@@ -86,7 +99,7 @@ function fillRules(
 
 function styleCandidate(raw: Record<string, unknown>): ProjectStyleSystem {
   return {
-    direction: clean(raw.direction),
+    direction: normalizeStyleDirection(raw.direction),
     colors: list(raw.colors),
     typography: list(raw.typography),
     spacing: list(raw.spacing),
@@ -152,7 +165,7 @@ export function compileStyleSystem(candidate: ProjectStyleSystem, fallback: Proj
     return completed;
   };
 
-  let direction = candidate.direction.trim();
+  let direction = normalizeStyleDirection(candidate.direction);
   if (direction.length < 40) {
     direction = direction
       ? `${direction.replace(/[.\s]+$/, "")}. ${fallback.direction}`
@@ -261,17 +274,20 @@ export function parseProductMap(answer: string, fallback: ProjectPlan): ProductM
         steps: list(value.steps).map((step, stepIndex) => slug(step, stepIndex)).filter((step) => pageIds.has(step)),
       };
     }).filter((flow) => flow.steps.length >= 2);
+    const proposedBackendRequired = typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallbackMap.backendRequired;
+    const frontendOnly = briefForcesFrontendOnly(fallbackMap.siteGoal);
     const candidate: ProductMap = {
       siteGoal: clean(raw.siteGoal, fallbackMap.siteGoal),
       audience: clean(raw.audience, fallbackMap.audience),
       features: list(raw.features, fallbackMap.features),
       sitemap: sitemap.length ? sitemap : fallbackMap.sitemap,
       flows: flows.length ? flows : fallbackFlows(sitemap.length ? sitemap : fallbackMap.sitemap),
-      backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallbackMap.backendRequired,
+      backendRequired: frontendOnly ? false : proposedBackendRequired,
     };
     const validation = validateProductMap(candidate);
     const framingRepair = artifact.framed ? null : artifact.framingRepair;
-    const reason = repairReason(framingRepair, parsedJson.repairSummary);
+    const backendRepair = frontendOnly && proposedBackendRequired ? "normalized backendRequired=false from explicit frontend-only brief" : null;
+    const reason = repairReason(framingRepair, parsedJson.repairSummary, backendRepair);
     if (!validation.valid) {
       return {
         map: fallbackMap,

@@ -50,6 +50,16 @@ test("website types receive appropriately sized fallback phase plans", () => {
   assert.ok(ecommerce.components.some((component) => component.usedBy.length > 0));
 });
 
+test("frontend-only briefs cannot regain a backend phase during final plan parsing", () => {
+  const brief = "Build a frontend-only portfolio with Home, Work, About, and Contact. Do not add backend features.";
+  const source = fallbackProjectPlan(brief, "portfolio");
+  assert.equal(source.backendRequired, false);
+  const answer = JSON.stringify({ ...source, backendRequired: true, visualDirection: "ltr" });
+  const result = parseProjectPlanResult(answer, brief, "portfolio");
+  assert.equal(result.plan.backendRequired, false);
+  assert.doesNotMatch(result.plan.visualDirection, /^ltr\b/i);
+});
+
 test("operations fallback preserves explicit ForgeOps page coverage and application slices", () => {
   const brief = "Build ForgeOps, an internal operations dashboard. At minimum: Overview, Schedule, Jobs, Job Detail, Customers, Customer Detail, Technicians, Technician Detail, Vehicles, Inventory, Reports, and Settings.";
   const required = extractExplicitPageRequirements(brief);

@@ -15,6 +15,7 @@ import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import {
   buildRepairContext,
   formatRepairContext,
+  type RepairContext,
 } from "../../../packages/core/src/execution-state.ts";
 import { blockingReviewFindings } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
@@ -272,6 +273,7 @@ export class ExecutionOrchestrator {
       let repairEvidence = blockedRetry
         ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
         : "";
+      let activeRepairContext: RepairContext | null = null;
       refreshTaskContext();
       let implementationBudgetContinuations = 0;
       let implementationBudgetExhausted = false;
@@ -320,6 +322,30 @@ export class ExecutionOrchestrator {
       const styleExecutionPrompt = compiledStyle
         ? `${styleExecutionContext}\n\n${compiledStyle.text}`
         : styleExecutionContext;
+      const repairAuthorityContext = projectPlan
+        ? JSON.stringify({
+            slice: selectedSlice ? {
+              id: selectedSlice.id,
+              title: selectedSlice.title,
+              outcome: selectedSlice.outcome,
+              scope: selectedSlice.scope,
+              acceptanceCriteria: selectedSlice.acceptanceCriteria,
+            } : null,
+            page: selectedSlice
+              ? projectPlan.sitemap.find((page) => page.id === selectedSlice.id) ?? null
+              : focusedExecutionScope?.type === "page"
+                ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id) ?? null
+                : null,
+            globalStyle: {
+              direction: projectPlan.styles.direction,
+              colors: projectPlan.styles.colors,
+              typography: projectPlan.styles.typography,
+              responsive: projectPlan.styles.responsive,
+              accessibility: projectPlan.styles.accessibility,
+              avoid: projectPlan.styles.avoid,
+            },
+          }, null, 2).slice(0, 10_000)
+        : "";
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
         refreshTaskContext();
@@ -327,7 +353,17 @@ export class ExecutionOrchestrator {
         const preAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
-        const repairGrounding = attemptStartedInRepair ? repairGroundingSnapshot(approvedWorktreePath) : "";
+        const repairGrounding = attemptStartedInRepair
+          ? repairGroundingSnapshot(approvedWorktreePath, activeRepairContext?.allowedFiles ?? [])
+          : "";
+        const scopedAuthorityPrompt = attemptStartedInRepair
+          ? repairAuthorityContext
+            ? `REPAIR AUTHORITY. Preserve this approved slice/page/style contract while fixing only the evidenced failure:\n${repairAuthorityContext}\n\n`
+            : ""
+          : `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}`;
+        const scopedDesignContext = attemptStartedInRepair
+          ? ""
+          : `${designContext ? "\n\n" + designContext : ""}${websiteContext && !compiledExecutionContext ? "\n\n" + websiteContext : ""}`;
         const repairPrompt = repairEvidence
           ? [repairEvidence, repairGrounding].filter(Boolean).join("\n\n")
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
@@ -338,8 +374,8 @@ export class ExecutionOrchestrator {
           limits: sliceState || focusedExecutionScope || styleWorkspace ? { toolRounds: 12, toolCalls: 28 } : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledExecutionContext?.sliceId ?? null, compiledExecutionContext?.manifest ?? [], body) : undefined,
           messages: [
-            ...(taskContext.attemptPhase !== "implementation" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
-            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext && !compiledExecutionContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            ...(taskContext.attemptPhase !== "implementation" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated worktree files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification. Do not use base-repository language-intelligence tools during repair. Do not guess npm scripts or invent verification commands; BORG's deterministic verifier reads package.json after you return control." }] : []),
+            { role: "system", content: `${scopedAuthorityPrompt}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${scopedDesignContext}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
           });
@@ -351,6 +387,7 @@ export class ExecutionOrchestrator {
           emit({ type: "recovery.classified", decision, phase: "implementation" });
           if (decision.disposition === "retry") {
             const recoveryPreflight = performPreflight("implementation_recovery");
+            activeRepairContext = null;
             repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
             createCheckpointSnapshot(task, "pre_repair");
           }
@@ -384,28 +421,31 @@ export class ExecutionOrchestrator {
           const initialSourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
           const repairDelta = preAttemptSnapshot.fingerprint !== postAttemptSnapshot.fingerprint;
           const explainedNoMutation = /\b(?:no (?:source )?(?:change|mutation) (?:is )?required because|no mutation needed because|already resolved and no (?:source )?change is required)\b/i.test(answer);
-          const sourceProgress = attemptStartedInRepair ? repairDelta || explainedNoMutation : initialSourceProgress;
-          if (attemptStartedInRepair && !repairDelta && explainedNoMutation) {
-            appendTaskEvent(taskId, "REPAIR_NO_MUTATION_EXPLAINED", { attempt: task.attempts, answer: answer.slice(0, 4_000) });
+          const toolFailures = directToolFailures
+            .map((value) => String(value).slice(0, 2_000))
+            .filter(Boolean)
+            .slice(-5);
+          const fatalRepairFailure = attemptStartedInRepair
+            ? toolFailures
+                .map((failure) => classifyImplementationFailure(failure, 0, maxRepairAttempts))
+                .find((decision) => ["path_escape", "approval_violation", "repository_invalid", "permission_denied"].includes(decision.category))
+            : null;
+          const verifyWithoutMutation = attemptStartedInRepair && !repairDelta && !fatalRepairFailure;
+          const sourceProgress = attemptStartedInRepair ? repairDelta : initialSourceProgress;
+          if (attemptStartedInRepair && !repairDelta) {
+            appendTaskEvent(taskId, explainedNoMutation ? "REPAIR_NO_MUTATION_EXPLAINED" : "REPAIR_NO_MUTATION_VERIFICATION_REQUIRED", {
+              attempt: task.attempts,
+              answer: answer.slice(0, 4_000),
+              toolFailures,
+            });
           }
-          if (!sourceProgress) {
+          if ((!sourceProgress && !verifyWithoutMutation) || fatalRepairFailure) {
             if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
             activeRoleAssignment = null;
-            const persistedToolFailures = tasks.listEvents(taskId)
-              .filter((event) => event.type === "TOOL_FAILED")
-              .slice(-5)
-              .map((event) => {
-                const payload = event.payload as Record<string, unknown>;
-                return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
-              });
-            const toolFailures = [...directToolFailures, ...persistedToolFailures]
-              .map((value) => String(value).slice(0, 2_000))
-              .filter(Boolean)
-              .slice(-5);
             const fallbackFailure = attemptStartedInRepair
-              ? "The repair attempt completed without changing the source diff relative to the start of this repair pass."
+              ? "The repair attempt did not produce a source mutation and cannot proceed without resolving the current fatal tool failure."
               : "The implementation attempt completed without any source-file progress.";
-            const decision = classifyObservedToolFailures(
+            const decision = fatalRepairFailure ?? classifyObservedToolFailures(
               toolFailures,
               task.attempts,
               maxRepairAttempts,
@@ -422,6 +462,7 @@ export class ExecutionOrchestrator {
           emit({ type: "recovery.classified", decision, phase: "implementation" });
             if (decision.disposition === "retry") {
               const recoveryPreflight = performPreflight("no_progress_recovery");
+              activeRepairContext = null;
               repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight, toolFailures);
               createCheckpointSnapshot(task, "pre_repair");
             }
@@ -502,6 +543,7 @@ export class ExecutionOrchestrator {
           appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "verification" });
           if (decision.disposition === "retry") {
             const recoveryPreflight = performPreflight("verification_recovery");
+            activeRepairContext = null;
             repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
             createCheckpointSnapshot(task, "pre_repair");
           }
@@ -597,10 +639,11 @@ export class ExecutionOrchestrator {
             results: deterministicVerification.results,
             recentChanges,
           });
+          activeRepairContext = context;
           repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({
             browserEvidence: verification.browserEvidence,
             specialistEvidence: verification.specialistEvidence,
-          }).slice(0, 40_000)}`;
+          }).slice(0, 12_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
           continue;
         }
@@ -680,6 +723,7 @@ export class ExecutionOrchestrator {
             });
             return;
           }
+          activeRepairContext = null;
           repairEvidence = visualDecision.repairEvidence;
           continue;
         }
@@ -951,6 +995,7 @@ export class ExecutionOrchestrator {
             });
             return;
           }
+          activeRepairContext = null;
           repairEvidence = freshDecision.repairEvidence;
           continue;
         }

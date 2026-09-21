@@ -113,14 +113,30 @@ test("worktree mutation requires approval and remains inside the recorded task w
     const command = await tools.execute("worktree_command", { command: "node", args: ["-e", "process.stdout.write('bounded')"], timeout_seconds: 5 }, context) as { exitCode: number; stdout: string };
     assert.equal(command.exitCode, 0);
     assert.equal(command.stdout, "bounded");
+    await assert.rejects(
+      () => tools.execute("worktree_command", { command: "npm", args: ["run", "test"] }, context),
+      /npm script "test" is not defined in package\.json/i,
+    );
     await assert.rejects(() => tools.execute("worktree_command", { command: "npm", args: ["run", "dev"] }, context), /browser_server_start/);
 
     const verification = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
     assert.equal(verification.passed, true);
     writeFileSync(join(worktree.path, "package.json"), JSON.stringify({ scripts: { build: "node -e \"process.exit(0)\"" } }));
-    const buildOnlyProfile = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean; results: Array<{ label: string }> };
+    const buildOnlyProfile = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean; results: Array<{ label: string; stderr?: string }> };
     assert.equal(buildOnlyProfile.passed, true);
     assert.equal(buildOnlyProfile.results[0]?.label, "npm run build");
+
+    mkdirSync(join(worktree.path, ".localcode", "build"), { recursive: true });
+    writeFileSync(join(worktree.path, ".localcode", "build", "styles.md"), "# Global style system\n\n## Avoid\n- excessive pills\n- arbitrary gradients\n");
+    writeFileSync(join(worktree.path, "src", "Pill.tsx"), "export const Pill = () => <button className=\"rounded-full\">Contact</button>;\n");
+    const styleBlocked = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean; results: Array<{ label: string; stderr?: string }> };
+    assert.equal(styleBlocked.passed, false);
+    assert.equal(styleBlocked.results.at(-1)?.label, "BORG style contract");
+    assert.match(styleBlocked.results.at(-1)?.stderr ?? "", /Pill\.tsx.*rounded-full/i);
+    writeFileSync(join(worktree.path, "src", "Pill.tsx"), "export const Pill = () => <button className=\"rounded-md\">Contact</button>;\n");
+    writeFileSync(join(worktree.path, "src", "Avatar.tsx"), "export const Avatar = () => <img alt=\"Team member\" className=\"rounded-full\" />;\n");
+    const styleRepaired = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
+    assert.equal(styleRepaired.passed, true);
 
     await assert.rejects(() => tools.execute("worktree_write", { path: "../../outside.ts", content: "escape" }, context), /Unsafe|relative|escapes/);
     await assert.rejects(() => tools.execute("worktree_read", { path: "../README.md" }, context), /Unsafe|relative/);

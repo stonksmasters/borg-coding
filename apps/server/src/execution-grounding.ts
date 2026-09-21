@@ -76,24 +76,27 @@ function directRepairDependencies(root: string, paths: string[]) {
   return [...dependencies].filter((path) => !paths.includes(path)).slice(0, 20);
 }
 
-export function repairGroundingSnapshot(root: string) {
+export function repairGroundingSnapshot(root: string, focusPaths: readonly string[] = []) {
   const snapshot = sourceMutationSnapshot(root);
-  const dependencyPaths = directRepairDependencies(root, snapshot.paths);
-  const changedFiles = snapshot.paths.slice(0, 12).map((path) => {
+  const normalizedFocus = [...new Set(focusPaths.map((path) => path.replaceAll("\\", "/")).filter(Boolean))];
+  const basisPaths = normalizedFocus.length ? normalizedFocus : snapshot.paths;
+  const dependencyPaths = directRepairDependencies(root, basisPaths);
+  const changedFiles = basisPaths.slice(0, 4).map((path) => {
     const content = safeWorktreeFile(root, path);
-    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 12_000)}`;
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 4_000)}`;
   });
-  const dependencies = dependencyPaths.slice(0, 12).map((path) => {
+  const dependencies = dependencyPaths.slice(0, 4).map((path) => {
     const content = safeWorktreeFile(root, path);
-    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 8_000)}`;
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 2_500)}`;
   });
-  return [
+  const body = [
     "CURRENT WORKTREE GROUNDING. This snapshot is authoritative for the repair pass; do not rediscover or guess paths.",
-    `Changed source files:\n${snapshot.paths.length ? snapshot.paths.map((path) => `- ${path}`).join("\n") : "- none"}`,
-    dependencyPaths.length ? `Direct relative dependencies automatically resolved from changed files:\n${dependencyPaths.map((path) => `- ${path}`).join("\n")}` : "",
-    `Current source diff:\n${snapshot.diff.slice(0, 40_000) || "[no tracked diff]"}`,
-    changedFiles.length ? `Current changed-file contents:\n${changedFiles.join("\n\n")}` : "",
+    `Repair focus files:\n${basisPaths.length ? basisPaths.slice(0, 12).map((path) => `- ${path}`).join("\n") : "- none"}`,
+    dependencyPaths.length ? `Direct relative dependencies automatically resolved from focus files:\n${dependencyPaths.map((path) => `- ${path}`).join("\n")}` : "",
+    `Current source diff (bounded):\n${snapshot.diff.slice(0, 8_000) || "[no tracked diff]"}`,
+    changedFiles.length ? `Current focus-file contents:\n${changedFiles.join("\n\n")}` : "",
     dependencies.length ? `Current direct-dependency contents:\n${dependencies.join("\n\n")}` : "",
     "Use this bounded neighborhood first. Read beyond it only when a direct dependency proves another file is required for the evidenced repair.",
   ].filter(Boolean).join("\n\n");
+  return body.slice(0, 18_000);
 }
