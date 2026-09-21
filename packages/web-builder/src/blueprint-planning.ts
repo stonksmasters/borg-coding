@@ -116,6 +116,24 @@ function meaningfulStyleSignal(styles: ProjectStyleSystem) {
   ].filter((value) => value.trim()).length;
 }
 
+function hasMeaningfulStyleDecisions(styles: ProjectStyleSystem) {
+  const concreteColor = /(?:#(?:[0-9a-f]{3}){1,2}\b|rgb\(|hsl\(|oklch\(|:\s*var\(|:\s*[a-z-]+-\d+)/i;
+  const numeric = /\d/;
+  const directionSpecific = styles.direction.trim().length >= 40;
+  const concreteRules = [
+    ...styles.colors.filter((item) => concreteColor.test(item)),
+    ...styles.typography.filter((item) => numeric.test(item)),
+    ...styles.spacing.filter((item) => numeric.test(item)),
+    ...styles.motion.filter((item) => numeric.test(item)),
+    ...styles.responsive.filter((item) => numeric.test(item)),
+  ].length;
+  const descriptiveRules = [
+    ...styles.layoutPrinciples,
+    ...styles.avoid,
+  ].filter((item) => item.trim().length >= 24).length;
+  return directionSpecific || concreteRules > 0 || descriptiveRules >= 2;
+}
+
 export function compileStyleSystem(candidate: ProjectStyleSystem, fallback: ProjectStyleSystem): { styles: ProjectStyleSystem; changes: string[] } {
   const changes: string[] = [];
   const colorConcrete = (item: string) => /(?:#(?:[0-9a-f]{3}){1,2}\b|rgb\(|hsl\(|oklch\(|:\s*var\(|:\s*[a-z-]+-\d+)/i.test(item);
@@ -353,8 +371,8 @@ export function parseStyleSystem(answer: string, fallback: ProjectStyleSystem): 
       throw new Error("Design System JSON root must be an object.");
     }
     const candidate = styleCandidate(parsedJson.value);
-    if (meaningfulStyleSignal(candidate) < 2) {
-      const issues = ["Design system did not contain enough usable design decisions to compile safely."];
+    if (meaningfulStyleSignal(candidate) < 2 || !hasMeaningfulStyleDecisions(candidate)) {
+      const issues = ["Design system did not contain enough concrete creative decisions to compile safely."];
       return {
         styles: fallback,
         source: "fallback",

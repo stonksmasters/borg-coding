@@ -104,8 +104,8 @@ export function resolvePlanningDisciplineRoute(
     };
   }
   if (!input.websiteFrontend) return routed;
-  const disciplines: EngineeringDiscipline[] = [
-    "frontend",
+  const disciplines = [
+    "frontend" as EngineeringDiscipline,
     ...routed.disciplines.filter((discipline) =>
       discipline !== "frontend"
       && discipline !== "devops"
