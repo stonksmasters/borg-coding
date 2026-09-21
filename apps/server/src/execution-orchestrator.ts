@@ -72,6 +72,7 @@ import { runFreshReview } from "./fresh-review.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
 import { VerificationService } from "./verification-service.ts";
+import { repairGroundingSnapshot, sourceMutationSnapshot } from "./execution-grounding.ts";
 
 export type ExecutionEventSink = (event: Record<string, unknown>) => void;
 
@@ -87,13 +88,6 @@ type HandoffInput = {
   evidence?: string[];
   openRisks?: string[];
   requiredNextAction: string;
-};
-
-type MutationSnapshot = {
-  status: string;
-  diff: string;
-  paths: string[];
-  fingerprint: string;
 };
 
 export type ExecutionOrchestratorDependencies = {
@@ -130,8 +124,6 @@ export type ExecutionOrchestratorDependencies = {
   recordMemoryNote(root: string, note: MemoryNote): void;
   designRefinementCount(taskId: string): number;
   contextSourceHints(root: string, query: string): string[];
-  repairGroundingSnapshot(root: string): string;
-  sourceMutationSnapshot(root: string): MutationSnapshot;
 };
 
 export class ExecutionOrchestrator {
@@ -181,8 +173,6 @@ export class ExecutionOrchestrator {
       recordMemoryNote,
       designRefinementCount,
       contextSourceHints,
-      repairGroundingSnapshot,
-      sourceMutationSnapshot,
     } = this.deps;
     const taskContext: { taskId: string; executionState?: ExecutionState } = { taskId, executionState: "IMPLEMENT" };
     const emit = (event: Record<string, unknown>) => {
