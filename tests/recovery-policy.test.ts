@@ -11,6 +11,7 @@ test("recovery policy classifies bounded implementation mistakes as recoverable"
     ["Preview process exited unexpectedly.", "process_interrupted"],
     ["Cannot find module './CheckoutPanel'", "missing_reference"],
     ["Worktree file already exists. Set overwrite=true to replace it.", "tool_usage"],
+    ['Tool usage error: npm script "test" is not defined in package.json.', "tool_usage"],
   ] as const;
 
   for (const [message, category] of cases) {
