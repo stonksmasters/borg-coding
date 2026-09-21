@@ -83,6 +83,53 @@ test("software product and consumer experience briefs do not become commerce pla
   assert.match(agency.slices[0].title, /hero/i);
 });
 
+test("negative brief constraints do not create excluded application requirements", () => {
+  const brief = "Build a simple portfolio website for a small web design studio. I want these pages: Home, Work, Services, About, Contact. Do not add login, dashboards, blogs, booking systems, search, newsletters, or backend features.";
+  const plan = fallbackProjectPlan(brief, "portfolio");
+  const coverage = validateProjectPlanCoverage(plan, brief);
+
+  assert.deepEqual(plan.sitemap.map((page) => page.name), ["Home", "Work", "Services", "About", "Contact"]);
+  assert.equal(plan.backendRequired, false);
+  assert.equal(coverage.requiredCapabilities.includes("authentication"), false);
+  assert.equal(coverage.requiredCapabilities.includes("search_filtering"), false);
+  assert.equal(coverage.valid, true);
+});
+
+test("explicit page extraction ignores planning vocabulary near an ordered page list", () => {
+  const brief = "Required pages, in this order:\n1. Home: /\n2. Work: /work\n3. Services: /services\n4. About: /about\n5. Contact: /contact\n\nFirst create only a rough sitemap with the required routes, page names, purposes, and a few lightweight section hints.";
+  assert.deepEqual(extractExplicitPageRequirements(brief), ["Home", "Work", "Services", "About", "Contact"]);
+});
+
+test("progressive nested page-queue artifacts normalize without commerce fallback", () => {
+  const brief = "Build a frontend-only portfolio site. Do not add ecommerce, login, dashboards, blogs, search, or backend features.";
+  const answer = `<borg-project-plan>${JSON.stringify({
+    frozen: {
+      productMap: {
+        siteGoal: "Show the studio's work",
+        audience: "Potential clients",
+        features: ["Portfolio"],
+        sitemap: [
+          { id: "home", name: "Home", route: "/", purpose: "Introduce the studio", sections: ["Hero"] },
+          { id: "work", name: "Work", route: "/work", purpose: "Show selected work", sections: ["Projects"] },
+        ],
+        flows: [{ id: "primary", name: "Primary", purpose: "Explore the studio", steps: ["home", "work"] }],
+        backendRequired: false,
+      },
+      styleSystem: { direction: "Restrained editorial portfolio", colors: ["canvas: #fff"], typography: ["display: 48px"], spacing: ["space: 4px"], radii: ["sm: 4px"], shadows: ["none"], layoutPrinciples: ["left aligned"], motion: ["fast: 150ms"], responsive: ["mobile: 768px"], accessibility: ["focus visible"], avoid: ["commerce grids"] },
+    },
+    pageQueue: [
+      { id: "home", name: "Home", purpose: "Build the homepage", sections: ["Hero"], acceptanceCriteria: ["Home works"] },
+      { id: "work", name: "Work", purpose: "Build the work page", sections: ["Projects"], acceptanceCriteria: ["Work works"] },
+    ],
+  })}</borg-project-plan>`;
+  const result = parseProjectPlanResult(answer, brief, "ecommerce");
+  assert.notEqual(result.source, "fallback");
+  assert.deepEqual(result.plan.sitemap.map((page) => page.name), ["Home", "Work"]);
+  assert.equal(result.plan.backendRequired, false);
+  assert.doesNotMatch(result.plan.styles.direction, /commerce/i);
+  assert.match(result.plan.slices[0]?.title ?? "", /Home/i);
+});
+
 test("commerce fallback preserves vertical product slices when model formatting fails", () => {
   const plan = fallbackProjectPlan(
     "Build a social-commerce marketplace with discovery feed, product variants, cart, checkout, orders, auth, wishlist, sellers, inventory, and admin roles.",
@@ -135,6 +182,16 @@ test("project-plan parser deterministically repairs malformed JSON before semant
   assert.match(result.repairReason ?? "", /missing comma/i);
 });
 
+test("project-plan parser extends a one-slice blueprint into a valid bounded roadmap instead of rejecting it", () => {
+  const brief = "Build a premium expedition portfolio with Home, Expeditions, Journal, About, and Inquiry pages.";
+  const answer = `<borg-project-plan>{"siteGoal":"Guide travelers to premium expeditions","audience":"Adventure travelers","pages":["Home","Expeditions","Journal","About","Inquiry"],"features":["Expedition discovery","Journal storytelling","Inquiry"],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"Introduce Driftline and the expedition promise","sections":["Navigation","Hero","Selected expeditions"],"componentIds":["site-header","home-hero"],"acceptanceCriteria":["home works"]},{"id":"expeditions","name":"Expeditions","route":"/expeditions","purpose":"Browse destination-specific trips","sections":["Filters","Results"],"componentIds":["expedition-filters"],"acceptanceCriteria":["expeditions work"]},{"id":"journal","name":"Journal","route":"/journal","purpose":"Read editorial stories and field notes","sections":["Featured article","List"],"componentIds":[],"acceptanceCriteria":["journal works"]},{"id":"about","name":"About","route":"/about","purpose":"Explain the field philosophy","sections":["Story","Guides"],"componentIds":[],"acceptanceCriteria":["about works"]},{"id":"inquiry","name":"Inquiry","route":"/inquiry","purpose":"Begin a premium trip inquiry","sections":["Form"],"componentIds":[],"acceptanceCriteria":["inquiry works"]}],"flows":[{"id":"primary","name":"Primary","purpose":"Move from discovery to inquiry","steps":["home","expeditions","inquiry"]}],"components":[{"id":"site-header","name":"Site Header","kind":"layout","purpose":"Global navigation","usedBy":["home","expeditions","journal","about","inquiry"],"variants":["desktop","mobile"],"acceptanceCriteria":["navigation works"]},{"id":"home-hero","name":"Home Hero","kind":"section","purpose":"Introduce the expedition promise","usedBy":["home"],"variants":[],"acceptanceCriteria":["hero works"]},{"id":"expedition-filters","name":"Expedition Filters","kind":"feature","purpose":"Filter expedition inventory","usedBy":["expeditions"],"variants":[],"acceptanceCriteria":["filters work"]}],"styles":{"direction":"Cinematic expedition editorial with dark mineral surfaces and warm field-note accents","colors":["canvas: #0B0D10","surface: #12161C","text: #F5F7FA","muted: #98A2B3","border: #2A313C","accent: #B7FF5A"],"typography":["display: 48px/52px 650","body: 15px/24px 400","label: 12px/16px 600"],"spacing":["space-1: 4px","space-2: 8px","space-4: 16px","space-8: 32px"],"radii":["radius-sm: 6px","radius-lg: 16px"],"shadows":["raised: 0 12px 32px rgba(0,0,0,.22)"],"layoutPrinciples":["content max 1440px"],"motion":["interactive 160ms"],"responsive":["mobile <768px recomposes layout"],"accessibility":["visible focus ring"],"avoid":["generic card grids"]},"visualDirection":"Cinematic expedition editorial with dark mineral surfaces and warm field-note accents","backendRequired":false,"slices":[{"id":"expedition-shell","title":"Expedition brand and discovery shell","outcome":"The premium expedition experience has a clear narrative shell and navigation.","scope":["navigation","archive shell","global visual rhythm"],"acceptanceCriteria":["the site feels premium"]}],"acceptanceCriteria":["The premium expedition experience is navigable."]}</borg-project-plan>`;
+  const result = parseProjectPlanResult(answer, brief, "portfolio");
+  assert.equal(result.source, "repaired");
+  assert.ok(result.plan.slices.length >= 2);
+  assert.equal(result.validation.valid, true);
+  assert.match(result.repairReason ?? "", /slice/i);
+});
+
 test("project plan approval is separate from slice execution", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-project-plan-"));
   try {
@@ -162,8 +219,8 @@ test("project plan approval is separate from slice execution", () => {
     const planPrompt = slicePlanningPrompt(plan, approved.state);
     assert.match(planPrompt, /MINI LOOP/);
     assert.match(planPrompt, /Do not rediscover the whole repository/i);
-    assert.match(planPrompt, /internal execution loop/i);
-    assert.match(planPrompt, /desktop runtime will authorize execution from the outer plan approval/i);
+    assert.match(planPrompt, /detailed planning step for the current page/i);
+    assert.match(planPrompt, /outer project plan intentionally contains a rough sitemap/i);
     assert.doesNotMatch(planPrompt, /request escalation to EDIT/i);
 
     const first = prepareSlice(root, "", "initial", "", "slice-one", "Patch the shell only.");

@@ -184,29 +184,30 @@ function repairReason(...parts: Array<string | null | undefined>) {
 }
 
 export function productMapPlanningPrompt(brief: string, feedback = "") {
-  return `PROJECT BLUEPRINT STAGE 1/4 — PRODUCT MAP.
+  return `PROJECT BOOTSTRAP STAGE 1/3 — ROUGH PRODUCT MAP.
 
-Map the complete product before designing components or implementation slices. Do not propose React components, CSS, design tokens, or code yet.
+Create a lightweight route map that gives the project a coherent direction without designing the whole website up front. Do not propose React components, CSS, design tokens, acceptance criteria, or implementation details yet.
 
 Produce:
 - the site goal and target audience;
-- the complete route/page sitemap;
-- the ordered sections and page-level acceptance criteria for every page;
-- the important user journeys as page-id sequences;
-- the product capabilities required by the brief;
+- the likely route/page sitemap in intended build order;
+- a short purpose and a few rough section hints for each page;
+- only the most important user journeys as page-id sequences;
+- the product capabilities explicitly present in the brief;
 - whether a backend phase will ultimately be required.
 
 Rules:
 - Every page needs a stable id and route.
 - "/" must represent the primary entry page.
+- Keep each page lightweight. Do not fully specify future pages before they are built.
+- Do not invent backend features, commerce flows, or application screens that the brief does not request.
 - Do not collapse a multi-page product into a generic "other pages" placeholder.
 - Every flow step must reference a page id in the sitemap.
-- Include product/application routes even when the original brief only describes the capability.
 - Internal applications must not be converted into marketing-site architecture.
 
 Return exactly one machine-readable block and nothing else.
 Do not use markdown fences, commentary, or pseudo-JSON. The content inside the marker must be strict JSON accepted by JSON.parse: double-quoted keys/strings, no comments, no trailing commas.
-<borg-product-map>{"siteGoal":"...","audience":"...","features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["..."],"acceptanceCriteria":["..."]}],"flows":[{"id":"primary","name":"Primary journey","purpose":"...","steps":["home","detail"]}],"backendRequired":false}</borg-product-map>
+<borg-product-map>{"siteGoal":"...","audience":"...","features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["..."],"acceptanceCriteria":[]}],"flows":[{"id":"primary","name":"Primary journey","purpose":"...","steps":["home","detail"]}],"backendRequired":false}</borg-product-map>
 
 Original brief:
 ${brief}${feedback.trim() ? `\n\nOperator blueprint feedback to incorporate:\n${feedback.trim()}` : ""}`;
@@ -314,7 +315,6 @@ export function validateProductMap(map: ProductMap): BlueprintValidation {
   if (!map.sitemap.some((page) => page.route === "/")) issues.push("Sitemap has no primary '/' route.");
   for (const page of map.sitemap) {
     if (!page.sections.length) issues.push(`${page.name} has no ordered sections.`);
-    if (!page.acceptanceCriteria.length) issues.push(`${page.name} has no acceptance criteria.`);
   }
   const known = new Set(ids);
   if (map.sitemap.length > 1 && !map.flows.length) issues.push("Multi-page product has no user journeys.");
@@ -323,6 +323,39 @@ export function validateProductMap(map: ProductMap): BlueprintValidation {
     for (const step of flow.steps) if (!known.has(step)) issues.push(`Flow ${flow.name} references unknown page "${step}".`);
   }
   return { valid: issues.length === 0, issues };
+}
+
+export function validateProductMapIntent(map: ProductMap, brief: string): BlueprintValidation {
+  const corpus = [
+    map.siteGoal,
+    map.audience,
+    ...map.features,
+    ...map.sitemap.flatMap((page) => [page.name, page.route, page.purpose, ...page.sections]),
+  ].join(" ").toLowerCase();
+  const briefText = brief.toLowerCase();
+  const travelBrief = /\b(?:adventure|expedition|travel|traveler|destination|itinerary|field notes|retreat|hospitality)\b/.test(briefText);
+  const commerceMarkers = (corpus.match(/\b(?:cart|checkout|order|seller|catalog|merchandise|sku|variant|product purchase|marketplace)\b/g) ?? []).length;
+  if (travelBrief && commerceMarkers >= 2) {
+    return {
+      valid: false,
+      issues: ["Product Map conflicts with the travel/expedition brief: it introduces commerce purchase architecture instead of the requested editorial journey."],
+    };
+  }
+  return { valid: true, issues: [] };
+}
+
+export function validateStyleSystemIntent(styles: ProjectStyleSystem, brief: string): BlueprintValidation {
+  const briefText = brief.toLowerCase();
+  const styleText = [styles.direction, ...styles.colors, ...styles.layoutPrinciples, ...styles.avoid].join(" ").toLowerCase();
+  const excludesCommerce = /\b(?:do\s+not|don't|without|avoid|no)\b[^.\n]{0,80}\b(?:e.?commerce|store|shop|cart|checkout|marketplace|product purchase)\b/i.test(briefText);
+  const commerceMarkers = (styleText.match(/\b(?:commerce|marketplace|product imagery|discovery|purchase|cart|checkout|seller|catalog)\b/g) ?? []).length;
+  if (excludesCommerce && commerceMarkers >= 2) {
+    return {
+      valid: false,
+      issues: ["Global style system conflicts with the brief's explicit exclusion of commerce architecture."],
+    };
+  }
+  return { valid: true, issues: [] };
 }
 
 export function styleSystemPlanningPrompt(input: {
@@ -441,6 +474,16 @@ export function applyStyleSystemAugmentation(
     avoid: [],
   };
   const artifact = structuredJsonArtifactBody(answer, "borg-style-augmentation");
+  if (!artifact.body.trim()) {
+    const preserved = compileStyleSystem(base, fallback).styles;
+    return {
+      styles: preserved,
+      source: "repaired",
+      reason: "No design-system augmentation provided; preserved the existing design system.",
+      issues: [],
+      candidate: preserved,
+    };
+  }
   try {
     const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
     const raw = parsedJson.value;
@@ -516,24 +559,20 @@ export function blueprintCompletionPrompt(input: {
   styles: ProjectStyleSystem;
   feedback?: string;
 }) {
-  return `PROJECT BLUEPRINT STAGES 3-4/4 — COMPONENT ARCHITECTURE AND BUILD ROADMAP.
+  return `PROJECT BOOTSTRAP STAGE 3/3 — PAGE QUEUE.
 
-The PRODUCT MAP and GLOBAL STYLE SYSTEM below are frozen foundation artifacts. Derive the reusable component architecture from them, then derive implementation slices from the resulting page/component graph.
+The ROUGH PRODUCT MAP and GLOBAL STYLE SYSTEM below are frozen project-level authority. Create only the ordered page queue needed to begin progressive implementation. Detailed page composition, components, interactions, and page acceptance criteria belong to the active page slice, not this outer plan.
 
-Do not silently replace routes, page purposes, user flows, or global style rules. You may assign componentIds to frozen pages.
+Do not silently replace routes, page purposes, user flows, or global style rules. Keep every page's componentIds empty until that page is planned and built.
 
-COMPONENT ARCHITECTURE:
-- enumerate shared layout, section, UI, and feature components needed by the sitemap;
-- every component has stable id, kind, purpose, usedBy page ids, variants, and acceptance criteria;
-- prefer shared primitives when roles genuinely repeat, but do not force unrelated sections into generic cards.
+PROGRESSIVE PAGE QUEUE:
+- create one bounded implementation slice per major page or coherent page group, in build order;
+- Slice 1 must focus on the homepage/primary entry route and establish only the shared primitives it actually needs;
+- include a final frontend completion review slice after the page queue;
+- do not create hypothetical future components or detailed acceptance criteria for pages not yet active;
+- components must be an empty array in this outer plan unless an already-built registry component is explicitly being reused.
 
-BUILD ROADMAP:
-- Slice 1 MUST be "Visual foundation and shared primitives" (or an equivalently named foundation slice) and establish theme/tokens, typography, spacing, layout primitives, focus/motion rules, base controls, and the application shell BEFORE product-specific component slices.
-- later slices implement concrete page/component outcomes;
-- every planned component must appear in at least one slice scope;
-- include a final cross-page frontend completion review slice.
-
-Return exactly one complete <borg-project-plan> block and nothing else. Do not use markdown fences or commentary. The content inside the marker must be strict JSON accepted by JSON.parse: double-quoted keys/strings, no comments, no trailing commas. Use the frozen sitemap fields exactly except componentIds. Include the frozen style system exactly. Include the frozen user flows exactly.
+Return exactly one complete <borg-project-plan> block and nothing else. Do not use markdown fences or commentary. The content inside the marker must be strict JSON accepted by JSON.parse: double-quoted keys/strings, no comments, no trailing commas. Use the frozen sitemap fields exactly and keep componentIds and page acceptanceCriteria empty. Include the frozen style system exactly. Include the frozen user flows exactly.
 
 Frozen product map:
 ${JSON.stringify(input.map, null, 2)}
@@ -547,32 +586,11 @@ ${input.feedback?.trim() ? `\nOperator blueprint feedback:\n${input.feedback.tri
 }
 
 export function applyBlueprintFoundation(plan: ProjectPlan, map: ProductMap, styles: ProjectStyleSystem): ProjectPlan {
-  const finalPages = new Map(plan.sitemap.map((page) => [page.id, page]));
   const sitemap = map.sitemap.map((page) => ({
     ...page,
-    componentIds: finalPages.get(page.id)?.componentIds ?? [],
+    componentIds: [],
+    acceptanceCriteria: [],
   }));
-  const first = plan.slices[0];
-  const alreadyFoundation = first && /foundation|design system|tokens|shared primitives/i.test([first.id, first.title, ...first.scope].join(" "));
-  const foundation = {
-    id: "visual-foundation",
-    title: "Visual foundation and shared primitives",
-    outcome: "The approved global design system is implemented as reusable theme, layout, interaction, responsive, and accessibility primitives before product-specific UI is built.",
-    scope: [
-      "global color tokens",
-      "typography roles and scale",
-      "spacing and layout primitives",
-      "radii, elevation, focus, and motion primitives",
-      "responsive gutters and content widths",
-      "base controls and application shell",
-    ],
-    acceptanceCriteria: [
-      "shared visual tokens are implemented centrally rather than repeated as one-off component values",
-      "typography and spacing roles visibly establish hierarchy and rhythm",
-      "desktop and mobile shell/layout primitives follow the approved responsive rules",
-      "focus, contrast, and reduced-motion foundations are present before feature components are built",
-    ],
-  };
   return {
     ...plan,
     siteGoal: map.siteGoal,
@@ -584,7 +602,8 @@ export function applyBlueprintFoundation(plan: ProjectPlan, map: ProductMap, sty
     styles,
     visualDirection: styles.direction,
     backendRequired: map.backendRequired,
-    slices: alreadyFoundation ? plan.slices : [foundation, ...plan.slices],
+    components: [],
+    slices: plan.slices,
   };
 }
 
@@ -598,23 +617,10 @@ export function validateBlueprintCompletion(plan: ProjectPlan): BlueprintValidat
     backendRequired: plan.backendRequired,
   }).issues, ...validateStyleSystem(plan.styles).issues];
 
-  const pageIds = new Set(plan.sitemap.map((page) => page.id));
-  const componentIds = new Set(plan.components.map((component) => component.id));
-  for (const page of plan.sitemap) for (const componentId of page.componentIds) {
-    if (!componentIds.has(componentId)) issues.push(`${page.name} references unknown component "${componentId}".`);
-  }
-  for (const component of plan.components) for (const pageId of component.usedBy) {
-    if (!pageIds.has(pageId)) issues.push(`${component.name} references unknown page "${pageId}".`);
-  }
-  const first = plan.slices[0];
-  if (!first || !/foundation|design system|tokens|shared primitives/i.test([first.id, first.title, ...first.scope].join(" "))) {
-    issues.push("The first implementation slice is not a visual foundation/shared-primitives slice.");
-  }
-  const sliceText = plan.slices.map((slice) => [slice.title, slice.outcome, ...slice.scope].join(" ").toLowerCase()).join("\n");
-  for (const component of plan.components) {
-    if (!sliceText.includes(component.name.toLowerCase()) && !sliceText.includes(component.id.toLowerCase())) {
-      issues.push(`Component "${component.name}" is not assigned to any implementation slice.`);
-    }
+  if (!plan.slices.length) issues.push("Progressive blueprint has no page implementation queue.");
+  if (plan.components.length) issues.push("Outer blueprint must not invent a complete component inventory before page implementation.");
+  if (plan.sitemap.some((page) => page.componentIds.length || page.acceptanceCriteria.length)) {
+    issues.push("Outer blueprint pages must remain lightweight until their page slices are planned.");
   }
   return { valid: issues.length === 0, issues };
 }

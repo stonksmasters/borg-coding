@@ -84,6 +84,22 @@ function normalizedRequirement(value: string) {
     .trim();
 }
 
+function requestedByBrief(brief: string, pattern: RegExp) {
+  const matcher = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
+  for (const match of brief.matchAll(matcher)) {
+    const start = match.index ?? 0;
+    const clauseStart = Math.max(0, Math.max(
+      brief.lastIndexOf(".", start),
+      brief.lastIndexOf("!", start),
+      brief.lastIndexOf("?", start),
+      brief.lastIndexOf("\n", start),
+    ) + 1);
+    const clause = brief.slice(clauseStart, start).toLowerCase();
+    if (!/(?:\bdo\s+not\b|\bdon't\b|\bwithout\b|\bnever\b|\bavoid\b|\bno\b)/i.test(clause)) return true;
+  }
+  return false;
+}
+
 const commonApplicationPages = [
   "Overview", "Schedule", "Jobs", "Job Detail", "Customers", "Customer Detail",
   "Technicians", "Technician Detail", "Vehicles", "Inventory", "Reports", "Settings",
@@ -102,16 +118,25 @@ export function extractExplicitPageRequirements(brief: string): string[] {
       .replace(/\s+/g, " ")
       .trim()
       .replace(/[,:;]+$/, "");
-    if (!cleaned || cleaned.length > 80) return;
+    if (
+      !cleaned
+      || cleaned.length > 80
+      || /^(?:in this order|in build order|beginning with|in order)\b/i.test(cleaned)
+      || /^(?:names?|purposes?|routes?|sections?|components?|features?|a few lightweight section hints?)$/i.test(cleaned)
+    ) return;
     const key = normalizedRequirement(cleaned);
     if (!key || found.some((item) => normalizedRequirement(item) === key)) return;
     found.push(cleaned);
   };
 
   const cues = /(?:at\s+minimum|required\s+(?:pages?|screens?|routes?)|must\s+(?:include|contain|provide)|(?:pages?|screens?|routes?)\s*(?:include|are|:))\s*:?[ \t]*([^\n.]+)/gi;
+  for (const match of brief.matchAll(/^\s*\d+[.)]\s*([^:\n]+?)(?:\s*:\s*\/[^\s]*)?\s*$/gm)) add(match[1]);
   for (const match of brief.matchAll(cues)) {
     for (const item of String(match[1] ?? "").split(/\s*,\s*|\s*;\s*|\s+and\s+/i)) add(item);
   }
+
+  const orderedList = brief.match(/(?:required pages?|pages?)(?:\s*,?\s*in this order)?\s*:\s*([\s\S]*?)(?=\n\s*\n|\n\s*(?:This is|Use progressive|Do not|After)\b|$)/i)?.[1] ?? "";
+  for (const match of orderedList.matchAll(/^\s*\d+[.)]\s*([^:\n]+?)(?:\s*:\s*\/[^\s]*)?\s*$/gm)) add(match[1]);
 
   if (found.length < 3) {
     const lower = brief.toLowerCase();
@@ -152,6 +177,16 @@ function applicationSections(name: string): string[] {
   if (/reports?|analytics/.test(value)) return ["Report navigation", "Date / segment controls", "Operational metrics", "Charts / tables", "Export / drill-down actions"];
   if (/settings|billing|profile/.test(value)) return ["Settings navigation", "Configuration form", "Validation / save states", "Permission / error states"];
   return ["Search / filters", "Primary workspace", "Detail / inspection state", "Primary actions", "Loading / empty / error states"];
+}
+
+function simplePageSections(name: string): string[] {
+  const normalized = normalizedRequirement(name);
+  if (/home|overview|landing/.test(normalized)) return ["Navigation", "Hero", "Primary content", "Primary CTA", "Footer"];
+  if (/work|project|portfolio|case study/.test(normalized)) return ["Selected work", "Project details", "Project navigation"];
+  if (/service|offering/.test(normalized)) return ["Services overview", "Service details", "Contact CTA"];
+  if (/about|studio|team|company/.test(normalized)) return ["Story", "Approach", "Contact CTA"];
+  if (/contact|inquiry|quote/.test(normalized)) return ["Contact details", "Inquiry form", "Success and error states"];
+  return ["Primary content", "Supporting details", "Primary CTA"];
 }
 
 function applicationSlices(sitemap: ProjectSitemapPage[]): ProjectSlice[] {
@@ -205,11 +240,11 @@ export type ProjectPlanValidation = PlanCoverageReport;
 
 export function extractRequiredCapabilities(brief: string): PlanCapability[] {
   const required = new Set<PlanCapability>();
-  if (/\b(?:auth(?:entication)?|authenticated|unauthenticated|log\s?in|login|sign\s?in|signin|roles?|permissions?|protected\s+(?:routes?|pages?|areas?))\b/i.test(brief)) required.add("authentication");
-  if (/\b(?:crud|(?:create|add)\s*(?:\/|,|and)?\s*(?:edit|update)(?:\s*(?:\/|,|and)?\s*(?:delete|remove))?|edit\s*(?:\/|,|and)?\s*(?:delete|remove)|manage\s+(?:jobs?|customers?|users?|records?|inventory|orders?))\b/i.test(brief)) required.add("record_mutation");
-  if (/\b(?:search|filter(?:ing)?|sort(?:ing)?)\b/i.test(brief)) required.add("search_filtering");
-  if (/\b(?:reports?|reporting|analytics|insights|metrics dashboard)\b/i.test(brief)) required.add("reporting");
-  if (/\b(?:real[- ]?time|live\s+updates?|websocket|streaming updates?)\b/i.test(brief)) required.add("realtime_updates");
+  if (requestedByBrief(brief, /\b(?:auth(?:entication)?|authenticated|unauthenticated|log\s?in|login|sign\s?in|signin|roles?|permissions?|protected\s+(?:routes?|pages?|areas?))\b/i)) required.add("authentication");
+  if (requestedByBrief(brief, /\b(?:crud|(?:create|add)\s*(?:\/|,|and)?\s*(?:edit|update)(?:\s*(?:\/|,|and)?\s*(?:delete|remove))?|edit\s*(?:\/|,|and)?\s*(?:delete|remove)|manage\s+(?:jobs?|customers?|users?|records?|inventory|orders?))\b/i)) required.add("record_mutation");
+  if (requestedByBrief(brief, /\b(?:search|filter(?:ing)?|sort(?:ing)?)\b/i)) required.add("search_filtering");
+  if (requestedByBrief(brief, /\b(?:reports?|reporting|analytics|insights|metrics dashboard)\b/i)) required.add("reporting");
+  if (requestedByBrief(brief, /\b(?:real[- ]?time|live\s+updates?|websocket|streaming updates?)\b/i)) required.add("realtime_updates");
   return [...required];
 }
 
@@ -242,7 +277,7 @@ export function validateProjectPlanCoverage(plan: ProjectPlan, brief: string): P
   };
   const missingCapabilities = requiredCapabilities.filter((capability) => !capabilityPatterns[capability].test(fullCorpus));
 
-  const dashboard = /dashboard|portal|admin|operations|internal\s+(?:app|tool)|control\s+center|dispatcher/i.test(brief);
+  const dashboard = requestedByBrief(brief, /\b(?:dashboard|portal|admin|operations|internal\s+(?:app|tool)|control\s+center|dispatcher)\b/i);
   const explicitlyNotMarketing = /do\s+not\s+(?:build|make|create).{0,30}(?:marketing|landing)|not\s+a\s+(?:marketing|landing)\s+(?:site|page)|do\s+not\s+create\s+a\s+landing[- ]page/i.test(brief);
   const marketingSlices = dashboard
     ? plan.slices.filter((slice) => /homepage|hero|marketing|calls? to action|testimonials?|pricing section/i.test([slice.title, slice.outcome, ...slice.scope].join(" "))).map((slice) => slice.title)
@@ -286,7 +321,7 @@ export type ProjectPlanParseResult = {
 
 function complexApplicationBrief(brief: string) {
   const required = extractExplicitPageRequirements(brief);
-  return required.length >= 4 || (/\b(?:full[- ]stack|dashboard|portal|operations|internal app|admin)\b/i.test(brief) && brief.length >= 500);
+  return required.length >= 4 || (requestedByBrief(brief, /\b(?:full[- ]stack|dashboard|portal|operations|internal app|admin)\b/i) && brief.length >= 500);
 }
 function fallbackStyles(commerce: boolean): ProjectStyleSystem {
   return {
@@ -320,6 +355,7 @@ function fallbackSitemap(brief: string, commerce: boolean, dashboard: boolean, c
   const add = (name: string, pageRoute: string, purpose: string, sections: string[]) => {
     if (!pages.some((page) => page.route === pageRoute)) pages.push({ name, route: pageRoute, purpose, sections });
   };
+  const explicitPages = extractExplicitPageRequirements(brief);
   if (commerce) {
     add("Home", "/", "Introduce the marketplace and drive product discovery.", ["Navigation", "Hero / discovery entry", "Featured products", "Categories", "Trust / social proof", "Primary CTA", "Footer"]);
     add("Discovery", "/discover", "Browse personalized and editorial discovery feeds.", ["Discovery controls", "Feed", "Creator / seller recommendations", "Loading and empty states"]);
@@ -339,6 +375,15 @@ function fallbackSitemap(brief: string, commerce: boolean, dashboard: boolean, c
     const applicationPages = requiredPages.length >= 3 ? requiredPages : ["Overview", "Activity", "Settings"];
     for (const [index, name] of applicationPages.entries()) {
       add(name, applicationRoute(name, index), `${name} operational workspace required by the product brief.`, applicationSections(name));
+    }
+  } else if (!dashboard && explicitPages.length >= 2) {
+    for (const [index, name] of explicitPages.entries()) {
+      add(
+        name,
+        index === 0 ? "/" : `/${slug(name, index)}`,
+        `${name} page required by the approved brief.`,
+        simplePageSections(name),
+      );
     }
   } else {
     add("Home", "/", "Communicate the primary value proposition and direct users into the site's core journey.", ["Navigation", "Hero", "Primary proof / value sections", "Primary CTA", "Footer"]);
@@ -485,16 +530,19 @@ export function readProjectPlan(root: string): ProjectPlan | null {
 
 export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
   const text = brief.toLowerCase();
+  const explicitPages = extractExplicitPageRequirements(brief);
   // "Product" is common in software and agency briefs and is not evidence of a store.
   // Require an explicit commerce concept before selecting the commerce fallback plan.
-  const commerce = /e.?commerce|commerce|marketplace|\bshop(?:ping)?\b|\bstorefront\b|\bcatalog\b|\bcart\b|\bcheckout\b/.test(`${template} ${text}`);
-  const dashboard = /dashboard|portal|admin|operations|analytics/.test(`${template} ${text}`);
-  const contentHeavy = /blog|content|news|docs|documentation|magazine/.test(`${template} ${text}`);
-  const social = /social|creator|feed|follow|favorite|wishlist|review|trending|recommend/.test(text);
-  const seller = /seller|merchant|storefront|inventory|sku/.test(text);
-  const admin = /admin|moderation|role|permission/.test(text);
-  const accounts = /account|auth|login|sign.?up|profile|order|wishlist/.test(text);
-  const backendRequired = /account|auth|login|database|persist|checkout|payment|booking|order|cart|upload|message|api|integration|dashboard|seller|admin/.test(text);
+  const commerce = requestedByBrief(text, /e.?commerce|commerce|marketplace|\bshop(?:ping)?\b|\bstorefront\b|\bcatalog\b|\bcart\b|\bcheckout\b/i)
+    || (template === "ecommerce" && !/\b(?:do\s+not|don't|without|avoid|no)\b[^.\n]{0,40}\b(?:e.?commerce|store|shop|cart|checkout)\b/i.test(text));
+  const dashboard = requestedByBrief(text, /\b(?:dashboard|portal|admin|operations|analytics)\b/i)
+    || (template === "dashboard" && !/\b(?:do\s+not|don't|without|avoid|no)\b[^.\n]{0,40}\b(?:dashboard|admin|operations|analytics)\b/i.test(text));
+  const contentHeavy = requestedByBrief(`${template} ${text}`, /\b(?:blog|content|news|docs|documentation|magazine)\b/i);
+  const social = requestedByBrief(text, /\b(?:social|creator|feed|follow|favorite|wishlist|review|trending|recommend)\b/i);
+  const seller = requestedByBrief(text, /\b(?:seller|merchant|storefront|inventory|sku)\b/i);
+  const admin = requestedByBrief(text, /\b(?:admin|moderation|role|permission)\b/i);
+  const accounts = requestedByBrief(text, /\b(?:account|auth|login|sign.?up|profile|order|wishlist)\b/i);
+  const backendRequired = requestedByBrief(text, /\b(?:account|auth|login|database|persist|checkout|payment|booking|order|cart|upload|message|api|integration|dashboard|seller|admin)\b/i);
   const slices: ProjectSlice[] = [];
 
   if (commerce) {
@@ -556,6 +604,16 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
   } else if (dashboard) {
     const applicationSitemap = fallbackSitemap(brief, false, true, contentHeavy, seller, admin, accounts);
     slices.push(...applicationSlices(applicationSitemap));
+  } else if (explicitPages.length >= 2) {
+    for (const name of explicitPages) {
+      slices.push({
+        id: slug(name, slices.length),
+        title: `${name} page`,
+        outcome: `The ${name} page is implemented as a coherent, navigable experience using the approved global styles.`,
+        scope: [name, ...simplePageSections(name)],
+        acceptanceCriteria: [`${name} is reachable and materially represented`, "responsive and accessible behavior is intentional"],
+      });
+    }
   } else {
     slices.push(
       { id: "foundation", title: "Homepage shell and hero", outcome: "The homepage navigation, visual foundation, and hero are polished and usable in the preview.", scope: ["design tokens and layout shell", "header and navigation", "homepage hero", "basic responsive and accessible behavior"], acceptanceCriteria: ["hero communicates the primary offer", "desktop and mobile layouts are usable", "visible navigation controls work"] },
@@ -616,8 +674,38 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
   const artifact = structuredJsonArtifactBody(answer, "borg-project-plan");
   try {
     const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
-    const raw = parsedJson.value;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Project Plan JSON root must be an object.");
+    const parsedRaw = parsedJson.value;
+    if (!parsedRaw || typeof parsedRaw !== "object" || Array.isArray(parsedRaw)) throw new Error("Project Plan JSON root must be an object.");
+    const nestedFrozen = parsedRaw.frozen as Record<string, unknown> | undefined;
+    const nestedMap = nestedFrozen?.productMap as Record<string, unknown> | undefined;
+    const nestedStyles = nestedFrozen?.styleSystem as Record<string, unknown> | undefined;
+    const nestedQueue = Array.isArray(parsedRaw.pageQueue) ? parsedRaw.pageQueue : [];
+    const raw = nestedMap || nestedStyles || nestedQueue.length
+      ? {
+          ...parsedRaw,
+          siteGoal: clean(parsedRaw.siteGoal, clean(nestedMap?.siteGoal)),
+          audience: clean(parsedRaw.audience, clean(nestedMap?.audience)),
+          pages: list(parsedRaw.pages, list(nestedMap?.pages)),
+          features: list(parsedRaw.features, list(nestedMap?.features)),
+          sitemap: Array.isArray(parsedRaw.sitemap) && parsedRaw.sitemap.length ? parsedRaw.sitemap : nestedMap?.sitemap,
+          flows: Array.isArray(parsedRaw.flows) && parsedRaw.flows.length ? parsedRaw.flows : nestedMap?.flows,
+          backendRequired: typeof parsedRaw.backendRequired === "boolean" ? parsedRaw.backendRequired : nestedMap?.backendRequired,
+          styles: parsedRaw.styles ?? nestedStyles,
+          slices: Array.isArray(parsedRaw.slices) && parsedRaw.slices.length
+            ? parsedRaw.slices
+            : nestedQueue.map((item, index) => {
+                const value = item as Record<string, unknown>;
+                return {
+                  id: clean(value.id, clean(value.name, `slice-${index + 1}`)),
+                  title: clean(value.name, `Page ${index + 1}`),
+                  outcome: clean(value.purpose, "Deliver the current page boundary."),
+                  scope: list(value.sections, [clean(value.name, "Current page")]),
+                  acceptanceCriteria: list(value.acceptanceCriteria, []),
+                };
+              }),
+          components: Array.isArray(parsedRaw.components) ? parsedRaw.components : [],
+        }
+      : parsedRaw;
     const rawSlices = Array.isArray(raw.slices) ? raw.slices.slice(0, 12) : [];
     const slices = rawSlices.map((item, index) => {
       const value = item as Record<string, unknown>;
@@ -630,7 +718,153 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
         acceptanceCriteria: list(value.acceptanceCriteria, ["Working preview", "Relevant verification passes"]),
       };
     }).filter((slice) => slice.title && slice.outcome);
-    if (slices.length < 2) return selectFallback("Planner returned fewer than two usable implementation slices.");
+    const repairSlices = (basis: ProjectSlice[]) => {
+      const repaired = basis.map((slice, index) => ({
+        ...slice,
+        id: slug(clean(slice.id, slice.title), index),
+      }));
+      const seen = new Set(repaired.map((slice) => slice.id.toLowerCase()));
+      for (const slice of slices) {
+        if (!seen.has(slice.id.toLowerCase())) repaired.push(slice);
+        seen.add(slice.id.toLowerCase());
+      }
+      return repaired;
+    };
+    if (slices.length < 2) {
+      const generatedFallback = fallbackProjectPlan(brief, template).slices;
+      const repairedSlices = repairSlices(generatedFallback);
+      if (repairedSlices.length < 2) return selectFallback("Planner returned fewer than two usable implementation slices.");
+      const framingRepair = artifact.framed ? null : artifact.framingRepair;
+      const repairReason = [framingRepair, parsedJson.repairSummary, "expanded a single-slice blueprint into a bounded roadmap"].filter(Boolean).join("; ") || null;
+      return {
+        plan: {
+          ...fallback,
+          siteGoal: clean(raw.siteGoal, fallback.siteGoal),
+          audience: clean(raw.audience, fallback.audience),
+          pages: list(raw.pages, fallback.pages),
+          features: list(raw.features, fallback.features),
+          sitemap: Array.isArray(raw.sitemap) && raw.sitemap.length ? raw.sitemap.slice(0, 30).map((item, index) => {
+            const value = item as Record<string, unknown>;
+            const name = clean(value.name, clean(value.title, `Page ${index + 1}`));
+            return {
+              id: slug(clean(value.id, name), index),
+              name,
+              route: route(value.route, index === 0 ? "/" : `/${slug(name, index)}`),
+              purpose: clean(value.purpose, `${name} page.`),
+              sections: list(value.sections),
+              componentIds: list(value.componentIds).map((componentId, componentIndex) => slug(componentId, componentIndex)),
+              acceptanceCriteria: list(value.acceptanceCriteria, fallback.acceptanceCriteria),
+            };
+          }) : fallback.sitemap,
+          flows: Array.isArray(raw.flows) && raw.flows.length ? (raw.flows as Record<string, unknown>[]).map((item, index) => {
+            const value = item as Record<string, unknown>;
+            const name = clean(value.name, `Journey ${index + 1}`);
+            return {
+              id: slug(clean(value.id, name), index),
+              name,
+              purpose: clean(value.purpose, `${name} user journey.`),
+              steps: list(value.steps).map((pageId, pageIndex) => slug(pageId, pageIndex)),
+            };
+          }) : fallback.flows,
+          components: Array.isArray(raw.components) && raw.components.length ? (raw.components as Record<string, unknown>[]).map((item, index) => {
+            const value = item as Record<string, unknown>;
+            const name = clean(value.name, `Component ${index + 1}`);
+            const kind = ["layout", "section", "ui", "feature"].includes(String(value.kind)) ? String(value.kind) as PlannedComponent["kind"] : "section";
+            return {
+              id: slug(clean(value.id, name), index),
+              name,
+              kind,
+              purpose: clean(value.purpose, `${name} reusable interface element.`),
+              usedBy: list(value.usedBy).map((pageId, pageIndex) => slug(pageId, pageIndex)),
+              variants: list(value.variants),
+              acceptanceCriteria: list(value.acceptanceCriteria, ["Responsive and accessible states are defined."]),
+            };
+          }) : fallback.components,
+          styles: {
+            direction: clean((raw.styles as Record<string, unknown> | undefined)?.direction, fallback.styles.direction),
+            colors: list((raw.styles as Record<string, unknown> | undefined)?.colors, fallback.styles.colors),
+            typography: list((raw.styles as Record<string, unknown> | undefined)?.typography, fallback.styles.typography),
+            spacing: list((raw.styles as Record<string, unknown> | undefined)?.spacing, fallback.styles.spacing),
+            radii: list((raw.styles as Record<string, unknown> | undefined)?.radii, fallback.styles.radii),
+            shadows: list((raw.styles as Record<string, unknown> | undefined)?.shadows, fallback.styles.shadows),
+            layoutPrinciples: list((raw.styles as Record<string, unknown> | undefined)?.layoutPrinciples, fallback.styles.layoutPrinciples),
+            motion: list((raw.styles as Record<string, unknown> | undefined)?.motion, fallback.styles.motion),
+            responsive: list((raw.styles as Record<string, unknown> | undefined)?.responsive, fallback.styles.responsive),
+            accessibility: list((raw.styles as Record<string, unknown> | undefined)?.accessibility, fallback.styles.accessibility),
+            avoid: list((raw.styles as Record<string, unknown> | undefined)?.avoid, fallback.styles.avoid),
+          },
+          visualDirection: clean(raw.visualDirection, clean((raw.styles as Record<string, unknown> | undefined)?.direction, fallback.visualDirection)),
+          backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallback.backendRequired,
+          slices: repairedSlices,
+          acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
+        },
+        source: "repaired",
+        fallbackReason: null,
+        repairReason,
+        validation: validateProjectPlanCoverage({
+          ...fallback,
+          siteGoal: clean(raw.siteGoal, fallback.siteGoal),
+          audience: clean(raw.audience, fallback.audience),
+          pages: list(raw.pages, fallback.pages),
+          features: list(raw.features, fallback.features),
+          sitemap: Array.isArray(raw.sitemap) && raw.sitemap.length ? raw.sitemap.slice(0, 30).map((item, index) => {
+            const value = item as Record<string, unknown>;
+            const name = clean(value.name, clean(value.title, `Page ${index + 1}`));
+            return {
+              id: slug(clean(value.id, name), index),
+              name,
+              route: route(value.route, index === 0 ? "/" : `/${slug(name, index)}`),
+              purpose: clean(value.purpose, `${name} page.`),
+              sections: list(value.sections),
+              componentIds: list(value.componentIds).map((componentId, componentIndex) => slug(componentId, componentIndex)),
+              acceptanceCriteria: list(value.acceptanceCriteria, fallback.acceptanceCriteria),
+            };
+          }) : fallback.sitemap,
+          flows: Array.isArray(raw.flows) && raw.flows.length ? (raw.flows as Record<string, unknown>[]).map((item, index) => {
+            const value = item as Record<string, unknown>;
+            const name = clean(value.name, `Journey ${index + 1}`);
+            return {
+              id: slug(clean(value.id, name), index),
+              name,
+              purpose: clean(value.purpose, `${name} user journey.`),
+              steps: list(value.steps).map((pageId, pageIndex) => slug(pageId, pageIndex)),
+            };
+          }) : fallback.flows,
+          components: Array.isArray(raw.components) && raw.components.length ? (raw.components as Record<string, unknown>[]).map((item, index) => {
+            const value = item as Record<string, unknown>;
+            const name = clean(value.name, `Component ${index + 1}`);
+            const kind = ["layout", "section", "ui", "feature"].includes(String(value.kind)) ? String(value.kind) as PlannedComponent["kind"] : "section";
+            return {
+              id: slug(clean(value.id, name), index),
+              name,
+              kind,
+              purpose: clean(value.purpose, `${name} reusable interface element.`),
+              usedBy: list(value.usedBy).map((pageId, pageIndex) => slug(pageId, pageIndex)),
+              variants: list(value.variants),
+              acceptanceCriteria: list(value.acceptanceCriteria, ["Responsive and accessible states are defined."]),
+            };
+          }) : fallback.components,
+          styles: {
+            direction: clean((raw.styles as Record<string, unknown> | undefined)?.direction, fallback.styles.direction),
+            colors: list((raw.styles as Record<string, unknown> | undefined)?.colors, fallback.styles.colors),
+            typography: list((raw.styles as Record<string, unknown> | undefined)?.typography, fallback.styles.typography),
+            spacing: list((raw.styles as Record<string, unknown> | undefined)?.spacing, fallback.styles.spacing),
+            radii: list((raw.styles as Record<string, unknown> | undefined)?.radii, fallback.styles.radii),
+            shadows: list((raw.styles as Record<string, unknown> | undefined)?.shadows, fallback.styles.shadows),
+            layoutPrinciples: list((raw.styles as Record<string, unknown> | undefined)?.layoutPrinciples, fallback.styles.layoutPrinciples),
+            motion: list((raw.styles as Record<string, unknown> | undefined)?.motion, fallback.styles.motion),
+            responsive: list((raw.styles as Record<string, unknown> | undefined)?.responsive, fallback.styles.responsive),
+            accessibility: list((raw.styles as Record<string, unknown> | undefined)?.accessibility, fallback.styles.accessibility),
+            avoid: list((raw.styles as Record<string, unknown> | undefined)?.avoid, fallback.styles.avoid),
+          },
+          visualDirection: clean(raw.visualDirection, clean((raw.styles as Record<string, unknown> | undefined)?.direction, fallback.visualDirection)),
+          backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallback.backendRequired,
+          slices: repairedSlices,
+          acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
+        }, brief),
+        retryRecommended: false,
+      };
+    }
 
     const rawSitemap = Array.isArray(raw.sitemap) ? raw.sitemap.slice(0, 30) : [];
     const sitemap = rawSitemap.length ? rawSitemap.map((item, index) => {
@@ -752,7 +986,7 @@ export function projectPlanRepairPrompt(result: ProjectPlanParseResult): string 
     capabilities.length ? `Required product capabilities: ${capabilities.join(", ")}.` : "",
     result.validation.missingCapabilities.length ? `Capabilities missing from the rejected plan: ${result.validation.missingCapabilities.join(", ")}.` : "",
     result.validation.contradictions.length ? `Brief/plan contradictions to remove:\n- ${result.validation.contradictions.join("\n- ")}` : "",
-    "Every explicitly required page must appear in the sitemap AND be named in at least one bounded implementation slice. Every required capability must be represented by concrete pages/components/slices and acceptance criteria, not vague feature prose.",
+    "Every explicitly required page must appear in the rough sitemap and in the ordered page queue. Required capabilities must be represented by the relevant page purpose or queue boundary, but do not invent detailed future components or page acceptance criteria before that page is active.",
     "Internal applications must use application-oriented slices; do not use homepage/hero/marketing slices for dashboards or operations tools.",
     "Return the complete corrected plan and end with exactly one valid <borg-project-plan>...</borg-project-plan> block.",
   ].filter(Boolean).join("\n\n");
@@ -812,17 +1046,17 @@ export function projectPlanRevisionPrompt(input: {
 }
 
 export function projectPlanningPrompt(brief: string): string {
-  return `OUTER WEBSITE PHASE PLAN. This is the one full planning loop for the frontend phase. Inspect the brief and approved repository context, then plan the COMPLETE website before implementation. Do not implement anything.
+  return `OUTER WEBSITE BOOTSTRAP PLAN. Establish enough durable project authority to begin progressive page implementation. Do not implement anything and do not design the complete future website.
 
 Your plan has three first-class structure artifacts:
-1. SITEMAP + USER FLOWS: enumerate every route/page the finished website should contain and the important user journeys between stable page ids. Each page needs a stable id, route, purpose, ordered sections, componentIds, and page-level acceptance criteria. Do not collapse a multi-page product into "pages required by the brief."
-2. COMPONENT INVENTORY: enumerate the reusable/buildable layout, section, UI, and feature components needed for the sitemap. Each component needs a stable id, purpose, kind, page usage, variants, and acceptance criteria. This inventory is the future authority for component-focused workspaces.
-3. GLOBAL STYLE SYSTEM: define site-wide visual rules independently from any single component: color roles, typography, spacing, radii, shadows, layout principles, motion, responsive behavior, accessibility, and explicit anti-patterns. Style feedback must be able to change this system without redefining page/component behavior.
+1. ROUGH SITEMAP + USER FLOWS: enumerate likely routes in build order with stable ids, routes, short purposes, and a few section hints. Keep page componentIds and page acceptanceCriteria empty until the page slice is active.
+2. GLOBAL STYLE SYSTEM: define site-wide visual rules independently from any single page: color roles, typography, spacing, radii, shadows, layout principles, motion, responsive behavior, accessibility, and explicit anti-patterns.
+3. PAGE QUEUE: create bounded slices in page order. Slice 1 is the homepage/primary entry page. Future page details are intentionally resolved later from the rough sitemap, styles, and the components already evidenced by implemented pages.
 
-Then create bounded implementation slices that cover the sitemap and component inventory. Assign every major page section and planned component to at least one slice. Put shell/navigation and the primary entry experience early; include a final cross-page review slice. Every slice must have one concrete user-visible outcome and fit in one bounded implementation/verification session.
+Do not invent a complete component inventory. Components emerge from active page slices and are registered after verified implementation. Include a final cross-page frontend completion review slice. Every page slice must have one concrete user-visible outcome and fit in one bounded implementation/verification session.
 
 End your response with exactly one machine-readable block using this shape:
-<borg-project-plan>{"siteGoal":"...","audience":"...","pages":["Home"],"features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["Navigation","Hero"],"componentIds":["site-header","hero"],"acceptanceCriteria":["..."]}],"flows":[{"id":"primary","name":"Primary journey","purpose":"...","steps":["home","detail"]}],"components":[{"id":"site-header","name":"Site Header","kind":"layout","purpose":"...","usedBy":["home"],"variants":["desktop","mobile"],"acceptanceCriteria":["..."]}],"styles":{"direction":"...","colors":["..."],"typography":["..."],"spacing":["..."],"radii":["..."],"shadows":["..."],"layoutPrinciples":["..."],"motion":["..."],"responsive":["..."],"accessibility":["..."],"avoid":["..."]},"visualDirection":"...","backendRequired":false,"slices":[{"id":"...","title":"...","outcome":"...","scope":["..."],"acceptanceCriteria":["..."]}],"acceptanceCriteria":["..."]}</borg-project-plan>
+<borg-project-plan>{"siteGoal":"...","audience":"...","pages":["Home"],"features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["Navigation","Hero"],"componentIds":[],"acceptanceCriteria":[]}],"flows":[{"id":"primary","name":"Primary journey","purpose":"...","steps":["home","detail"]}],"components":[],"styles":{"direction":"...","colors":["..."],"typography":["..."],"spacing":["..."],"radii":["..."],"shadows":["..."],"layoutPrinciples":["..."],"motion":["..."],"responsive":["..."],"accessibility":["..."],"avoid":["..."]},"visualDirection":"...","backendRequired":false,"slices":[{"id":"home","title":"Homepage","outcome":"...","scope":["Home"],"acceptanceCriteria":["... "]}],"acceptanceCriteria":["..."]}</borg-project-plan>
 
 The only project files authorized during PLAN are planning documents under .localcode/build/**/*.md, persisted by BORG after your response. Do not create source, component, style, asset, configuration, backend, API, auth, or database files; do not run builds, tests, previews, or verification. Brief: ${brief}`;
 }
@@ -1038,7 +1272,21 @@ export function readProjectDocs(root: string): ProjectDoc[] {
 
 export function slicePlanningPrompt(plan: ProjectPlan, state: SliceState): string {
   const slice = currentSlice(plan, state);
-  return `MINI LOOP — FRONTEND SLICE ${state.current + 1}/${plan.slices.length}: ${slice.title}. Approved outcome: ${slice.outcome} This is an internal execution loop inside the already-approved frontend phase plan. Do not rediscover the whole repository, redesign the phase plan, or expand scope. Load the approved phase plan, current slice, relevant decisions, latest handoff, and only the source files needed for this outcome. Produce a concise execution plan for this slice only; the desktop runtime will authorize execution from the outer plan approval. During this architect pass, do not mutate source/components/styles/assets/config/backend/API/auth/database files or run commands, previews, builds, tests, or verification. BORG may persist planning Markdown under .localcode/build/**/*.md through its dedicated docs path.`;
+  const page = plan.sitemap.find((candidate) => candidate.id === slice.id)
+    ?? plan.sitemap.find((candidate) => slice.scope.some((item) => normalizedRequirement(item).includes(normalizedRequirement(candidate.name))))
+    ?? plan.sitemap[0];
+  return `MINI LOOP — PAGE SLICE ${state.current + 1}/${plan.slices.length}: ${slice.title}. Current page: ${page?.name ?? "primary page"} (${page?.route ?? "/"}). Approved outcome: ${slice.outcome}
+
+This is the detailed planning step for the current page only. The outer project plan intentionally contains a rough sitemap and global style authority, not a speculative component inventory. Load the rough sitemap, approved global styles, current page purpose/section hints, existing project registries, relevant decisions, latest handoff, and only the source files needed for this page.
+
+Decide for this page:
+- section order and page-specific composition;
+- components to reuse from the registry;
+- new components justified by this page, with stable ids and responsibilities;
+- interactions, responsive behavior, accessibility behavior, and page acceptance criteria;
+- any data/action contract needed without inventing backend work.
+
+Produce a concise page implementation plan for this slice only. Update the global component registry only with components evidenced by this page. Do not rediscover the whole repository, redesign the phase plan, expand to future pages, mutate source, or run commands, previews, builds, tests, or verification during this architect pass. BORG may persist planning Markdown under .localcode/build/**/*.md through its dedicated docs path.`;
 }
 
 export function slicePrompt(plan: ProjectPlan, state: SliceState, availableTools: string[] = []): string {

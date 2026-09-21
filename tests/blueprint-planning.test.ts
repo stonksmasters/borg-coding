@@ -7,6 +7,8 @@ import {
   parseStyleSystem,
   validateBlueprintCompletion,
   validateProductMap,
+  validateProductMapIntent,
+  validateStyleSystemIntent,
   validateStyleSystem,
 } from "../packages/web-builder/src/blueprint-planning.ts";
 import { fallbackProjectPlan } from "../packages/web-builder/src/slice-docs.ts";
@@ -91,6 +93,30 @@ test("product-map stage repairs harmless trailing commas but still rejects seman
   assert.match(rejected.reason ?? "", /sections|acceptance/i);
 });
 
+test("product-map intent rejects commerce architecture for an expedition brief", () => {
+  const fallback = fallbackProjectPlan("Build a premium expedition portfolio", "portfolio");
+  const commerceMap = {
+    siteGoal: "Drive product discovery and purchase",
+    audience: "Travel shoppers",
+    features: ["Catalog", "Cart", "Checkout"],
+    sitemap: fallback.sitemap.map((page) => ({ ...page, name: page.name, sections: ["Product catalog", "Cart", "Checkout"] })),
+    flows: fallback.flows ?? [],
+    backendRequired: false,
+  };
+  const result = validateProductMapIntent(commerceMap, "Build a premium adventure travel website with editorial expeditions and field notes.");
+  assert.equal(result.valid, false);
+  assert.match(result.issues[0] ?? "", /travel\/expedition brief/i);
+});
+
+test("style-system intent rejects stale commerce direction for an excluded-commerce brief", () => {
+  const result = validateStyleSystemIntent({
+    ...concreteStyles,
+    direction: "Premium mobile-first commerce with strong product imagery and trustworthy purchase flows.",
+  }, "Build a frontend-only portfolio website. Do not add ecommerce, cart, checkout, or backend features.");
+  assert.equal(result.valid, false);
+  assert.match(result.issues[0] ?? "", /commerce architecture/i);
+});
+
 test("style-system stage rejects vague prose and accepts implementation-grade scales", () => {
   assert.equal(validateStyleSystem(concreteStyles).valid, true);
   const fallback = fallbackProjectPlan("Build a premium dashboard", "dashboard").styles;
@@ -144,7 +170,50 @@ test("style-system parser deterministically repairs malformed JSON without weake
   assert.match(parsed.reason ?? "", /missing comma/i);
 });
 
-test("blueprint completion freezes map/styles and inserts visual foundation before feature slices", () => {
+test("empty style-system augmentation preserves the existing valid design system instead of failing", () => {
+  const fallback = fallbackProjectPlan("Build a premium expedition portfolio", "portfolio").styles;
+  const result = applyStyleSystemAugmentation(concreteStyles, "    ", fallback);
+  assert.equal(result.source, "repaired");
+  assert.equal(validateStyleSystem(result.styles).valid, true);
+  assert.deepEqual(result.styles, concreteStyles);
+  assert.match(result.reason ?? "", /empty|preserve/i);
+});
+
+test("blueprint completion keeps page and component detail deferred to page slices", () => {
+  const plan: ProjectPlan = {
+    version: 2,
+    revision: 1,
+    status: "proposed",
+    phase: "frontend",
+    siteGoal: "Guide travelers to premium expeditions",
+    audience: "Adventure travelers",
+    pages: ["Home", "Expeditions", "Journal", "About", "Inquiry"],
+    features: ["Expedition discovery", "Editorial journal", "Inquiry"],
+    sitemap: [
+      { id: "home", name: "Home", route: "/", purpose: "Introduce Driftline and the expedition promise", sections: ["Navigation", "Hero", "Selected expeditions"], componentIds: [], acceptanceCriteria: [] },
+      { id: "expeditions", name: "Expeditions", route: "/expeditions", purpose: "Browse destination-specific trips", sections: ["Filters", "Results"], componentIds: [], acceptanceCriteria: [] },
+      { id: "journal", name: "Journal", route: "/journal", purpose: "Read editorial stories and field notes", sections: ["Featured article", "List"], componentIds: [], acceptanceCriteria: [] },
+      { id: "about", name: "About", route: "/about", purpose: "Explain the field philosophy", sections: ["Story", "Guides"], componentIds: [], acceptanceCriteria: [] },
+      { id: "inquiry", name: "Inquiry", route: "/inquiry", purpose: "Begin a premium trip inquiry", sections: ["Form"], componentIds: [], acceptanceCriteria: [] },
+    ],
+    flows: [{ id: "discover", name: "Discover", purpose: "Move from brand entry to expedition discovery and inquiry", steps: ["home", "expeditions", "inquiry"] }],
+    components: [],
+    styles: concreteStyles,
+    visualDirection: "Cinematic expedition editorial with dark mineral surfaces and warm field-note accents",
+    backendRequired: false,
+    slices: [
+      { id: "home", title: "Homepage", outcome: "The expedition homepage establishes the visual language and primary journey.", scope: ["Home", "homepage composition"], acceptanceCriteria: ["home works"] },
+      { id: "expeditions", title: "Expeditions", outcome: "The expedition discovery page is navigable and coherent.", scope: ["Expeditions", "discovery page"], acceptanceCriteria: ["expeditions work"] },
+      { id: "frontend-review", title: "Frontend completion review", outcome: "Review the complete expedition experience.", scope: ["responsive review", "accessibility review"], acceptanceCriteria: ["passes"] },
+    ],
+    acceptanceCriteria: ["The premium expedition experience is navigable."],
+    proposedAt: new Date().toISOString(),
+    approvedAt: null,
+  };
+  assert.equal(validateBlueprintCompletion(plan).valid, true);
+});
+
+test("blueprint completion freezes map/styles without inventing a foundation slice", () => {
   const now = new Date().toISOString();
   const map = {
     siteGoal: "Operate jobs",
@@ -186,10 +255,12 @@ test("blueprint completion freezes map/styles and inserts visual foundation befo
     approvedAt: null,
   };
   const plan = applyBlueprintFoundation(raw, map, concreteStyles);
-  assert.equal(plan.slices[0]?.id, "visual-foundation");
+  assert.equal(plan.slices[0]?.id, "jobs");
   assert.equal(plan.sitemap[0]?.purpose, "See operations");
-  assert.equal(plan.sitemap[1]?.componentIds[0], "job-list");
+  assert.deepEqual(plan.sitemap.map((page) => page.componentIds), [[], []]);
   assert.equal(plan.styles.colors[0], "canvas: #0B0D10");
+  assert.deepEqual(plan.components, []);
+  assert.deepEqual(plan.sitemap.map((page) => page.componentIds), [[], []]);
   assert.deepEqual(plan.flows?.[0]?.steps, ["overview", "jobs"]);
   assert.equal(validateBlueprintCompletion(plan).valid, true);
 });

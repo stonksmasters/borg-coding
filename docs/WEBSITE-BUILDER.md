@@ -24,15 +24,29 @@ BORG records:
 - known integrations;
 - whether the repository is greenfield or existing.
 
-### Project Blueprint
+### Project Bootstrap
 
-Before frontend mutation, BORG builds one authoritative Project Blueprint in staged order:
+Before frontend mutation, BORG establishes only the durable authority needed to begin a page at a time:
 
-1. **Product map** — site goal, audience, complete sitemap, routes, ordered page sections, capabilities, backend requirement, and user journeys between durable page IDs.
-2. **Design direction** — the Design Director consumes the product map and establishes audience-specific art direction, composition, typography hierarchy, palette direction, rhythm, responsive strategy, motion, content voice, anti-patterns, and quality bar.
-3. **Global design system** — BORG turns the product map and design brief into implementation-grade shared primitives: semantic color values, typography roles/scales, spacing scale, radii, elevation, layout constraints, responsive recomposition rules, motion, focus/accessibility rules, and explicit anti-patterns.
-4. **Component architecture** — reusable layout, section, UI, and feature components are derived from the frozen product map and design system rather than invented independently during coding.
-5. **Build roadmap** — BORG derives bounded implementation slices from the page/component graph. The first slice establishes the visual foundation and shared primitives before product-specific component/page slices.
+1. **Rough product map** — site goal, audience, likely routes in build order, lightweight purposes/section hints, important user journeys, explicit capabilities, and backend requirement. Future pages do not receive detailed acceptance criteria or component inventories yet.
+2. **Design direction and global styles** — the Design Director and style stage establish audience-specific art direction plus concrete site-wide tokens, typography, layout, responsive, motion, accessibility, and anti-pattern rules.
+3. **Page queue** — bounded implementation slices identify the next page or coherent page group. The first slice is the homepage or primary entry route. The outer plan's component inventory remains empty or limited to already-verified registry reuse.
+
+The durable project plan is a compass, not a full website specification. Detailed sections, interactions, responsive behavior, acceptance criteria, and components are resolved inside the active page slice.
+
+### Progressive Page Slice
+
+Each page advances through the same inner loop:
+
+1. Plan the current page from the rough sitemap, approved global styles, existing component registry, and relevant source context.
+2. Resolve which verified components to reuse and which new components this page actually justifies.
+3. Implement the page in the isolated worktree.
+4. Run deterministic, browser, accessibility, and visual verification.
+5. Repair or refine only the current page when evidence requires it.
+6. Checkpoint the page and update the global component/page registry from verified source evidence.
+7. Advance to the next page queue item.
+
+Components therefore emerge from rendered, verified work. A later page can explicitly reuse components already present in the registry and add only the new components its own composition requires.
 
 `WorkflowEngine.setProjectPlan()` is called only with the final validated blueprint candidate. SQLite remains authoritative; generated `.localcode/build` files are inspectable projections.
 

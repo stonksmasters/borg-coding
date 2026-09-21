@@ -21,11 +21,20 @@ export type WebsiteProjectOptions = {
 
 export function inferWebsiteTemplate(brief: string): WebsiteTemplate {
   const normalized = brief.toLowerCase();
-  if (/\b(e-?commerce|store|shop|catalog|product detail|cart|checkout|merchandise|collection)\b/.test(normalized)) return "ecommerce";
-  if (/\b(dashboard|admin|internal tool|operations|analytics|workspace|back office|control panel|kpi)\b/.test(normalized)) return "dashboard";
-  if (/\b(waitlist|coming soon|pre-?launch|early access|notify me|launch page)\b/.test(normalized)) return "waitlist";
-  if (/\b(portfolio|architecture|architect|interior design|design studio|creative studio|agency|atelier|artist|photograph|case stud|selected work|projects|journal|editorial|hospitality|residential|restoration)\b/.test(normalized)) return "portfolio";
-  if (/\b(saas|software|app|platform|subscription|pricing|product-led|b2b|ai product)\b/.test(normalized)) return "saas-landing";
+  const requested = (pattern: RegExp) => {
+    const matcher = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
+    for (const match of normalized.matchAll(matcher)) {
+      const start = match.index ?? 0;
+      const clauseStart = Math.max(0, Math.max(normalized.lastIndexOf(".", start), normalized.lastIndexOf("!", start), normalized.lastIndexOf("?", start), normalized.lastIndexOf("\n", start)) + 1);
+      if (!/(?:\bdo\s+not\b|\bdon't\b|\bwithout\b|\bnever\b|\bavoid\b|\bno\b)/i.test(normalized.slice(clauseStart, start))) return true;
+    }
+    return false;
+  };
+  if (requested(/\b(e-?commerce|store|shop|catalog|product detail|cart|checkout|merchandise|collection)\b/i)) return "ecommerce";
+  if (requested(/\b(dashboard|admin|internal tool|operations|analytics|workspace|back office|control panel|kpi)\b/i)) return "dashboard";
+  if (requested(/\b(waitlist|coming soon|pre-?launch|early access|notify me|launch page)\b/i)) return "waitlist";
+  if (requested(/\b(portfolio|architecture|architect|interior design|design studio|creative studio|agency|atelier|artist|photograph|case stud|selected work|projects|journal|editorial|hospitality|residential|restoration)\b/i)) return "portfolio";
+  if (requested(/\b(saas|software|app|platform|subscription|pricing|product-led|b2b|ai product)\b/i)) return "saas-landing";
   return "portfolio";
 }
 

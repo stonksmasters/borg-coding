@@ -59,6 +59,8 @@ import {
   styleSystemPlanningPrompt,
   validateBlueprintCompletion,
   validateProductMap,
+  validateProductMapIntent,
+  validateStyleSystemIntent,
   validateStyleSystem,
   type ProductMap,
 } from "../../../packages/web-builder/src/blueprint-planning.ts";
@@ -452,11 +454,15 @@ export class PlanningOrchestrator {
     const planningFeedback = projectPlanning && projectPlan ? requestText : "";
     const blueprintFallback = projectPlanning && websiteProject ? fallbackProjectPlan(planningBrief, websiteProject.template) : null;
     const recoveredProductMapArtifact = blueprintRecoveryEvents.findLast((event) => event.type === "BLUEPRINT_PRODUCT_MAP_COMPLETED")?.payload.artifact as ProductMap | undefined;
-    const recoveredProductMap = recoveredProductMapArtifact && validateProductMap(recoveredProductMapArtifact).valid
+    const recoveredProductMap = recoveredProductMapArtifact
+      && validateProductMap(recoveredProductMapArtifact).valid
+      && validateProductMapIntent(recoveredProductMapArtifact, planningBrief).valid
       ? recoveredProductMapArtifact
       : null;
     const recoveredStyleArtifact = blueprintRecoveryEvents.findLast((event) => event.type === "BLUEPRINT_STYLE_SYSTEM_COMPLETED")?.payload.artifact as ProjectStyleSystem | undefined;
-    const recoveredStyleSystem = recoveredStyleArtifact && validateStyleSystem(recoveredStyleArtifact).valid
+    const recoveredStyleSystem = recoveredStyleArtifact
+      && validateStyleSystem(recoveredStyleArtifact).valid
+      && validateStyleSystemIntent(recoveredStyleArtifact, planningBrief).valid
       ? recoveredStyleArtifact
       : null;
     const recoveredDesignBrief = blueprintRecoveryEvents.findLast((event) => event.type === "DESIGN_BRIEF_CREATED")?.payload.brief as DesignBrief | undefined;
@@ -529,6 +535,16 @@ export class PlanningOrchestrator {
       };
       let mapAnswer = (await this.deps.runAgent(mapRequest)).answer;
       let mapResult = parseProductMap(mapAnswer, blueprintFallback);
+      const mapIntentValidation = validateProductMapIntent(mapResult.map, planningBrief);
+      if (!mapIntentValidation.valid) {
+        mapResult = {
+          ...mapResult,
+          source: "fallback",
+          reason: mapIntentValidation.issues.join(" "),
+          issues: [...mapResult.issues, ...mapIntentValidation.issues],
+          candidate: mapResult.map,
+        };
+      }
       if (mapResult.source === "repaired") {
         appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_NORMALIZED", {
           stage: "Product Map",
@@ -573,6 +589,16 @@ export class PlanningOrchestrator {
           messages: [{ role: "system" as const, content: repairPrompt }],
         })).answer;
         mapResult = parseProductMap(mapAnswer, blueprintFallback);
+        const repairedMapIntentValidation = validateProductMapIntent(mapResult.map, planningBrief);
+        if (!repairedMapIntentValidation.valid) {
+          mapResult = {
+            ...mapResult,
+            source: "fallback",
+            reason: repairedMapIntentValidation.issues.join(" "),
+            issues: [...mapResult.issues, ...repairedMapIntentValidation.issues],
+            candidate: mapResult.map,
+          };
+        }
         if (mapResult.source === "repaired") {
           appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_NORMALIZED", {
             stage: "Product Map",
@@ -584,11 +610,43 @@ export class PlanningOrchestrator {
         }
       }
       if (mapResult.source === "fallback") {
-        return failBlueprintStage(
-          "Product Map",
-          "blueprint_product_map_invalid",
-          `Product Map could not be generated after a bounded repair: ${mapResult.reason ?? "unknown validation failure"}`,
-        );
+        const syntaxFailure = /Product map could not be parsed:/i.test(mapResult.reason ?? "");
+        const deterministicFallbackMap: ProductMap | null = blueprintFallback
+          ? {
+              siteGoal: blueprintFallback.siteGoal,
+              audience: blueprintFallback.audience,
+              features: blueprintFallback.features,
+              sitemap: blueprintFallback.sitemap.map((page) => ({ ...page, componentIds: [], acceptanceCriteria: [] })),
+              flows: blueprintFallback.flows ?? [],
+              backendRequired: blueprintFallback.backendRequired,
+            }
+          : null;
+        const fallbackValidation = deterministicFallbackMap
+          ? validateProductMap(deterministicFallbackMap)
+          : { valid: false, issues: ["No deterministic Product Map fallback is available."] };
+        const fallbackIntent = deterministicFallbackMap
+          ? validateProductMapIntent(deterministicFallbackMap, planningBrief)
+          : { valid: false, issues: ["No deterministic Product Map fallback is available."] };
+        if (syntaxFailure && deterministicFallbackMap && fallbackValidation.valid && fallbackIntent.valid) {
+          mapResult = {
+            map: deterministicFallbackMap,
+            source: "repaired",
+            reason: "Model Product Map JSON remained invalid after bounded repair; used the validated brief-derived fallback.",
+            issues: [],
+            candidate: deterministicFallbackMap,
+          };
+          appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_FALLBACK_USED", {
+            reason: mapResult.reason,
+            source: "brief_derived_deterministic_fallback",
+          });
+          emit({ type: "stage.updated", stage: "Product Map", status: "complete", message: "The model artifact was malformed, so BORG continued with the validated brief-derived route map." });
+        } else {
+          return failBlueprintStage(
+            "Product Map",
+            "blueprint_product_map_invalid",
+            `Product Map could not be generated after a bounded repair: ${mapResult.reason ?? "unknown validation failure"}`,
+          );
+        }
       }
       stagedProductMap = mapResult.map;
       appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_COMPLETED", {
