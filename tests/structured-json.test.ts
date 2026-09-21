@@ -44,7 +44,7 @@ Notes","items":["one","two",],}`;
 });
 
 test("structured JSON repair accepts fenced JSON and trims artifact noise", () => {
-  const parsed = parseStructuredJson<{ ok: boolean }>('\`\`\`json\n{"ok":true}\n\`\`\`'.replaceAll("\\\`", "\`"));
+  const parsed = parseStructuredJson<{ ok: boolean }>("\`\`\`json\n{\\\"ok\\\":true}\n\`\`\`");
   assert.equal(parsed.source, "repaired");
   assert.deepEqual(parsed.value, { ok: true });
 });
