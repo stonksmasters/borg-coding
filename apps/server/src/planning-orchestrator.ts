@@ -456,14 +456,26 @@ export class PlanningOrchestrator {
       ? recoveredStyleArtifact
       : null;
     const recoveredDesignBrief = blueprintRecoveryEvents.findLast((event) => event.type === "DESIGN_BRIEF_CREATED")?.payload.brief as DesignBrief | undefined;
-    let stagedProductMap: ProductMap | null = blueprintRecoveryCategory === "blueprint_design_direction_invalid"
-      || blueprintRecoveryCategory === "blueprint_design_system_invalid"
-      || blueprintRecoveryCategory === "blueprint_component_architecture_invalid"
-      ? recoveredProductMap
-      : null;
-    let stagedStyleSystem = blueprintRecoveryCategory === "blueprint_component_architecture_invalid"
-      ? recoveredStyleSystem ?? blueprintFallback?.styles ?? null
-      : blueprintFallback?.styles ?? null;
+    const canReuseProductMap = Boolean(
+      recoveredProductMap
+      && [
+        "blueprint_design_direction_invalid",
+        "blueprint_design_system_invalid",
+        "blueprint_component_architecture_invalid",
+      ].includes(blueprintRecoveryCategory ?? ""),
+    );
+    const canReuseDesignBrief = Boolean(
+      canReuseProductMap
+      && recoveredDesignBrief
+      && ["blueprint_design_system_invalid", "blueprint_component_architecture_invalid"].includes(blueprintRecoveryCategory ?? ""),
+    );
+    const canReuseStyleSystem = Boolean(
+      canReuseProductMap
+      && recoveredStyleSystem
+      && blueprintRecoveryCategory === "blueprint_component_architecture_invalid",
+    );
+    let stagedProductMap: ProductMap | null = canReuseProductMap ? recoveredProductMap : null;
+    let stagedStyleSystem = canReuseStyleSystem ? recoveredStyleSystem : blueprintFallback?.styles ?? null;
 
     const failBlueprintStage = (stage: string, category: string, reason: string): PlanningOutcome => {
       const message = reason.trim().slice(0, 4_000);
@@ -546,10 +558,7 @@ export class PlanningOrchestrator {
     }
 
     const isGreenfieldDesign = isBorgWebsite && websiteWorkflow === "initial_generation";
-    let designBrief: DesignBrief | null = blueprintRecoveryCategory === "blueprint_design_system_invalid"
-      || blueprintRecoveryCategory === "blueprint_component_architecture_invalid"
-      ? recoveredDesignBrief ?? null
-      : null;
+    let designBrief: DesignBrief | null = canReuseDesignBrief ? recoveredDesignBrief ?? null : null;
     const designRequired = mode !== "ask" && !miniLoop && !designBrief && requiresDesignDirection({
       request: requestText,
       disciplines: route.disciplines,
@@ -610,7 +619,7 @@ export class PlanningOrchestrator {
     }
 
     if (projectPlanning && websiteProject && stagedProductMap && blueprintFallback) {
-      if (blueprintRecoveryCategory === "blueprint_component_architecture_invalid" && recoveredStyleSystem) {
+      if (canReuseStyleSystem && recoveredStyleSystem) {
         stagedStyleSystem = recoveredStyleSystem;
         appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_REUSED", {
           sourceTaskId: blueprintRecoveryTaskId,
@@ -685,7 +694,7 @@ export class PlanningOrchestrator {
         type: "stage.updated",
         stage: "Design System",
         status: "complete",
-        message: blueprintRecoveryCategory === "blueprint_component_architecture_invalid" && recoveredStyleSystem
+        message: canReuseStyleSystem && recoveredStyleSystem
           ? "Reused the validated Global Design System from the prior Blueprint attempt."
           : "Global visual primitives are concrete and ready to constrain component architecture.",
       });
