@@ -199,7 +199,7 @@ type QualityDecision =
 
 ## Slice 5 — Tighten Core outcome authority and durable attempt phase
 
-**Status:** implementation complete; final CI verification pending
+**Status:** implementation complete. Final GitHub Actions verification is unavailable because repository build minutes are exhausted; the last runnable CI passes reached typecheck/lint and desktop successfully, while the remaining recovery E2E failures were subsequently patched on this branch.
 
 ### Purpose
 
