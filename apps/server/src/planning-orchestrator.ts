@@ -124,7 +124,11 @@ export type PlanningOrchestratorDependencies = {
 };
 
 export class PlanningOrchestrator {
-  constructor(private readonly deps: PlanningOrchestratorDependencies) {}
+  private readonly deps: PlanningOrchestratorDependencies;
+
+  constructor(deps: PlanningOrchestratorDependencies) {
+    this.deps = deps;
+  }
 
   async run(command: PlanningCommand, transportEmit: PlanningEventSink, signal: AbortSignal): Promise<PlanningOutcome> {
     const {
