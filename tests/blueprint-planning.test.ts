@@ -59,6 +59,25 @@ test("product-map stage accepts valid raw JSON when the framing marker is missin
   assert.equal(validateProductMap(result.map).valid, true);
 });
 
+test("explicit frontend-only brief overrides a model-requested backend phase", () => {
+  const fallback = fallbackProjectPlan("Build a frontend-only portfolio. Do not add backend features.", "portfolio");
+  const answer = JSON.stringify({
+    siteGoal: "Show studio work",
+    audience: "Prospective clients",
+    features: ["Portfolio", "Contact"],
+    sitemap: [
+      { id: "home", name: "Home", route: "/", purpose: "Introduce the studio", sections: ["Hero", "Work"], acceptanceCriteria: [] },
+      { id: "contact", name: "Contact", route: "/contact", purpose: "Show contact details", sections: ["Contact"], acceptanceCriteria: [] },
+    ],
+    flows: [{ id: "inquiry", name: "Inquiry", purpose: "Move from home to contact", steps: ["home", "contact"] }],
+    backendRequired: true,
+  });
+  const result = parseProductMap(answer, fallback);
+  assert.equal(result.map.backendRequired, false);
+  assert.equal(result.source, "repaired");
+  assert.match(result.reason ?? "", /frontend-only/i);
+});
+
 test("product-map parser deterministically repairs a missing comma before semantic validation", () => {
   const fallback = fallbackProjectPlan("Build a travel portfolio", "portfolio");
   const answer = `<borg-product-map>{"siteGoal":"Explore remote expeditions","audience":"Adventure travelers","features":["Discovery" "Inquiry"],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"Entry","sections":["Hero","Selected expeditions"],"acceptanceCriteria":["home works"]},{"id":"expeditions","name":"Expeditions","route":"/expeditions","purpose":"Browse","sections":["Filters","Results"],"acceptanceCriteria":["browse works"]}],"flows":[{"id":"primary","name":"Primary","purpose":"Move from entry to discovery","steps":["home","expeditions"]}],"backendRequired":false}</borg-product-map>`;
@@ -125,6 +144,20 @@ test("style-system stage rejects vague prose and accepts implementation-grade sc
   assert.equal(parsed.source, "fallback");
   assert.ok(parsed.reason?.includes("concrete") || parsed.reason?.includes("needs at least"));
   assert.equal(validateStyleSystem(parsed.styles).valid, true);
+});
+
+test("style-system normalization removes junk direction tokens instead of persisting ltr as art direction", () => {
+  const fallback = fallbackProjectPlan("Build a clean portfolio", "portfolio").styles;
+  const parsed = parseStyleSystem(JSON.stringify({
+    direction: "ltr",
+    colors: ["canvas: #ffffff", "text: #111111", "accent: #c47d5a"],
+    typography: ["display: 48px/52px 700"],
+    spacing: ["section: 80px"],
+    layoutPrinciples: ["Editorial asymmetry with deliberate whitespace"],
+    avoid: ["excessive pills", "arbitrary gradients"],
+  }), fallback);
+  assert.equal(validateStyleSystem(parsed.styles).valid, true);
+  assert.doesNotMatch(parsed.styles.direction, /^ltr\b/i);
 });
 
 test("style-system compiler completes an under-specified but meaningful model direction", () => {
