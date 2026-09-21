@@ -21,6 +21,8 @@ interface AgentOptions {
   phase?: "plan" | "implementation";
   streamText?: boolean;
   limits?: Partial<AgentLimits>;
+  allowTools?: boolean;
+  maxRequestCharacters?: number;
   emit(event: Record<string, unknown>): void;
   onRequestBody?(body: string): void;
 }
@@ -115,8 +117,9 @@ function agentLimits(overrides?: Partial<AgentLimits>): AgentLimits {
 
 async function runTurn(options: AgentOptions, allowTools = true): Promise<OllamaMessage> {
   const toolDefinitions = allowTools ? options.tools.toolDefinitions(options.mode, options.taskContext, options.role, options.disciplines) : [];
+  const configuredMaximum = boundedInteger(options.maxRequestCharacters, MODEL_REQUEST_CHARACTERS, 8_000, MODEL_REQUEST_CHARACTERS);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const target = attempt ? 40_000 : MODEL_REQUEST_CHARACTERS;
+    const target = attempt ? Math.min(40_000, configuredMaximum) : configuredMaximum;
     const toolCharacters = JSON.stringify(toolDefinitions).length;
     const messages = modelMessages(options.messages, Math.max(8_000, target - toolCharacters - 1_000));
     const requestBody = JSON.stringify({ model: options.model, stream: true, messages, tools: toolDefinitions });
@@ -177,7 +180,10 @@ async function runTurn(options: AgentOptions, allowTools = true): Promise<Ollama
 
 export async function runOllamaAgent(options: AgentOptions) {
   const limits = agentLimits(options.limits);
-  const toolDefinitions = options.tools.toolDefinitions(options.mode, options.taskContext, options.role, options.disciplines);
+  const toolsAllowed = options.allowTools !== false;
+  const toolDefinitions = toolsAllowed
+    ? options.tools.toolDefinitions(options.mode, options.taskContext, options.role, options.disciplines)
+    : [];
   options.emit({ type: "runtime.connected", runtime: "ollama", model: options.model, role: options.role ?? null });
   if (toolDefinitions.some((tool) => tool.function.name.startsWith("repository_"))) options.emit({ type: "stage.updated", stage: "Discovery", status: "active" });
   else if (toolDefinitions.length) options.emit({ type: "stage.updated", stage: "Plan", status: "active" });
@@ -192,7 +198,7 @@ export async function runOllamaAgent(options: AgentOptions) {
   const invalidToolFailures = new Map<string, number>();
   const availableToolNames: string[] = toolDefinitions.map((tool) => tool.function.name);
   for (let round = 0; round < limits.toolRounds; round += 1) {
-    const assistant = await runTurn(options);
+    const assistant = await runTurn(options, toolsAllowed);
     const nativeCalls = assistant.tool_calls ?? [];
     const recoveredCalls = nativeCalls.length
       ? []
