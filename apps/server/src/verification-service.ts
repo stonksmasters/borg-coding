@@ -7,6 +7,7 @@ import {
 } from "../../../packages/orchestration/src/index.ts";
 import type { ProcessRuntime } from "../../../packages/process-runtime/src/index.ts";
 import type { ToolBroker } from "../../../packages/tools/src/tool-broker.ts";
+import type { TaskToolContext } from "../../../packages/tools/src/worktree-tools.ts";
 import type { FocusedScope } from "./task-scope-resolver.ts";
 
 export type DeterministicVerificationResult = {
@@ -38,7 +39,7 @@ export type VerificationOutcome = DeterministicVerificationResult & {
 
 export type VerificationServiceInput = {
   taskId: string;
-  taskContext: { taskId: string; executionState?: string };
+  taskContext: TaskToolContext;
   activeDisciplines: readonly EngineeringDiscipline[];
   packs: readonly SpecialistCapabilityPack[];
   verificationProfile: "quick" | "full";
