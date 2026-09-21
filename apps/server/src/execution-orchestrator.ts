@@ -358,6 +358,17 @@ export class ExecutionOrchestrator {
             eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
           });
           adoptCoreMutation(recoveryOutcome);
+          if (recoveryOutcome.action === "retry") {
+            emit({
+              type: "recovery.scheduled",
+              attempt: recoveryOutcome.task.attempts,
+              maximum: maxRepairAttempts,
+              reason: decision.reason,
+              category: decision.category,
+              action: decision.action,
+              message: decision.action,
+            });
+          }
           if (recoveryOutcome.action === "block") {
             emit({ type: "stream.blocked", message: decision.action });
             return;
@@ -408,6 +419,17 @@ export class ExecutionOrchestrator {
               eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
             });
             adoptCoreMutation(recoveryOutcome);
+            if (recoveryOutcome.action === "retry") {
+              emit({
+                type: "recovery.scheduled",
+                attempt: recoveryOutcome.task.attempts,
+                maximum: maxRepairAttempts,
+                reason: decision.reason,
+                category: decision.category,
+                action: decision.action,
+                message: decision.action,
+              });
+            }
             if (recoveryOutcome.action === "block") {
               emit({ type: "stream.blocked", message: decision.action });
               return;
@@ -477,6 +499,17 @@ export class ExecutionOrchestrator {
             eventType: "REPAIR_SCHEDULED",
           });
           adoptCoreMutation(recoveryOutcome);
+          if (recoveryOutcome.action === "retry") {
+            emit({
+              type: "recovery.scheduled",
+              attempt: recoveryOutcome.task.attempts,
+              maximum: maxRepairAttempts,
+              reason: decision.reason,
+              category: decision.category,
+              action: decision.action,
+              message: decision.action,
+            });
+          }
           if (recoveryOutcome.action === "block") {
             emit({ type: "stream.blocked", message: decision.action });
             return;
