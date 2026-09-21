@@ -210,13 +210,27 @@ export class PlanningOrchestrator {
     const teamPolicy = teamPolicies.load(selectedPath);
     const routed = disciplineRouter.route(requestText, [], teamPolicy.defaultDiscipline);
     const websiteFrontend = mode !== "ask" && Boolean(selectedWebsite) && rawSliceAction !== "backend";
-    const route = websiteFrontend && !routed.disciplines.includes("frontend")
+    const route = projectPlanning && selectedWebsite
       ? {
           primary: "frontend" as EngineeringDiscipline,
-          disciplines: ["frontend" as EngineeringDiscipline, ...routed.disciplines].slice(0, 6),
-          reasons: ["BORG website frontend phase", ...routed.reasons],
+          disciplines: ["frontend" as EngineeringDiscipline],
+          reasons: ["BORG website blueprint planning"],
         }
-      : routed;
+      : websiteFrontend
+        ? {
+            primary: "frontend" as EngineeringDiscipline,
+            disciplines: [
+              "frontend" as EngineeringDiscipline,
+              ...routed.disciplines.filter((discipline) =>
+                discipline !== "frontend"
+                && discipline !== "devops"
+                && discipline !== "infrastructure"
+                && discipline !== "backend"
+                && discipline !== "qa"),
+            ].slice(0, 6),
+            reasons: ["BORG website frontend phase", ...routed.reasons],
+          }
+        : routed;
     const packs = selectSpecialistPacks(route.disciplines);
 
     let task: Task = {
