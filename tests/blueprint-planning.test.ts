@@ -36,6 +36,16 @@ test("product-map stage creates durable routes and user journeys before componen
   assert.equal(validateProductMap(result.map).valid, true);
 });
 
+test("product-map parser deterministically repairs a missing comma before semantic validation", () => {
+  const fallback = fallbackProjectPlan("Build a travel portfolio", "portfolio");
+  const answer = `<borg-product-map>{"siteGoal":"Explore remote expeditions","audience":"Adventure travelers","features":["Discovery" "Inquiry"],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"Entry","sections":["Hero","Selected expeditions"],"acceptanceCriteria":["home works"]},{"id":"expeditions","name":"Expeditions","route":"/expeditions","purpose":"Browse","sections":["Filters","Results"],"acceptanceCriteria":["browse works"]}],"flows":[{"id":"primary","name":"Primary","purpose":"Move from entry to discovery","steps":["home","expeditions"]}],"backendRequired":false}</borg-product-map>`;
+  const result = parseProductMap(answer, fallback);
+  assert.equal(result.source, "repaired");
+  assert.equal(result.map.features.length, 2);
+  assert.equal(validateProductMap(result.map).valid, true);
+  assert.match(result.reason ?? "", /missing comma/i);
+});
+
 test("style-system stage rejects vague prose and accepts implementation-grade scales", () => {
   assert.equal(validateStyleSystem(concreteStyles).valid, true);
   const fallback = fallbackProjectPlan("Build a premium dashboard", "dashboard").styles;
@@ -44,6 +54,15 @@ test("style-system stage rejects vague prose and accepts implementation-grade sc
   assert.equal(parsed.source, "fallback");
   assert.ok(parsed.reason?.includes("concrete") || parsed.reason?.includes("needs at least"));
   assert.equal(validateStyleSystem(parsed.styles).valid, true);
+});
+
+test("style-system parser deterministically repairs malformed JSON without weakening style validation", () => {
+  const fallback = fallbackProjectPlan("Build a premium editorial site", "portfolio").styles;
+  const malformed = JSON.stringify(concreteStyles).replace('"surface: #12161C","raised: #181E27"', '"surface: #12161C" "raised: #181E27"');
+  const parsed = parseStyleSystem(`<borg-style-system>${malformed}</borg-style-system>`, fallback);
+  assert.equal(parsed.source, "repaired");
+  assert.equal(validateStyleSystem(parsed.styles).valid, true);
+  assert.match(parsed.reason ?? "", /missing comma/i);
 });
 
 test("blueprint completion freezes map/styles and inserts visual foundation before feature slices", () => {
