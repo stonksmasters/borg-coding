@@ -15,6 +15,7 @@ import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import {
   buildRepairContext,
   formatRepairContext,
+  type RepairContext,
 } from "../../../packages/core/src/execution-state.ts";
 import { blockingReviewFindings } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
