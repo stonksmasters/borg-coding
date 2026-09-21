@@ -640,6 +640,50 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow };
   }
 
+  beginDesignRefinement(task: Task, input: { reason: string; maximum: number }): { task: Task; workflow: WorkflowState } {
+    const current = this.requireTask(task);
+    if (current.designRefinementAttempt >= input.maximum) {
+      throw new Error(`Design refinement limit reached (${current.designRefinementAttempt}/${input.maximum}).`);
+    }
+    if (task.state !== "IMPLEMENTING") assertTransition(task.state, "IMPLEMENTING");
+    const now = new Date().toISOString();
+    const updatedTask = { ...task, state: "IMPLEMENTING" as const, updatedAt: now };
+    const refinement = current.designRefinementAttempt + 1;
+    const workflow = WorkflowStateSchema.parse({
+      ...current,
+      status: "running",
+      nextAction: "implement",
+      pendingCommand: null,
+      verification: pendingVerification(updatedTask.attempts),
+      attemptPhase: "design_refinement",
+      designRefinementAttempt: refinement,
+      recovery: {
+        status: "repairing",
+        category: "design_refinement",
+        previousTaskState: task.state,
+        checkpointId: current.recovery.checkpointId,
+        resumeAction: "retry_current_scope",
+        reason: input.reason.trim().slice(0, 4_000),
+        updatedAt: now,
+      },
+      recoveryCategory: "design_refinement",
+      detail: input.reason.trim().slice(0, 4_000),
+      version: current.version + 1,
+      updatedAt: now,
+    });
+    const events = [
+      ...(task.state === "IMPLEMENTING" ? [] : [taskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: "IMPLEMENTING", workflowVersion: workflow.version }, now)]),
+      taskEvent(task.id, "DESIGN_REFINEMENT_SCHEDULED", {
+        refinement,
+        maximum: input.maximum,
+        reason: input.reason,
+        workflowVersion: workflow.version,
+      }, now),
+    ];
+    this.store.commitWorkflowMutation({ task: updatedTask, state: workflow, events });
+    return { task: updatedTask, workflow };
+  }
+
   recovery(task: Task, category: string, detail: string, fatal: boolean): WorkflowState {
     const current = this.requireTask(task);
     const now = new Date().toISOString();
