@@ -51,9 +51,11 @@ import {
 import {
   applyBlueprintFoundation,
   blueprintCompletionPrompt,
+  applyStyleSystemAugmentation,
   parseProductMap,
   parseStyleSystem,
   productMapPlanningPrompt,
+  styleSystemAugmentationPrompt,
   styleSystemPlanningPrompt,
   validateBlueprintCompletion,
   validateProductMap,
@@ -102,17 +104,18 @@ export function resolvePlanningDisciplineRoute(
     };
   }
   if (!input.websiteFrontend) return routed;
+  const disciplines: EngineeringDiscipline[] = [
+    "frontend",
+    ...routed.disciplines.filter((discipline) =>
+      discipline !== "frontend"
+      && discipline !== "devops"
+      && discipline !== "infrastructure"
+      && discipline !== "backend"
+      && discipline !== "qa"),
+  ].slice(0, 6);
   return {
     primary: "frontend",
-    disciplines: [
-      "frontend",
-      ...routed.disciplines.filter((discipline) =>
-        discipline !== "frontend"
-        && discipline !== "devops"
-        && discipline !== "infrastructure"
-        && discipline !== "backend"
-        && discipline !== "qa"),
-    ].slice(0, 6),
+    disciplines,
     reasons: ["BORG website frontend phase", ...routed.reasons],
   };
 }
@@ -527,18 +530,29 @@ export class PlanningOrchestrator {
       let mapAnswer = (await this.deps.runAgent(mapRequest)).answer;
       let mapResult = parseProductMap(mapAnswer, blueprintFallback);
       if (mapResult.source === "repaired") {
-        appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
+        appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_NORMALIZED", {
           stage: "Product Map",
           tag: "borg-product-map",
           repair: mapResult.reason,
           method: "deterministic",
         });
       }
-      if (mapResult.source === "fallback") {
+
+      for (let repairAttempt = 1; mapResult.source === "fallback" && repairAttempt <= 2; repairAttempt += 1) {
         const syntaxFailure = /Product map could not be parsed:/i.test(mapResult.reason ?? "");
         appendTaskEvent(task.id, "BLUEPRINT_PRODUCT_MAP_RETRY", {
           reason: mapResult.reason,
           kind: syntaxFailure ? "syntax" : "semantic",
+          attempt: repairAttempt,
+          maximum: 2,
+        });
+        emit({
+          type: "stage.updated",
+          stage: "Product Map",
+          status: "active",
+          message: syntaxFailure
+            ? `Repairing Product Map JSON internally (${repairAttempt}/2).`
+            : `Completing missing Product Map decisions internally (${repairAttempt}/2).`,
         });
         const repairPrompt = syntaxFailure
           ? structuredJsonSyntaxRepairPrompt({
@@ -546,24 +560,26 @@ export class PlanningOrchestrator {
               parserError: mapResult.reason ?? "Product map JSON was invalid.",
               malformedArtifact: mapAnswer,
             })
-          : `The product map was semantically invalid: ${mapResult.reason ?? "unknown reason"}. Preserve the requested product scope, but repair the complete <borg-product-map> artifact so every Stage 1 rule is satisfied. Return only the corrected artifact.`;
+          : [
+              "PROJECT BLUEPRINT PRODUCT-MAP TARGETED REPAIR.",
+              "Preserve every valid product decision in the candidate below. Fix only the listed validation issues. Do not restart product discovery, change valid routes, or add unrelated scope.",
+              `Validation issues:\n- ${mapResult.issues.join("\n- ")}`,
+              `Current candidate:\n${JSON.stringify(mapResult.candidate ?? {}, null, 2)}`,
+              "Return only the corrected Product Map as <borg-product-map>...</borg-product-map>.",
+            ].join("\n\n");
         mapAnswer = (await this.deps.runAgent({
           ...mapRequest,
-          messages: syntaxFailure
-            ? [{ role: "system" as const, content: repairPrompt }]
-            : [
-                ...mapRequest.messages,
-                { role: "assistant" as const, content: mapAnswer },
-                { role: "user" as const, content: repairPrompt },
-              ],
+          maxRequestCharacters: 24_000,
+          messages: [{ role: "system" as const, content: repairPrompt }],
         })).answer;
         mapResult = parseProductMap(mapAnswer, blueprintFallback);
         if (mapResult.source === "repaired") {
-          appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
+          appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_NORMALIZED", {
             stage: "Product Map",
             tag: "borg-product-map",
             repair: mapResult.reason,
-            method: "deterministic_after_model_repair",
+            method: syntaxFailure ? "model_syntax_repair_then_normalize" : "targeted_semantic_repair_then_normalize",
+            attempt: repairAttempt,
           });
         }
       }
@@ -684,43 +700,65 @@ export class PlanningOrchestrator {
         let styleAnswer = (await this.deps.runAgent(styleRequest)).answer;
         let styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
         if (styleResult.source === "repaired") {
-          appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
+          appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_NORMALIZED", {
             stage: "Design System",
             tag: "borg-style-system",
             repair: styleResult.reason,
-            method: "deterministic",
+            method: "deterministic_compile",
           });
         }
-        if (styleResult.source === "fallback") {
-          const syntaxFailure = /Style system could not be parsed:/i.test(styleResult.reason ?? "");
+
+        for (let repairAttempt = 1; styleResult.source === "fallback" && repairAttempt <= 2; repairAttempt += 1) {
+          const syntaxFailure = /Style system could not be parsed:|augmentation could not be parsed:/i.test(styleResult.reason ?? "");
           appendTaskEvent(task.id, "BLUEPRINT_STYLE_SYSTEM_RETRY", {
             reason: styleResult.reason,
-            kind: syntaxFailure ? "syntax" : "semantic",
+            kind: syntaxFailure ? "syntax" : "augmentation",
+            attempt: repairAttempt,
+            maximum: 2,
           });
-          const repairPrompt = syntaxFailure
-            ? structuredJsonSyntaxRepairPrompt({
-                tag: "borg-style-system",
-                parserError: styleResult.reason ?? "Style-system JSON was invalid.",
-                malformedArtifact: styleAnswer,
-              })
-            : `The design system was semantically invalid: ${styleResult.reason ?? "unknown reason"}. Preserve the frozen Product Map and repair the <borg-style-system> so it has concrete semantic colors, numeric typography/spacing scales, layout constraints, responsive rules, accessibility rules, and anti-patterns. Return only the corrected artifact.`;
-          styleAnswer = (await this.deps.runAgent({
-            ...styleRequest,
-            messages: syntaxFailure
-              ? [{ role: "system" as const, content: repairPrompt }]
-              : [
-                  ...styleRequest.messages,
-                  { role: "assistant" as const, content: styleAnswer },
-                  { role: "user" as const, content: repairPrompt },
-                ],
-          })).answer;
-          styleResult = parseStyleSystem(styleAnswer, blueprintFallback.styles);
+          emit({
+            type: "stage.updated",
+            stage: "Design System",
+            status: "active",
+            message: syntaxFailure
+              ? `Repairing Design System JSON internally (${repairAttempt}/2).`
+              : `Filling only the missing Design System decisions (${repairAttempt}/2).`,
+          });
+
+          if (syntaxFailure) {
+            const repairPrompt = structuredJsonSyntaxRepairPrompt({
+              tag: repairAttempt === 1 ? "borg-style-system" : "borg-style-augmentation",
+              parserError: styleResult.reason ?? "Design-system JSON was invalid.",
+              malformedArtifact: styleAnswer,
+            });
+            styleAnswer = (await this.deps.runAgent({
+              ...styleRequest,
+              maxRequestCharacters: 20_000,
+              messages: [{ role: "system" as const, content: repairPrompt }],
+            })).answer;
+            styleResult = repairAttempt === 1
+              ? parseStyleSystem(styleAnswer, blueprintFallback.styles)
+              : applyStyleSystemAugmentation(styleResult.candidate, styleAnswer, blueprintFallback.styles);
+          } else {
+            const augmentationPrompt = styleSystemAugmentationPrompt({
+              candidate: styleResult.candidate,
+              issues: styleResult.issues.length ? styleResult.issues : [styleResult.reason ?? "Design System is incomplete."],
+            });
+            styleAnswer = (await this.deps.runAgent({
+              ...styleRequest,
+              maxRequestCharacters: 20_000,
+              messages: [{ role: "system" as const, content: augmentationPrompt }],
+            })).answer;
+            styleResult = applyStyleSystemAugmentation(styleResult.candidate, styleAnswer, blueprintFallback.styles);
+          }
+
           if (styleResult.source === "repaired") {
-            appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
+            appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_NORMALIZED", {
               stage: "Design System",
               tag: "borg-style-system",
               repair: styleResult.reason,
-              method: "deterministic_after_model_repair",
+              method: syntaxFailure ? "model_syntax_repair_then_compile" : "targeted_augmentation_then_compile",
+              attempt: repairAttempt,
             });
           }
         }

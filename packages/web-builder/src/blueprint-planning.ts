@@ -4,7 +4,7 @@ import type {
   ProjectStyleSystem,
   ProjectUserFlow,
 } from "../../core/src/project-domain.ts";
-import { parseStructuredJson } from "./structured-json.ts";
+import { parseStructuredJson, structuredJsonArtifactBody } from "./structured-json.ts";
 
 export type ProductMap = {
   siteGoal: string;
@@ -20,8 +20,23 @@ export type BlueprintValidation = {
   issues: string[];
 };
 
-const productMapMarker = /<borg-product-map>([\s\S]*?)<\/borg-product-map>/i;
-const styleMarker = /<borg-style-system>([\s\S]*?)<\/borg-style-system>/i;
+export type BlueprintArtifactSource = "model" | "repaired" | "fallback";
+
+export type ProductMapParseResult = {
+  map: ProductMap;
+  source: BlueprintArtifactSource;
+  reason: string | null;
+  issues: string[];
+  candidate: ProductMap | null;
+};
+
+export type StyleSystemParseResult = {
+  styles: ProjectStyleSystem;
+  source: BlueprintArtifactSource;
+  reason: string | null;
+  issues: string[];
+  candidate: ProjectStyleSystem | null;
+};
 
 function clean(value: unknown, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -40,6 +55,114 @@ function slug(value: string, index = 0) {
 function route(value: unknown, fallback: string) {
   const raw = clean(value, fallback);
   return raw.startsWith("/") ? raw : `/${raw}`;
+}
+
+function uniqueRules(values: string[]) {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = value.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function fillRules(
+  primary: string[],
+  fallback: string[],
+  minimum: number,
+  concrete?: (value: string) => boolean,
+  concreteMinimum = 0,
+) {
+  const merged = uniqueRules(primary);
+  const hasEnough = () => merged.length >= minimum
+    && (!concrete || merged.filter(concrete).length >= concreteMinimum);
+  for (const item of fallback) {
+    if (hasEnough()) break;
+    if (!merged.some((value) => value.trim().toLowerCase() === item.trim().toLowerCase())) merged.push(item);
+  }
+  return merged;
+}
+
+function styleCandidate(raw: Record<string, unknown>): ProjectStyleSystem {
+  return {
+    direction: clean(raw.direction),
+    colors: list(raw.colors),
+    typography: list(raw.typography),
+    spacing: list(raw.spacing),
+    radii: list(raw.radii),
+    shadows: list(raw.shadows),
+    layoutPrinciples: list(raw.layoutPrinciples),
+    motion: list(raw.motion),
+    responsive: list(raw.responsive),
+    accessibility: list(raw.accessibility),
+    avoid: list(raw.avoid),
+  };
+}
+
+function meaningfulStyleSignal(styles: ProjectStyleSystem) {
+  return [
+    styles.direction.trim(),
+    ...styles.colors,
+    ...styles.typography,
+    ...styles.spacing,
+    ...styles.radii,
+    ...styles.shadows,
+    ...styles.layoutPrinciples,
+    ...styles.motion,
+    ...styles.responsive,
+    ...styles.accessibility,
+    ...styles.avoid,
+  ].filter((value) => value.trim()).length;
+}
+
+export function compileStyleSystem(candidate: ProjectStyleSystem, fallback: ProjectStyleSystem): { styles: ProjectStyleSystem; changes: string[] } {
+  const changes: string[] = [];
+  const colorConcrete = (item: string) => /(?:#(?:[0-9a-f]{3}){1,2}\b|rgb\(|hsl\(|oklch\(|:\s*var\(|:\s*[a-z-]+-\d+)/i.test(item);
+  const numeric = (item: string) => /\d/.test(item);
+  const fill = (
+    key: keyof Omit<ProjectStyleSystem, "direction">,
+    minimum: number,
+    concrete?: (value: string) => boolean,
+    concreteMinimum = 0,
+  ) => {
+    const source = candidate[key] as string[];
+    const completed = fillRules(source, fallback[key] as string[], minimum, concrete, concreteMinimum);
+    if (completed.length !== source.length || completed.some((value, index) => value !== source[index])) {
+      changes.push(`completed ${String(key)} rules`);
+    }
+    return completed;
+  };
+
+  let direction = candidate.direction.trim();
+  if (direction.length < 40) {
+    direction = direction
+      ? `${direction.replace(/[.\s]+$/, "")}. ${fallback.direction}`
+      : fallback.direction;
+    changes.push("completed visual direction");
+  }
+
+  return {
+    styles: {
+      direction,
+      colors: fill("colors", 6, colorConcrete, 3),
+      typography: fill("typography", 5, numeric, 3),
+      spacing: fill("spacing", 5, numeric, 3),
+      radii: fill("radii", 2),
+      shadows: fill("shadows", 1),
+      layoutPrinciples: fill("layoutPrinciples", 3),
+      motion: fill("motion", 2),
+      responsive: fill("responsive", 3),
+      accessibility: fill("accessibility", 3),
+      avoid: fill("avoid", 5),
+    },
+    changes,
+  };
+}
+
+function repairReason(...parts: Array<string | null | undefined>) {
+  const values = parts.map((part) => part?.trim()).filter(Boolean) as string[];
+  return values.length ? values.join("; ") : null;
 }
 
 export function productMapPlanningPrompt(brief: string, feedback = "") {
@@ -71,7 +194,7 @@ Original brief:
 ${brief}${feedback.trim() ? `\n\nOperator blueprint feedback to incorporate:\n${feedback.trim()}` : ""}`;
 }
 
-export function parseProductMap(answer: string, fallback: ProjectPlan): { map: ProductMap; source: "model" | "repaired" | "fallback"; reason: string | null } {
+export function parseProductMap(answer: string, fallback: ProjectPlan): ProductMapParseResult {
   const fallbackMap: ProductMap = {
     siteGoal: fallback.siteGoal,
     audience: fallback.audience,
@@ -80,12 +203,20 @@ export function parseProductMap(answer: string, fallback: ProjectPlan): { map: P
     flows: fallback.flows ?? fallbackFlows(fallback.sitemap),
     backendRequired: fallback.backendRequired,
   };
-  const match = answer.match(productMapMarker);
-  if (!match) return { map: fallbackMap, source: "fallback", reason: "Product-map marker was missing." };
+  const artifact = structuredJsonArtifactBody(answer, "borg-product-map");
   try {
-    const parsedJson = parseStructuredJson<Record<string, unknown>>(match[1]);
+    const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
     const raw = parsedJson.value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Product Map JSON root must be an object.");
     const rawPages = Array.isArray(raw.sitemap) ? raw.sitemap.slice(0, 40) : [];
+    const productSignal = rawPages.length
+      + (clean(raw.siteGoal) ? 1 : 0)
+      + (clean(raw.audience) ? 1 : 0)
+      + (Array.isArray(raw.features) && raw.features.length ? 1 : 0);
+    if (productSignal < 2) {
+      const issues = ["Product Map did not contain enough usable product decisions to normalize safely."];
+      return { map: fallbackMap, source: "fallback", reason: issues[0], issues, candidate: null };
+    }
     const sitemap = rawPages.map((item, index) => {
       const value = item as Record<string, unknown>;
       const name = clean(value.name, `Page ${index + 1}`);
@@ -111,7 +242,7 @@ export function parseProductMap(answer: string, fallback: ProjectPlan): { map: P
         steps: list(value.steps).map((step, stepIndex) => slug(step, stepIndex)).filter((step) => pageIds.has(step)),
       };
     }).filter((flow) => flow.steps.length >= 2);
-    const map: ProductMap = {
+    const candidate: ProductMap = {
       siteGoal: clean(raw.siteGoal, fallbackMap.siteGoal),
       audience: clean(raw.audience, fallbackMap.audience),
       features: list(raw.features, fallbackMap.features),
@@ -119,12 +250,28 @@ export function parseProductMap(answer: string, fallback: ProjectPlan): { map: P
       flows: flows.length ? flows : fallbackFlows(sitemap.length ? sitemap : fallbackMap.sitemap),
       backendRequired: typeof raw.backendRequired === "boolean" ? raw.backendRequired : fallbackMap.backendRequired,
     };
-    const validation = validateProductMap(map);
-    return validation.valid
-      ? { map, source: parsedJson.source, reason: parsedJson.repairSummary }
-      : { map: fallbackMap, source: "fallback", reason: validation.issues.join(" ") };
+    const validation = validateProductMap(candidate);
+    const framingRepair = artifact.framed ? null : artifact.framingRepair;
+    const reason = repairReason(framingRepair, parsedJson.repairSummary);
+    if (!validation.valid) {
+      return {
+        map: fallbackMap,
+        source: "fallback",
+        reason: validation.issues.join(" "),
+        issues: validation.issues,
+        candidate,
+      };
+    }
+    return {
+      map: candidate,
+      source: reason ? "repaired" : "model",
+      reason,
+      issues: [],
+      candidate,
+    };
   } catch (error) {
-    return { map: fallbackMap, source: "fallback", reason: `Product map could not be parsed: ${error instanceof Error ? error.message : String(error)}` };
+    const message = `Product map could not be parsed: ${error instanceof Error ? error.message : String(error)}`;
+    return { map: fallbackMap, source: "fallback", reason: message, issues: [message], candidate: null };
   }
 }
 
@@ -198,31 +345,130 @@ ${JSON.stringify(input.designBrief, null, 2)}
 ${input.feedback?.trim() ? `\nOperator blueprint feedback:\n${input.feedback.trim()}` : ""}`;
 }
 
-export function parseStyleSystem(answer: string, fallback: ProjectStyleSystem): { styles: ProjectStyleSystem; source: "model" | "repaired" | "fallback"; reason: string | null } {
-  const match = answer.match(styleMarker);
-  if (!match) return { styles: fallback, source: "fallback", reason: "Style-system marker was missing." };
+export function parseStyleSystem(answer: string, fallback: ProjectStyleSystem): StyleSystemParseResult {
+  const artifact = structuredJsonArtifactBody(answer, "borg-style-system");
   try {
-    const parsedJson = parseStructuredJson<Record<string, unknown>>(match[1]);
-    const raw = parsedJson.value;
-    const styles: ProjectStyleSystem = {
-      direction: clean(raw.direction, fallback.direction),
-      colors: list(raw.colors, fallback.colors),
-      typography: list(raw.typography, fallback.typography),
-      spacing: list(raw.spacing, fallback.spacing),
-      radii: list(raw.radii, fallback.radii),
-      shadows: list(raw.shadows, fallback.shadows),
-      layoutPrinciples: list(raw.layoutPrinciples, fallback.layoutPrinciples),
-      motion: list(raw.motion, fallback.motion),
-      responsive: list(raw.responsive, fallback.responsive),
-      accessibility: list(raw.accessibility, fallback.accessibility),
-      avoid: list(raw.avoid, fallback.avoid),
+    const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
+    if (!parsedJson.value || typeof parsedJson.value !== "object" || Array.isArray(parsedJson.value)) {
+      throw new Error("Design System JSON root must be an object.");
+    }
+    const candidate = styleCandidate(parsedJson.value);
+    if (meaningfulStyleSignal(candidate) < 2) {
+      const issues = ["Design system did not contain enough usable design decisions to compile safely."];
+      return {
+        styles: fallback,
+        source: "fallback",
+        reason: issues[0],
+        issues,
+        candidate,
+      };
+    }
+
+    const compiled = compileStyleSystem(candidate, fallback);
+    const validation = validateStyleSystem(compiled.styles);
+    const reason = repairReason(
+      artifact.framed ? null : artifact.framingRepair,
+      parsedJson.repairSummary,
+      compiled.changes.length ? compiled.changes.join(", ") : null,
+    );
+    if (!validation.valid) {
+      return {
+        styles: fallback,
+        source: "fallback",
+        reason: validation.issues.join(" "),
+        issues: validation.issues,
+        candidate: compiled.styles,
+      };
+    }
+    return {
+      styles: compiled.styles,
+      source: reason ? "repaired" : "model",
+      reason,
+      issues: [],
+      candidate: compiled.styles,
     };
-    const validation = validateStyleSystem(styles);
-    return validation.valid
-      ? { styles, source: parsedJson.source, reason: parsedJson.repairSummary }
-      : { styles: fallback, source: "fallback", reason: validation.issues.join(" ") };
   } catch (error) {
-    return { styles: fallback, source: "fallback", reason: `Style system could not be parsed: ${error instanceof Error ? error.message : String(error)}` };
+    const message = `Style system could not be parsed: ${error instanceof Error ? error.message : String(error)}`;
+    return { styles: fallback, source: "fallback", reason: message, issues: [message], candidate: null };
+  }
+}
+
+export function styleSystemAugmentationPrompt(input: { candidate: ProjectStyleSystem | null; issues: string[] }) {
+  return [
+    "PROJECT BLUEPRINT DESIGN-SYSTEM AUGMENTATION.",
+    "The existing design direction is authoritative. Supply only the missing or weak design-system decisions listed below; do not redesign the site, replace valid decisions, or discuss implementation.",
+    `Missing or weak requirements:\n- ${input.issues.join("\n- ")}`,
+    `Current partial design system:\n${JSON.stringify(input.candidate ?? {}, null, 2)}`,
+    "Return only a JSON object containing fields that need augmentation. You may use these keys: direction, colors, typography, spacing, radii, shadows, layoutPrinciples, motion, responsive, accessibility, avoid.",
+    '<borg-style-augmentation>{"colors":["border: #..."],"typography":["..."]}</borg-style-augmentation>',
+  ].join("\n\n");
+}
+
+export function applyStyleSystemAugmentation(
+  current: ProjectStyleSystem | null,
+  answer: string,
+  fallback: ProjectStyleSystem,
+): StyleSystemParseResult {
+  const base = current ?? {
+    direction: "",
+    colors: [],
+    typography: [],
+    spacing: [],
+    radii: [],
+    shadows: [],
+    layoutPrinciples: [],
+    motion: [],
+    responsive: [],
+    accessibility: [],
+    avoid: [],
+  };
+  const artifact = structuredJsonArtifactBody(answer, "borg-style-augmentation");
+  try {
+    const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
+    const raw = parsedJson.value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Design-system augmentation JSON root must be an object.");
+    const merge = (key: keyof Omit<ProjectStyleSystem, "direction">) =>
+      uniqueRules([...(base[key] as string[]), ...list(raw[key])]);
+    const augmented: ProjectStyleSystem = {
+      direction: clean(raw.direction, base.direction),
+      colors: merge("colors"),
+      typography: merge("typography"),
+      spacing: merge("spacing"),
+      radii: merge("radii"),
+      shadows: merge("shadows"),
+      layoutPrinciples: merge("layoutPrinciples"),
+      motion: merge("motion"),
+      responsive: merge("responsive"),
+      accessibility: merge("accessibility"),
+      avoid: merge("avoid"),
+    };
+    const compiled = compileStyleSystem(augmented, fallback);
+    const validation = validateStyleSystem(compiled.styles);
+    const reason = repairReason(
+      "augmented missing design-system decisions",
+      artifact.framed ? null : artifact.framingRepair,
+      parsedJson.repairSummary,
+      compiled.changes.length ? compiled.changes.join(", ") : null,
+    );
+    if (!validation.valid) {
+      return {
+        styles: fallback,
+        source: "fallback",
+        reason: validation.issues.join(" "),
+        issues: validation.issues,
+        candidate: compiled.styles,
+      };
+    }
+    return {
+      styles: compiled.styles,
+      source: "repaired",
+      reason,
+      issues: [],
+      candidate: compiled.styles,
+    };
+  } catch (error) {
+    const message = `Design-system augmentation could not be parsed: ${error instanceof Error ? error.message : String(error)}`;
+    return { styles: fallback, source: "fallback", reason: message, issues: [message], candidate: base };
   }
 }
 

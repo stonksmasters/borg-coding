@@ -5,7 +5,7 @@ import { Check, Circle, TriangleAlert } from "lucide-react";
 export interface RunView {
   phase: string;
   slice: { index: number; total: number; title: string; outcome: string } | null;
-  stage: "planning" | "awaiting_approval" | "implementing" | "repairing" | "verifying" | "visual_review" | "reviewing" | "delivering" | "ready" | "blocked" | "paused";
+  stage: "planning" | "awaiting_approval" | "implementing" | "repairing" | "verifying" | "visual_review" | "reviewing" | "delivering" | "ready" | "recovery_required" | "blocked" | "paused";
   headline: string;
   detail: string;
   currentAction: string;
@@ -37,7 +37,7 @@ function stageIndex(stage: RunView["stage"]) {
   if (stage === "awaiting_approval") return 0;
   if (stage === "repairing") return 1;
   if (stage === "visual_review" || stage === "reviewing" || stage === "delivering") return 2;
-  if (stage === "blocked" || stage === "paused") return -1;
+  if (stage === "recovery_required" || stage === "blocked" || stage === "paused") return -1;
   return stageOrder.indexOf(stage as typeof stageOrder[number]);
 }
 

@@ -8,9 +8,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createTask } from "../packages/core/src/contracts.ts";
+import { createTask, WorkflowStateSchema } from "../packages/core/src/contracts.ts";
 import { SqliteTaskRepository } from "../packages/persistence/src/sqlite-task-repository.ts";
-import { approveProjectPlan, fallbackProjectPlan, persistProposedProjectPlan, prepareSlice } from "../packages/web-builder/src/slice-docs.ts";
+import { approveProjectPlan, fallbackProjectPlan, persistProposedProjectPlan, prepareSlice, readProjectPlan } from "../packages/web-builder/src/slice-docs.ts";
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const coreEntry = join(sourceRoot, "apps", "server", "src", "index.ts");
@@ -104,7 +104,7 @@ async function startFakeOllama(mode: FailureMode, implementerPrompts: string[]) 
         messages?: Array<{ role?: string; content?: string; tool_name?: string }>;
       };
       const messages = input.messages ?? [];
-      const system = messages.find((message) => message.role === "system")?.content ?? "";
+      const system = messages.filter((message) => message.role === "system").map((message) => message.content ?? "").join("\n\n");
       const user = [...messages].reverse().find((message) => message.role === "user")?.content ?? "";
       const hasReadResult = messages.some((message) => message.role === "tool" && message.tool_name === "worktree_read");
       const hasWriteResult = messages.some((message) => message.role === "tool" && message.tool_name === "worktree_write");
@@ -211,35 +211,91 @@ function createWebsiteRepository(runtimeRoot: string, taskId: string) {
   execFileSync("git", ["init", "-q"], { cwd: repositoryPath });
   execFileSync("git", ["add", "."], { cwd: repositoryPath });
   execFileSync("git", ["-c", "user.name=BORG Test", "-c", "user.email=borg@example.test", "commit", "-q", "-m", "approved plan"], { cwd: repositoryPath });
+  const approvedPlan = readProjectPlan(repositoryPath);
+  assert.ok(approvedPlan && approvedPlan.status === "approved", "fixture must persist an approved project plan");
   const baseCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryPath, encoding: "utf8" }).trim();
 
   const worktreePath = join(runtimeRoot, ".borg", "worktrees", taskId);
   mkdirSync(dirname(worktreePath), { recursive: true });
   execFileSync("git", ["worktree", "add", "-q", "-b", `borg-test-${taskId}`, worktreePath, baseCommit], { cwd: repositoryPath });
   assert.equal(existsSync(join(worktreePath, "src", "features")), false, "empty scaffold directories should not be present in a fresh Git worktree");
-  return { repositoryPath, worktreePath, baseCommit };
+  return { repositoryPath, worktreePath, baseCommit, approvedPlan };
 }
 
-async function seedApprovedTask(databasePath: string, input: { taskId: string; worktreePath: string; baseCommit: string }) {
+async function seedApprovedTask(databasePath: string, input: {
+  taskId: string;
+  worktreePath: string;
+  baseCommit: string;
+  approvedPlan: NonNullable<ReturnType<typeof readProjectPlan>>;
+}) {
   const repository = new SqliteTaskRepository(databasePath);
   const now = new Date().toISOString();
-  repository.saveTask({
+  const task = {
     ...createTask({ id: input.taskId, projectId: "recovery-project", request: "Implement the approved first frontend slice." }),
-    state: "IMPLEMENTING",
+    state: "IMPLEMENTING" as const,
     disciplines: ["general"],
     updatedAt: now,
-  });
-  repository.saveApproval({
+  };
+  const approval = {
     id: `approval-${input.taskId}`,
     taskId: input.taskId,
-    status: "APPROVED",
+    status: "APPROVED" as const,
     requestedAt: now,
     decidedAt: now,
     worktreePath: input.worktreePath,
     baseCommit: input.baseCommit,
+  };
+  const firstSlice = input.approvedPlan.slices[0];
+  const state = WorkflowStateSchema.parse({
+    projectId: task.projectId,
+    taskId: task.id,
+    loop: "slice",
+    phase: "frontend",
+    status: "running",
+    nextAction: "implement",
+    planApprovalId: "plan-task",
+    planApproved: true,
+    projectPlan: input.approvedPlan,
+    planRevisionResumeIndex: null,
+    sliceIndex: 0,
+    sliceTotal: input.approvedPlan.slices.length,
+    sliceTitle: firstSlice?.title ?? "Visual foundation and shared primitives",
+    feedback: [],
+    handoff: null,
+    pendingCommand: null,
+    lastConsumedCommandId: null,
+    verification: {
+      status: "pending",
+      attempt: 0,
+      profile: null,
+      summary: "",
+      browserPassed: null,
+      specialistPassed: null,
+      resultSha256: null,
+      completedAt: null,
+    },
+    recovery: {
+      status: "inactive",
+      category: null,
+      previousTaskState: null,
+      checkpointId: null,
+      resumeAction: "none",
+      reason: "",
+      updatedAt: null,
+    },
+    attemptPhase: "implementation",
+    designRefinementAttempt: 0,
+    repairAttempt: 0,
+    recoveryCategory: null,
+    detail: "Executing the approved first frontend slice.",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
   });
-  repository.appendEvent({ id: `slice-${input.taskId}`, taskId: input.taskId, type: "FRONTEND_SLICE_SELECTED", payload: { action: "initial" }, occurredAt: now });
-  repository.appendEvent({ id: `plan-${input.taskId}`, taskId: input.taskId, type: "MODEL_RESPONSE_COMPLETED", payload: { answer: "Use the approved persisted phase plan; do not re-plan." }, occurredAt: now });
+  repository.commitWorkflowMutation({ state, task, approval, events: [
+    { id: `slice-${input.taskId}`, taskId: input.taskId, type: "FRONTEND_SLICE_SELECTED", payload: { action: "initial" }, occurredAt: now },
+    { id: `plan-${input.taskId}`, taskId: input.taskId, type: "MODEL_RESPONSE_COMPLETED", payload: { answer: "Use the approved persisted phase plan; do not re-plan." }, occurredAt: now },
+  ] });
   repository.close();
 }
 
@@ -268,7 +324,12 @@ async function runRuntimeCase(mode: FailureMode) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ repositoryPath: fixture.repositoryPath, documents: [] }),
     });
-    await seedApprovedTask(databasePath, { taskId, worktreePath: fixture.worktreePath, baseCommit: fixture.baseCommit });
+    await seedApprovedTask(databasePath, {
+      taskId,
+      worktreePath: fixture.worktreePath,
+      baseCommit: fixture.baseCommit,
+      approvedPlan: fixture.approvedPlan,
+    });
     const events = await ndjsonRequest(`${coreUrl}/api/tasks/${taskId}/execute`, { method: "POST" });
     return { runtimeRoot, databasePath, prompts, events, fixture, taskId, core, ollama };
   } catch (error) {

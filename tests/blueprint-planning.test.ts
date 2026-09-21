@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyBlueprintFoundation,
+  applyStyleSystemAugmentation,
   parseProductMap,
   parseStyleSystem,
   validateBlueprintCompletion,
@@ -33,6 +34,26 @@ test("product-map stage creates durable routes and user journeys before componen
   assert.equal(result.map.sitemap.length, 3);
   assert.deepEqual(result.map.sitemap.map((page) => page.componentIds), [[], [], []]);
   assert.deepEqual(result.map.flows[0]?.steps, ["home", "browse", "product"]);
+  assert.equal(validateProductMap(result.map).valid, true);
+});
+
+test("product-map stage accepts valid raw JSON when the framing marker is missing", () => {
+  const fallback = fallbackProjectPlan("Build a premium expedition website", "portfolio");
+  const answer = JSON.stringify({
+    siteGoal: "Guide travelers toward premium expeditions",
+    audience: "Design-conscious adventure travelers",
+    features: ["Expedition discovery", "Editorial journal", "Inquiry"],
+    sitemap: [
+      { id: "home", name: "Home", route: "/", purpose: "Introduce Driftline", sections: ["Hero", "Selected expeditions"], acceptanceCriteria: ["Primary journeys are visible"] },
+      { id: "expeditions", name: "Expeditions", route: "/expeditions", purpose: "Browse trips", sections: ["Filters", "Results"], acceptanceCriteria: ["Travelers can discover trips"] },
+    ],
+    flows: [{ id: "discover", name: "Discover", purpose: "Move from brand entry to trip discovery", steps: ["home", "expeditions"] }],
+    backendRequired: false,
+  });
+  const result = parseProductMap(answer, fallback);
+  assert.equal(result.source, "repaired");
+  assert.match(result.reason ?? "", /without <borg-product-map> framing/i);
+  assert.equal(result.map.sitemap.length, 2);
   assert.equal(validateProductMap(result.map).valid, true);
 });
 
@@ -78,6 +99,40 @@ test("style-system stage rejects vague prose and accepts implementation-grade sc
   assert.equal(parsed.source, "fallback");
   assert.ok(parsed.reason?.includes("concrete") || parsed.reason?.includes("needs at least"));
   assert.equal(validateStyleSystem(parsed.styles).valid, true);
+});
+
+test("style-system compiler completes an under-specified but meaningful model direction", () => {
+  const fallback = fallbackProjectPlan("Build a premium expedition portfolio", "portfolio").styles;
+  const partial = JSON.stringify({
+    direction: "Cinematic expedition editorial with dark mineral surfaces and warm field-note accents",
+    colors: ["canvas: #10110F", "accent: #C9793A"],
+    typography: ["display: 64px/66px weight 600"],
+    spacing: ["section-gap: 96px"],
+    layoutPrinciples: ["Use expansive photography against narrow editorial text columns"],
+    avoid: ["generic card grids"],
+  });
+  const parsed = parseStyleSystem(partial, fallback);
+  assert.equal(parsed.source, "repaired");
+  assert.equal(validateStyleSystem(parsed.styles).valid, true);
+  assert.equal(parsed.styles.colors[0], "canvas: #10110F");
+  assert.ok(parsed.styles.colors.length >= 6);
+  assert.ok(parsed.styles.typography.length >= 5);
+  assert.match(parsed.reason ?? "", /completed .*rules|without <borg-style-system> framing/i);
+});
+
+test("targeted design-system augmentation merges only missing decisions before compilation", () => {
+  const fallback = fallbackProjectPlan("Build a premium expedition portfolio", "portfolio").styles;
+  const initial = parseStyleSystem('{"direction":"Cinematic expedition editorial"}', fallback);
+  assert.equal(initial.source, "fallback");
+  const augmented = applyStyleSystemAugmentation(
+    initial.candidate,
+    '<borg-style-augmentation>{"colors":["canvas: #10110F","accent: #C9793A"],"typography":["display: 64px/66px weight 600"],"layoutPrinciples":["Expansive photographic fields with narrow reading columns"]}</borg-style-augmentation>',
+    fallback,
+  );
+  assert.equal(augmented.source, "repaired");
+  assert.equal(validateStyleSystem(augmented.styles).valid, true);
+  assert.ok(augmented.styles.colors.includes("accent: #C9793A"));
+  assert.match(augmented.reason ?? "", /augmented missing design-system decisions/i);
 });
 
 test("style-system parser deterministically repairs malformed JSON without weakening style validation", () => {

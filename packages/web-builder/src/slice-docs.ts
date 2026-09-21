@@ -4,7 +4,7 @@ import type { WorkflowState } from "../../core/src/contracts.ts";
 import type { ProjectComponent, ProjectPage, ProjectPlan, ProjectSlice, ProjectStyleSystem } from "../../core/src/project-domain.ts";
 import { fallbackFlows } from "./blueprint-planning.ts";
 import { initializeProjectModel } from "./project-model.ts";
-import { parseStructuredJson } from "./structured-json.ts";
+import { parseStructuredJson, structuredJsonArtifactBody } from "./structured-json.ts";
 
 export type SliceAction = "initial" | "revise" | "advance";
 export type { ProjectPlan, ProjectSlice, ProjectStyleSystem };
@@ -613,11 +613,11 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
     validation: candidateValidation,
     retryRecommended: complexApplicationBrief(brief),
   });
-  const match = answer.match(planMarker);
-  if (!match) return selectFallback("Planner response did not contain a <borg-project-plan> block.");
+  const artifact = structuredJsonArtifactBody(answer, "borg-project-plan");
   try {
-    const parsedJson = parseStructuredJson<Record<string, unknown>>(match[1]);
+    const parsedJson = parseStructuredJson<Record<string, unknown>>(artifact.body);
     const raw = parsedJson.value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Project Plan JSON root must be an object.");
     const rawSlices = Array.isArray(raw.slices) ? raw.slices.slice(0, 12) : [];
     const slices = rawSlices.map((item, index) => {
       const value = item as Record<string, unknown>;
@@ -723,11 +723,13 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
     };
     const validation = validateProjectPlanCoverage(candidate, brief);
     if (!validation.valid) return selectFallback(validation.issues.join(" "), validation);
+    const framingRepair = artifact.framed ? null : artifact.framingRepair;
+    const repairReason = [framingRepair, parsedJson.repairSummary].filter(Boolean).join("; ") || null;
     return {
       plan: candidate,
-      source: parsedJson.source,
+      source: repairReason ? "repaired" : "model",
       fallbackReason: null,
-      repairReason: parsedJson.repairSummary,
+      repairReason,
       validation,
       retryRecommended: false,
     };

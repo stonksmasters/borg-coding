@@ -115,6 +115,15 @@ test("structured model plans replace the fixed slice list", () => {
   assert.match(plan.styles.direction, /Editorial dark/);
 });
 
+test("project-plan parser accepts raw JSON without the borg marker", () => {
+  const brief = "Build a premium expedition portfolio with Home, Expeditions, Journal, About, and Inquiry pages.";
+  const source = fallbackProjectPlan(brief, "portfolio");
+  const result = parseProjectPlanResult(JSON.stringify(source), brief, "portfolio");
+  assert.equal(result.source, "repaired");
+  assert.equal(result.validation.valid, true);
+  assert.match(result.repairReason ?? "", /without <borg-project-plan> framing/i);
+});
+
 test("project-plan parser deterministically repairs malformed JSON before semantic coverage", () => {
   const brief = "Build a premium expedition portfolio with Home, Expeditions, Journal, About, and Inquiry pages.";
   const source = fallbackProjectPlan(brief, "portfolio");

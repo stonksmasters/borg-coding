@@ -395,6 +395,9 @@ test("workflow status exposes plan repair as the recovery action", () => {
     occurredAt: new Date().toISOString(),
   }];
   const status = deriveWorkflowStatus(recovered, events as never[], null, null);
+  assert.equal(status.run.stage, "recovery_required");
+  assert.equal(status.run.headline, "Recovery required");
+  assert.equal(status.run.currentAction, "recovery required");
   assert.equal(status.run.blocker?.title, "Plan repair required");
   assert.match(status.run.blocker?.action ?? "", /Replan/i);
   assert.equal(status.run.verification.visualStatus, "plan_repair_required");

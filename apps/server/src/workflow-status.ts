@@ -15,6 +15,7 @@ export type RunStage =
   | "reviewing"
   | "delivering"
   | "ready"
+  | "recovery_required"
   | "blocked"
   | "paused";
 
@@ -65,7 +66,8 @@ function activityDetail(event: TaskEvent) {
 }
 
 function stageFor(task: Task, events: TaskEvent[], slice: SliceState | null, workflow: WorkflowState | null): RunStage {
-  if (["BLOCKED", "FAILED", "RECOVERY_REQUIRED"].includes(task.state)) return "blocked";
+  if (task.state === "RECOVERY_REQUIRED") return "recovery_required";
+  if (["BLOCKED", "FAILED"].includes(task.state)) return "blocked";
   if (["PAUSED", "CANCELLED"].includes(task.state)) return "paused";
   if (task.state === "AWAITING_APPROVAL") return "awaiting_approval";
   if (task.state === "IMPLEMENTING") {
@@ -99,6 +101,7 @@ function headlineFor(stage: RunStage, slice: SliceState | null) {
     case "reviewing": return `Reviewing ${subject}`;
     case "delivering": return `Saving ${subject}`;
     case "ready": return slice?.status === "frontend_complete" ? "Frontend complete" : `${subject} is verified`;
+    case "recovery_required": return "Recovery required";
     case "blocked": return "Build needs attention";
     case "paused": return "Build paused";
   }
@@ -189,7 +192,7 @@ export function deriveWorkflowStatus(
       }
     : null;
   const completed = steps.filter((type) => events.some((event) => event.type === type));
-  const terminal = ["COMPLETE", "BLOCKED", "FAILED", "DELIVERY_READY"].includes(task.state);
+  const terminal = ["COMPLETE", "BLOCKED", "FAILED", "RECOVERY_REQUIRED", "DELIVERY_READY"].includes(task.state);
   const fallbackNextAction = task.state === "AWAITING_APPROVAL" ? "Review and approve the frontend plan."
     : task.state === "BLOCKED" || task.state === "FAILED" || task.state === "RECOVERY_REQUIRED" ? "Inspect the blocking evidence and continue from a safe checkpoint."
     : task.state === "DELIVERY_READY" ? "Save the verified slice checkpoint."
