@@ -85,8 +85,8 @@ export class QualityGateService {
     attempt: number;
     emit: QualityEventSink;
     appendTaskEvent: QualityTaskEventSink;
-    onVisionRequestBody?: (body: string) => void;
-    onDesignRequestBody?: (body: string) => void;
+    onVisionRequestBody?: (body: string, model: string) => void;
+    onDesignRequestBody?: (body: string, model: string) => void;
   }): Promise<VisualQualityDecision> {
     let visionReview: VisionReviewResult | null = null;
 
@@ -103,7 +103,7 @@ export class QualityGateService {
         request: input.request,
         worktreePath: input.worktreePath,
         browserEvidence: input.browserEvidence,
-        onRequestBody: input.onVisionRequestBody,
+        onRequestBody: input.onVisionRequestBody ? (body) => input.onVisionRequestBody!(body, status.model) : undefined,
       });
       const visionEvent = visionReview.status === "unavailable" ? "VISION_REVIEW_UNAVAILABLE"
         : visionReview.status === "failed" ? "VISION_REVIEW_FAILED"
@@ -175,7 +175,7 @@ export class QualityGateService {
           route: page.route,
         })) ?? [],
       },
-      onRequestBody: input.onDesignRequestBody,
+      onRequestBody: input.onDesignRequestBody ? (body) => input.onDesignRequestBody!(body, policy.model) : undefined,
     });
     input.appendTaskEvent(
       designReview.status === "pass" || designReview.status === "repair"
