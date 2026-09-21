@@ -568,6 +568,8 @@ function createCheckpointSnapshot(
     workflowVersion: durableWorkflow?.version ?? null,
     verification: durableWorkflow?.verification,
     recovery: durableWorkflow?.recovery,
+    attemptPhase: durableWorkflow?.attemptPhase ?? null,
+    designRefinementAttempt: durableWorkflow?.designRefinementAttempt ?? 0,
   });
   tasks.saveCheckpoint(checkpoint);
   appendTaskEvent(task.id, "TASK_CHECKPOINT_CREATED", {
@@ -578,6 +580,8 @@ function createCheckpointSnapshot(
     workflowVersion: checkpoint.workflowVersion,
     verificationStatus: checkpoint.verification.status,
     recoveryStatus: checkpoint.recovery.status,
+    attemptPhase: checkpoint.attemptPhase,
+    designRefinementAttempt: checkpoint.designRefinementAttempt,
   });
   return checkpoint;
 }
