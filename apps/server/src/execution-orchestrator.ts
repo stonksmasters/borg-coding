@@ -72,6 +72,8 @@ import { runFreshReview } from "./fresh-review.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
 import { VerificationService } from "./verification-service.ts";
+import { QualityGateService } from "./quality-gate-service.ts";
+import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
 import { repairGroundingSnapshot, sourceMutationSnapshot } from "./execution-grounding.ts";
 
 export type ExecutionEventSink = (event: Record<string, unknown>) => void;
@@ -95,10 +97,10 @@ export type ExecutionOrchestratorDependencies = {
   workflow: WorkflowEngine;
   tools: ToolBroker;
   teamPolicies: TeamPolicyService;
-  vision: VisionReviewService;
-  visualDirector: VisualDirectorService;
   access: AccessController;
   verificationService: VerificationService;
+  qualityGateService: QualityGateService;
+  projectPlanRevisionService: ProjectPlanRevisionService;
   ollamaUrl: string;
   model: string;
   maxRepairAttempts: number;
@@ -144,10 +146,10 @@ export class ExecutionOrchestrator {
       workflow,
       tools,
       teamPolicies,
-      vision,
-      visualDirector,
       access,
       verificationService,
+      qualityGateService,
+      projectPlanRevisionService,
       ollamaUrl,
       model,
       maxRepairAttempts,
