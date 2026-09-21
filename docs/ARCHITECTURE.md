@@ -1,6 +1,6 @@
 # BORG Code Architecture
 
-Last updated: 2026-09-20
+Last updated: 2026-09-21
 
 ## Overview
 
@@ -31,6 +31,23 @@ The canonical hierarchy is:
 ### Project
 
 The project is the durable product-level container. It owns the original brief, approved goals, audience, design direction, page inventory, feature inventory, project decisions, and current workflow state.
+
+### Project Blueprint
+
+For website projects, the durable project plan is produced as a staged blueprint before implementation:
+
+    Product Map
+      -> Design Direction
+      -> Global Design System
+      -> Component Architecture
+      -> Build Roadmap
+      -> Operator Approval
+
+The stages are ordered dependencies, not parallel suggestions. Sitemap/routes/user journeys are resolved before visual-system planning; component architecture is derived from the frozen product map and design system; implementation slices are derived last. The first frontend slice establishes shared visual primitives before product-specific UI.
+
+These planning stages may use multiple model calls, but they do not create parallel workflow authority. Only the final validated blueprint is submitted to `WorkflowEngine.setProjectPlan()`. Pre-approval feedback rejects the proposed plan and starts another outer project-planning pass without authorizing source mutation.
+
+The UI reads the authoritative blueprint through the workflow-status surface. Generated `.localcode/build/plan.md`, `site-map.md`, `styles.md`, and related files remain projections for agent/human context.
 
 ### Phase
 

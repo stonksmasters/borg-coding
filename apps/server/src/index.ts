@@ -1127,13 +1127,15 @@ const server = createServer((request, response) => {
     const events = tasks.listEvents(taskId);
     const approval = tasks.findApproval(taskId);
     const root = approval?.worktreePath ?? taskProjectRepository(taskId);
-    const projectWorkflow = workflow.get(task.projectId);
-    const ownedWorkflow = projectWorkflow?.taskId === task.id ? projectWorkflow : null;
-    const plan = projectPlanFromWorkflow(ownedWorkflow, root);
+    const authorityProjectId = taskWorkflowAuthorityProjectId(taskId) ?? task.projectId;
+    const authorityWorkflow = workflow.get(authorityProjectId);
+    const ownedWorkflow = authorityWorkflow?.taskId === task.id ? authorityWorkflow : null;
+    const plan = projectPlanFromWorkflow(authorityWorkflow, root);
     const slice = sliceStateFromWorkflow(ownedWorkflow, plan, root);
     const baselineCandidates = pendingVisualBaselineCandidates(taskId);
     return send(response, 200, {
       status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length }),
+      blueprint: authorityWorkflow?.projectPlan ?? null,
       baselineCandidates,
     });
   }

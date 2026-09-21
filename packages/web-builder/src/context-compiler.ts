@@ -270,6 +270,7 @@ function compileContextPack(input: InternalInput): CompiledContext {
     audience: plan.audience,
     pages: plan.pages,
     features: plan.features,
+    flows: plan.flows ?? [],
     visualDirection: plan.visualDirection,
     acceptanceCriteria: plan.acceptanceCriteria,
     backendRequired: plan.backendRequired,

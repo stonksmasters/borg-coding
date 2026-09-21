@@ -1,6 +1,6 @@
 # BORG Code Roadmap
 
-Last updated: 2026-09-20
+Last updated: 2026-09-21
 
 This roadmap is product-oriented. Historical alpha documents describe implementation milestones; this file describes where BORG is going and what major capabilities are complete, active, or later.
 
@@ -62,10 +62,12 @@ Current repository capabilities include:
 
 - website project creation;
 - original brief persistence;
-- tailored project planning;
-- page and feature inventory in the plan;
-- visual direction;
-- ordered frontend slices;
+- staged Project Blueprint planning;
+- sitemap, routes, ordered page sections, and user journeys;
+- Design Director art direction informed by the product map;
+- implementation-grade global design-system planning before component architecture;
+- component inventory derived from product structure and shared visual primitives;
+- foundation-first ordered frontend slices;
 - per-slice acceptance criteria;
 - frontend completion gates;
 - backend-required classification;

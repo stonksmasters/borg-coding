@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileS
 import { join, resolve } from "node:path";
 import type { WorkflowState } from "../../core/src/contracts.ts";
 import type { ProjectComponent, ProjectPage, ProjectPlan, ProjectSlice, ProjectStyleSystem } from "../../core/src/project-domain.ts";
+import { fallbackFlows } from "./blueprint-planning.ts";
 import { initializeProjectModel } from "./project-model.ts";
 
 export type SliceAction = "initial" | "revise" | "advance";
@@ -288,20 +289,27 @@ function complexApplicationBrief(brief: string) {
 function fallbackStyles(commerce: boolean): ProjectStyleSystem {
   return {
     direction: commerce
-      ? "Premium mobile-first commerce with strong product imagery, disciplined hierarchy, and trustworthy transaction surfaces."
-      : "A coherent premium visual system derived from the approved brief and Design Director direction.",
+      ? "Premium mobile-first commerce with strong product imagery, disciplined editorial hierarchy, dense discovery where useful, and calm trustworthy transaction surfaces."
+      : "A premium, restrained product interface with editorial hierarchy, deliberate whitespace, strong type contrast, and reusable visual primitives that create coherence before feature components are introduced.",
     colors: commerce
-      ? ["Use a restrained neutral foundation.", "Reserve accent color for interaction, status, and merchandising emphasis.", "Maintain WCAG-aware foreground/background contrast."]
-      : ["Define semantic background, surface, text, muted, border, accent, success, warning, and danger roles.", "Avoid arbitrary one-off colors outside the shared token system."],
-    typography: ["Define display, heading, body, label, and code roles.", "Use a deliberate type scale and line-height rhythm.", "Preserve readable measure and hierarchy on mobile."],
-    spacing: ["Use a consistent spacing scale for page gutters, sections, stacks, and component internals.", "Prefer shared spacing tokens over isolated pixel values."],
-    radii: ["Define a small radius scale and use it consistently by component role."],
-    shadows: ["Use elevation sparingly and consistently; avoid random decorative shadows."],
-    layoutPrinciples: ["Use a shared content width and page gutter system.", "Vary section composition intentionally instead of repeating identical centered card grids.", "Keep alignment and visual rhythm consistent across routes."],
-    motion: ["Motion should reinforce hierarchy or state change.", "Respect reduced-motion preferences.", "Avoid decorative motion that competes with content."],
-    responsive: ["Recompose important layouts for narrow screens rather than merely shrinking desktop.", "Keep touch targets, spacing, and navigation intentional at mobile widths."],
-    accessibility: ["Maintain visible focus states.", "Do not rely on color alone for meaning.", "Keep text and interactive contrast accessible."],
-    avoid: ["Centered-everything layouts", "Repetitive generic card grids", "Arbitrary gradients", "Excessive pill styling", "One-off style values that bypass shared tokens"],
+      ? ["canvas: #0B0D10", "surface: #12161C", "surface-raised: #181E27", "text-primary: #F5F7FA", "text-secondary: #98A2B3", "border-subtle: #2A313C", "accent: #B7FF5A", "danger: #FF6B6B", "success: #66D9A3"]
+      : ["canvas: #0D1015", "surface: #141922", "surface-raised: #1B2230", "text-primary: #F4F7FB", "text-secondary: #9AA6B6", "border-subtle: #2B3442", "accent: #A7FF4F", "danger: #FF6B72", "success: #64D8A3"],
+    typography: [
+      "display-xl: 48px/52px, weight 650, tracking -0.035em",
+      "heading-lg: 32px/38px, weight 620, tracking -0.025em",
+      "heading-md: 24px/30px, weight 600, tracking -0.018em",
+      "body-lg: 17px/28px, weight 400",
+      "body: 15px/24px, weight 400",
+      "label: 12px/16px, weight 600, tracking 0.02em",
+    ],
+    spacing: ["space-1: 4px", "space-2: 8px", "space-3: 12px", "space-4: 16px", "space-6: 24px", "space-8: 32px", "space-12: 48px", "space-16: 64px", "section-rhythm: 72-112px desktop / 48-72px mobile"],
+    radii: ["radius-sm: 6px", "radius-md: 10px", "radius-lg: 16px"],
+    shadows: ["elevation-1: 0 1px 2px rgba(0,0,0,.18)", "elevation-2: 0 12px 32px rgba(0,0,0,.22)"],
+    layoutPrinciples: ["content-max: 1440px with 40px desktop gutters", "reading-max: 720px for long-form copy", "Use a 12-column desktop grid and composition-specific spans rather than repeated equal cards.", "Preserve strong alignment anchors while varying section density and visual weight."],
+    motion: ["interactive: 160ms cubic-bezier(.2,.8,.2,1)", "enter: 240ms cubic-bezier(.16,1,.3,1)", "Reduced motion removes transforms and nonessential entrance animation while preserving state feedback."],
+    responsive: ["desktop >= 1200px: full navigation and multi-column compositions", "tablet 768-1199px: reduce grid spans and gutters to 24px", "mobile < 768px: 16px gutters and intentional recomposition rather than mechanical stacking", "Touch targets remain at least 44px and primary actions stay reachable without horizontal overflow."],
+    accessibility: ["Maintain visible keyboard focus with a dedicated accent focus ring.", "Target WCAG AA contrast for body text and interactive controls.", "Do not rely on color alone for status or validation meaning.", "Preserve semantic heading order and reduced-motion preference."],
+    avoid: ["Centered-everything layouts", "Repetitive generic card grids", "Arbitrary gradients", "Excessive pill styling", "One-off color/spacing/radius values that bypass shared tokens", "Mobile layouts that merely stack desktop without reprioritizing content"],
   };
 }
 function fallbackSitemap(brief: string, commerce: boolean, dashboard: boolean, contentHeavy: boolean, seller: boolean, admin: boolean, accounts: boolean): ProjectSitemapPage[] {
@@ -416,7 +424,8 @@ export function readPersistedDesignBrief(root: string): Record<string, unknown> 
   } catch { return null; }
 }
 function planMarkdown(plan: ProjectPlan) {
-  return `# Approved frontend phase plan\n\nStatus: **${plan.status.replaceAll("_", " ")}** · Revision ${plan.revision}\n\n## Site goal\n\n${plan.siteGoal}\n\n## Audience\n\n${plan.audience}\n\n## Visual direction\n\n${plan.visualDirection}\n\n## Sitemap\n\n${plan.sitemap.map((page) => `- **${page.name}** \`${page.route}\` — ${page.purpose}\n  - Sections: ${page.sections.join("; ")}`).join("\n")}\n\n## Planned components\n\n${plan.components.map((component) => `- **${component.name}** [${component.kind}] — ${component.purpose}\n  - Used by: ${component.usedBy.join(", ") || "shared/global"}`).join("\n")}\n\n## Global style system\n\n${plan.styles.direction}\n\n- Colors: ${plan.styles.colors.join("; ")}\n- Typography: ${plan.styles.typography.join("; ")}\n- Spacing: ${plan.styles.spacing.join("; ")}\n- Radii: ${plan.styles.radii.join("; ")}\n- Shadows: ${plan.styles.shadows.join("; ")}\n- Layout: ${plan.styles.layoutPrinciples.join("; ")}\n- Motion: ${plan.styles.motion.join("; ")}\n- Responsive: ${plan.styles.responsive.join("; ")}\n- Accessibility: ${plan.styles.accessibility.join("; ")}\n- Avoid: ${plan.styles.avoid.join("; ")}\n\n## Features\n\n${plan.features.map((item) => `- ${item}`).join("\n") || "- Content and navigation"}\n\n## Frontend slices\n\n${plan.slices.map((slice, index) => `${index + 1}. **${slice.title}** — ${slice.outcome}\n   - Scope: ${slice.scope.join("; ") || "As defined by the approved brief"}\n   - Acceptance: ${slice.acceptanceCriteria.join("; ") || "Working preview and relevant verification"}`).join("\n")}\n\n## Frontend completion gate\n\n${plan.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\n## Backend phase\n\n${plan.backendRequired ? "Required after frontend approval because the brief needs server features, stored data, accounts, or integrations." : "Not required by the approved brief. The site may be marked complete after the frontend completion gate passes."}\n\n<borg-project-plan>${JSON.stringify(plan)}</borg-project-plan>\n`;
+  const flows = plan.flows ?? [];
+  return `# Approved frontend phase plan\n\nStatus: **${plan.status.replaceAll("_", " ")}** · Revision ${plan.revision}\n\n## Site goal\n\n${plan.siteGoal}\n\n## Audience\n\n${plan.audience}\n\n## Visual direction\n\n${plan.visualDirection}\n\n## Sitemap\n\n${plan.sitemap.map((page) => `- **${page.name}** \`${page.route}\` — ${page.purpose}\n  - Sections: ${page.sections.join("; ")}`).join("\n")}\n\n## User journeys\n\n${flows.length ? flows.map((flow) => `- **${flow.name}** — ${flow.purpose}\n  - Path: ${flow.steps.join(" → ")}`).join("\n") : "- No multi-page journey required."}\n\n## Planned components\n\n${plan.components.map((component) => `- **${component.name}** [${component.kind}] — ${component.purpose}\n  - Used by: ${component.usedBy.join(", ") || "shared/global"}`).join("\n")}\n\n## Global style system\n\n${plan.styles.direction}\n\n- Colors: ${plan.styles.colors.join("; ")}\n- Typography: ${plan.styles.typography.join("; ")}\n- Spacing: ${plan.styles.spacing.join("; ")}\n- Radii: ${plan.styles.radii.join("; ")}\n- Shadows: ${plan.styles.shadows.join("; ")}\n- Layout: ${plan.styles.layoutPrinciples.join("; ")}\n- Motion: ${plan.styles.motion.join("; ")}\n- Responsive: ${plan.styles.responsive.join("; ")}\n- Accessibility: ${plan.styles.accessibility.join("; ")}\n- Avoid: ${plan.styles.avoid.join("; ")}\n\n## Features\n\n${plan.features.map((item) => `- ${item}`).join("\n") || "- Content and navigation"}\n\n## Frontend slices\n\n${plan.slices.map((slice, index) => `${index + 1}. **${slice.title}** — ${slice.outcome}\n   - Scope: ${slice.scope.join("; ") || "As defined by the approved brief"}\n   - Acceptance: ${slice.acceptanceCriteria.join("; ") || "Working preview and relevant verification"}`).join("\n")}\n\n## Frontend completion gate\n\n${plan.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\n## Backend phase\n\n${plan.backendRequired ? "Required after frontend approval because the brief needs server features, stored data, accounts, or integrations." : "Not required by the approved brief. The site may be marked complete after the frontend completion gate passes."}\n\n<borg-project-plan>${JSON.stringify(plan)}</borg-project-plan>\n`;
 }
 function stateFromPlan(plan: ProjectPlan, brief: string, status: SliceState["status"], taskId: string | null, previous?: SliceState | null): SliceState {
   const current = Math.max(0, Math.min(previous?.current ?? 0, Math.max(0, plan.slices.length - 1)));
@@ -465,6 +474,7 @@ export function readProjectPlan(root: string): ProjectPlan | null {
       ...(value as ProjectPlan),
       pages: pages.length ? pages : sitemap.map((page) => page.name),
       sitemap,
+      flows: Array.isArray(value.flows) ? value.flows : fallbackFlows(sitemap),
       components,
       styles: value.styles ?? fallbackStyles(false),
     };
@@ -575,6 +585,7 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
     pages,
     features,
     sitemap,
+    flows: fallbackFlows(sitemap),
     components,
     styles: fallbackStyles(commerce),
     visualDirection: commerce ? "Premium, mobile-first commercial product design with immersive discovery and trustworthy purchase flows." : "Follow the approved brief and Design Director direction; establish a coherent reusable visual system.",
@@ -643,6 +654,17 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
     }));
 
     const pageIds = new Set(sitemap.map((page) => page.id));
+    const rawFlows = Array.isArray(raw.flows) ? raw.flows.slice(0, 20) : [];
+    const flows = rawFlows.length ? rawFlows.map((item, index) => {
+      const value = item as Record<string, unknown>;
+      const name = clean(value.name, `Journey ${index + 1}`);
+      return {
+        id: slug(clean(value.id, name), index),
+        name,
+        purpose: clean(value.purpose, `${name} user journey.`),
+        steps: list(value.steps).map((pageId, pageIndex) => slug(pageId, pageIndex)).filter((pageId) => pageIds.has(pageId)),
+      };
+    }).filter((flow) => flow.steps.length >= 2) : fallbackFlows(sitemap);
     const rawComponents = Array.isArray(raw.components) ? raw.components.slice(0, 80) : [];
     const components = rawComponents.length ? rawComponents.map((item, index) => {
       const value = item as Record<string, unknown>;
@@ -688,6 +710,7 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
       pages: sitemap.map((page) => page.name),
       features: list(raw.features, fallback.features),
       sitemap,
+      flows,
       components,
       styles,
       visualDirection: clean(raw.visualDirection, styles.direction),
@@ -780,14 +803,14 @@ export function projectPlanningPrompt(brief: string): string {
   return `OUTER WEBSITE PHASE PLAN. This is the one full planning loop for the frontend phase. Inspect the brief and approved repository context, then plan the COMPLETE website before implementation. Do not implement anything.
 
 Your plan has three first-class structure artifacts:
-1. SITEMAP: enumerate every route/page the finished website should contain. Each page needs a stable id, route, purpose, ordered sections, componentIds, and page-level acceptance criteria. Do not collapse a multi-page product into "pages required by the brief."
+1. SITEMAP + USER FLOWS: enumerate every route/page the finished website should contain and the important user journeys between stable page ids. Each page needs a stable id, route, purpose, ordered sections, componentIds, and page-level acceptance criteria. Do not collapse a multi-page product into "pages required by the brief."
 2. COMPONENT INVENTORY: enumerate the reusable/buildable layout, section, UI, and feature components needed for the sitemap. Each component needs a stable id, purpose, kind, page usage, variants, and acceptance criteria. This inventory is the future authority for component-focused workspaces.
 3. GLOBAL STYLE SYSTEM: define site-wide visual rules independently from any single component: color roles, typography, spacing, radii, shadows, layout principles, motion, responsive behavior, accessibility, and explicit anti-patterns. Style feedback must be able to change this system without redefining page/component behavior.
 
 Then create bounded implementation slices that cover the sitemap and component inventory. Assign every major page section and planned component to at least one slice. Put shell/navigation and the primary entry experience early; include a final cross-page review slice. Every slice must have one concrete user-visible outcome and fit in one bounded implementation/verification session.
 
 End your response with exactly one machine-readable block using this shape:
-<borg-project-plan>{"siteGoal":"...","audience":"...","pages":["Home"],"features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["Navigation","Hero"],"componentIds":["site-header","hero"],"acceptanceCriteria":["..."]}],"components":[{"id":"site-header","name":"Site Header","kind":"layout","purpose":"...","usedBy":["home"],"variants":["desktop","mobile"],"acceptanceCriteria":["..."]}],"styles":{"direction":"...","colors":["..."],"typography":["..."],"spacing":["..."],"radii":["..."],"shadows":["..."],"layoutPrinciples":["..."],"motion":["..."],"responsive":["..."],"accessibility":["..."],"avoid":["..."]},"visualDirection":"...","backendRequired":false,"slices":[{"id":"...","title":"...","outcome":"...","scope":["..."],"acceptanceCriteria":["..."]}],"acceptanceCriteria":["..."]}</borg-project-plan>
+<borg-project-plan>{"siteGoal":"...","audience":"...","pages":["Home"],"features":["..."],"sitemap":[{"id":"home","name":"Home","route":"/","purpose":"...","sections":["Navigation","Hero"],"componentIds":["site-header","hero"],"acceptanceCriteria":["..."]}],"flows":[{"id":"primary","name":"Primary journey","purpose":"...","steps":["home","detail"]}],"components":[{"id":"site-header","name":"Site Header","kind":"layout","purpose":"...","usedBy":["home"],"variants":["desktop","mobile"],"acceptanceCriteria":["..."]}],"styles":{"direction":"...","colors":["..."],"typography":["..."],"spacing":["..."],"radii":["..."],"shadows":["..."],"layoutPrinciples":["..."],"motion":["..."],"responsive":["..."],"accessibility":["..."],"avoid":["..."]},"visualDirection":"...","backendRequired":false,"slices":[{"id":"...","title":"...","outcome":"...","scope":["..."],"acceptanceCriteria":["..."]}],"acceptanceCriteria":["..."]}</borg-project-plan>
 
 The only project files authorized during PLAN are planning documents under .localcode/build/**/*.md, persisted by BORG after your response. Do not create source, component, style, asset, configuration, backend, API, auth, or database files; do not run builds, tests, previews, or verification. Brief: ${brief}`;
 }
@@ -826,7 +849,7 @@ export function persistProposedProjectPlan(
     "",
     ...(options.revisionReason ? ["## Revision reason", "", options.revisionReason.slice(0, 4_000), ""] : []),
   ].join("\n"));
-  writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.sitemap.map((page) => `## ${page.name}\n\n- ID: \`${page.id}\`\n- Route: \`${page.route}\`\n- Purpose: ${page.purpose}\n- Sections: ${page.sections.join("; ") || "To be resolved during implementation"}\n- Components: ${page.componentIds.join(", ") || "None assigned"}\n- Acceptance: ${page.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
+  writeFileSync(join(dir, "site-map.md"), `# Site map\n\n${proposed.sitemap.map((page) => `## ${page.name}\n\n- ID: \`${page.id}\`\n- Route: \`${page.route}\`\n- Purpose: ${page.purpose}\n- Sections: ${page.sections.join("; ") || "To be resolved during implementation"}\n- Components: ${page.componentIds.join(", ") || "None assigned"}\n- Acceptance: ${page.acceptanceCriteria.join("; ")}`).join("\n\n")}\n\n## User journeys\n\n${(proposed.flows ?? []).length ? (proposed.flows ?? []).map((flow) => `- **${flow.name}** — ${flow.steps.join(" → ")}\n  - ${flow.purpose}`).join("\n") : "- No multi-page journeys required."}\n`);
   writeFileSync(join(dir, "components.md"), `# Planned components\n\n${proposed.components.map((component) => `## ${component.name}\n\n- ID: \`${component.id}\`\n- Kind: ${component.kind}\n- Purpose: ${component.purpose}\n- Used by: ${component.usedBy.join(", ") || "shared/global"}\n- Variants: ${component.variants.join(", ") || "default"}\n- Acceptance: ${component.acceptanceCriteria.join("; ")}`).join("\n\n")}\n`);
   writeFileSync(join(dir, "styles.md"), `# Global style system\n\n## Direction\n\n${proposed.styles.direction}\n\n## Colors\n${proposed.styles.colors.map((item) => `- ${item}`).join("\n")}\n\n## Typography\n${proposed.styles.typography.map((item) => `- ${item}`).join("\n")}\n\n## Spacing\n${proposed.styles.spacing.map((item) => `- ${item}`).join("\n")}\n\n## Radii\n${proposed.styles.radii.map((item) => `- ${item}`).join("\n")}\n\n## Shadows\n${proposed.styles.shadows.map((item) => `- ${item}`).join("\n")}\n\n## Layout principles\n${proposed.styles.layoutPrinciples.map((item) => `- ${item}`).join("\n")}\n\n## Motion\n${proposed.styles.motion.map((item) => `- ${item}`).join("\n")}\n\n## Responsive\n${proposed.styles.responsive.map((item) => `- ${item}`).join("\n")}\n\n## Accessibility\n${proposed.styles.accessibility.map((item) => `- ${item}`).join("\n")}\n\n## Avoid\n${proposed.styles.avoid.map((item) => `- ${item}`).join("\n")}\n`);
   initializeProjectModel(root, proposed);

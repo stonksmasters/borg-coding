@@ -24,40 +24,21 @@ BORG records:
 - known integrations;
 - whether the repository is greenfield or existing.
 
-### Design direction
+### Project Blueprint
 
-Before frontend mutation, BORG establishes a concrete design direction covering:
+Before frontend mutation, BORG builds one authoritative Project Blueprint in staged order:
 
-- composition;
-- typography hierarchy;
-- color direction;
-- visual rhythm;
-- responsive behavior;
-- motion;
-- content voice;
-- explicit anti-patterns.
+1. **Product map** — site goal, audience, complete sitemap, routes, ordered page sections, capabilities, backend requirement, and user journeys between durable page IDs.
+2. **Design direction** — the Design Director consumes the product map and establishes audience-specific art direction, composition, typography hierarchy, palette direction, rhythm, responsive strategy, motion, content voice, anti-patterns, and quality bar.
+3. **Global design system** — BORG turns the product map and design brief into implementation-grade shared primitives: semantic color values, typography roles/scales, spacing scale, radii, elevation, layout constraints, responsive recomposition rules, motion, focus/accessibility rules, and explicit anti-patterns.
+4. **Component architecture** — reusable layout, section, UI, and feature components are derived from the frozen product map and design system rather than invented independently during coding.
+5. **Build roadmap** — BORG derives bounded implementation slices from the page/component graph. The first slice establishes the visual foundation and shared primitives before product-specific component/page slices.
 
-The objective is not to produce a generic design-system paragraph. It is to create an art-direction contract that can guide implementation and later design review.
+`WorkflowEngine.setProjectPlan()` is called only with the final validated blueprint candidate. SQLite remains authoritative; generated `.localcode/build` files are inspectable projections.
 
-### Project plan
+The blueprint includes site goal/audience, sitemap/routes, ordered page sections, user journeys, product capabilities, global design system, component inventory, ordered frontend slices, acceptance criteria, completion gates, and backend-required classification.
 
-BORG creates a tailored frontend plan rather than a fixed slice list.
-
-The plan includes:
-
-- site goal;
-- audience;
-- visual direction;
-- pages;
-- features;
-- ordered frontend slices;
-- outcome for each slice;
-- scope for each slice;
-- acceptance criteria;
-- frontend completion gate;
-- whether a backend phase will eventually be required.
-
-A simple site may use only a few slices. A marketplace may use many.
+A simple site may use only a few slices. A marketplace or application may use many.
 
 ### Approval
 
