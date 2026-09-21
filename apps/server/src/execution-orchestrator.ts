@@ -273,6 +273,7 @@ export class ExecutionOrchestrator {
       let repairEvidence = blockedRetry
         ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
         : "";
+      let activeRepairContext: RepairContext | null = null;
       refreshTaskContext();
       let implementationBudgetContinuations = 0;
       let implementationBudgetExhausted = false;
@@ -321,6 +322,30 @@ export class ExecutionOrchestrator {
       const styleExecutionPrompt = compiledStyle
         ? `${styleExecutionContext}\n\n${compiledStyle.text}`
         : styleExecutionContext;
+      const repairAuthorityContext = projectPlan
+        ? JSON.stringify({
+            slice: selectedSlice ? {
+              id: selectedSlice.id,
+              title: selectedSlice.title,
+              outcome: selectedSlice.outcome,
+              scope: selectedSlice.scope,
+              acceptanceCriteria: selectedSlice.acceptanceCriteria,
+            } : null,
+            page: selectedSlice
+              ? projectPlan.sitemap.find((page) => page.id === selectedSlice.id) ?? null
+              : focusedExecutionScope?.type === "page"
+                ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id) ?? null
+                : null,
+            globalStyle: {
+              direction: projectPlan.styles.direction,
+              colors: projectPlan.styles.colors,
+              typography: projectPlan.styles.typography,
+              responsive: projectPlan.styles.responsive,
+              accessibility: projectPlan.styles.accessibility,
+              avoid: projectPlan.styles.avoid,
+            },
+          }, null, 2).slice(0, 10_000)
+        : "";
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
         refreshTaskContext();
@@ -328,7 +353,17 @@ export class ExecutionOrchestrator {
         const preAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "implementer", primaryDiscipline, implementerModel, packs, emit);
-        const repairGrounding = attemptStartedInRepair ? repairGroundingSnapshot(approvedWorktreePath) : "";
+        const repairGrounding = attemptStartedInRepair
+          ? repairGroundingSnapshot(approvedWorktreePath, activeRepairContext?.allowedFiles ?? [])
+          : "";
+        const scopedAuthorityPrompt = attemptStartedInRepair
+          ? repairAuthorityContext
+            ? `REPAIR AUTHORITY. Preserve this approved slice/page/style contract while fixing only the evidenced failure:\n${repairAuthorityContext}\n\n`
+            : ""
+          : `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}`;
+        const scopedDesignContext = attemptStartedInRepair
+          ? ""
+          : `${designContext ? "\n\n" + designContext : ""}${websiteContext && !compiledExecutionContext ? "\n\n" + websiteContext : ""}`;
         const repairPrompt = repairEvidence
           ? [repairEvidence, repairGrounding].filter(Boolean).join("\n\n")
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
@@ -340,7 +375,7 @@ export class ExecutionOrchestrator {
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledExecutionContext?.sliceId ?? null, compiledExecutionContext?.manifest ?? [], body) : undefined,
           messages: [
             ...(taskContext.attemptPhase !== "implementation" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification." }] : []),
-            { role: "system", content: `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${designContext ? "\n\n" + designContext : ""}${websiteContext && !compiledExecutionContext ? "\n\n" + websiteContext : ""}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            { role: "system", content: `${scopedAuthorityPrompt}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${scopedDesignContext}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
           });
