@@ -13,6 +13,19 @@ test("structured JSON repair inserts a missing comma between array elements", ()
   assert.match(parsed.repairSummary ?? "", /missing comma/i);
 });
 
+test("structured JSON repair fixes a missing comma deep in a large local-model artifact", () => {
+  const values = Array.from({ length: 140 }, (_, index) => `criterion-${index}-${"x".repeat(28)}`);
+  const valid = JSON.stringify({ acceptanceCriteria: values });
+  const needle = `"${values[118]}","${values[119]}"`;
+  const malformed = valid.replace(needle, `"${values[118]}" "${values[119]}"`);
+  assert.ok(malformed.indexOf(values[119]) > 4_500);
+  const parsed = parseStructuredJson<{ acceptanceCriteria: string[] }>(malformed);
+  assert.equal(parsed.source, "repaired");
+  assert.equal(parsed.value.acceptanceCriteria.length, values.length);
+  assert.equal(parsed.value.acceptanceCriteria[119], values[119]);
+  assert.match(parsed.repairSummary ?? "", /missing comma/i);
+});
+
 test("structured JSON repair inserts a missing comma between object properties", () => {
   const parsed = parseStructuredJson<{ first: number; second: number }>('{"first":1 "second":2}');
   assert.equal(parsed.source, "repaired");
