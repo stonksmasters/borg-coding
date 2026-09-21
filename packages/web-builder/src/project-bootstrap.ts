@@ -19,6 +19,16 @@ export type WebsiteProjectOptions = {
   originalBrief?: string;
 };
 
+export function inferWebsiteTemplate(brief: string): WebsiteTemplate {
+  const normalized = brief.toLowerCase();
+  if (/\b(e-?commerce|store|shop|catalog|product detail|cart|checkout|merchandise|collection)\b/.test(normalized)) return "ecommerce";
+  if (/\b(dashboard|admin|internal tool|operations|analytics|workspace|back office|control panel|kpi)\b/.test(normalized)) return "dashboard";
+  if (/\b(waitlist|coming soon|pre-?launch|early access|notify me|launch page)\b/.test(normalized)) return "waitlist";
+  if (/\b(portfolio|architecture|architect|interior design|design studio|creative studio|agency|atelier|artist|photograph|case stud|selected work|projects|journal|editorial|hospitality|residential|restoration)\b/.test(normalized)) return "portfolio";
+  if (/\b(saas|software|app|platform|subscription|pricing|product-led|b2b|ai product)\b/.test(normalized)) return "saas-landing";
+  return "portfolio";
+}
+
 export const websiteWorkspaceDirectories = viteReactWorkspaceDirectories;
 
 export function prepareWebsiteWorkspace(projectPath: string, forcedKind?: WorkspaceKind): string[] {
