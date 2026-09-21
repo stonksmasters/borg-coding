@@ -874,6 +874,9 @@ export class PlanningOrchestrator {
             answer = repaired.answer;
             usedTools ||= repaired.usedTools;
             parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+            if (parseResult.source === "fallback") {
+              throw new Error(`Stage 3-4 Blueprint repair remained invalid: ${parseResult.fallbackReason ?? "project plan could not be parsed"}`);
+            }
             candidatePlan = applyBlueprintFoundation(parseResult.plan, stagedProductMap, stagedStyleSystem);
             blueprintValidation = validateBlueprintCompletion(candidatePlan);
             if (!blueprintValidation.valid) {
