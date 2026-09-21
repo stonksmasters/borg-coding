@@ -375,7 +375,7 @@ export class ExecutionOrchestrator {
           }
           continue;
         }
-        const { answer, usedTools, budgetExhausted } = implementationResult;
+        const { answer, usedTools, budgetExhausted, toolFailures: directToolFailures = [] } = implementationResult;
         implementationBudgetExhausted = Boolean(budgetExhausted);
         if (sliceState || focusedExecutionScope || styleWorkspace) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
@@ -390,13 +390,17 @@ export class ExecutionOrchestrator {
           if (!sourceProgress) {
             if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
             activeRoleAssignment = null;
-            const toolFailures = tasks.listEvents(taskId)
+            const persistedToolFailures = tasks.listEvents(taskId)
               .filter((event) => event.type === "TOOL_FAILED")
               .slice(-5)
               .map((event) => {
                 const payload = event.payload as Record<string, unknown>;
                 return String(payload.message ?? JSON.stringify(payload)).slice(0, 2_000);
               });
+            const toolFailures = [...directToolFailures, ...persistedToolFailures]
+              .map((value) => String(value).slice(0, 2_000))
+              .filter(Boolean)
+              .slice(-5);
             const failure = toolFailures.at(-1) ?? (attemptStartedInRepair
               ? "The repair attempt completed without changing the source diff relative to the start of this repair pass."
               : "The implementation attempt completed without any source-file progress.");
