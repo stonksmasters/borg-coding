@@ -31,7 +31,6 @@ import {
   verificationProfileFor,
   type SpecialistCapabilityPack,
 } from "../../../packages/orchestration/src/index.ts";
-import { VisionReviewService, type VisionReviewResult } from "../../../packages/vision-review/src/index.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import { preflightFailureMessage, runWorkspacePreflight } from "../../../packages/web-builder/src/workspace-preflight.ts";
 import { websiteGenerationContext } from "../../../packages/web-builder/src/generation-context.ts";
@@ -46,32 +45,25 @@ import { updateVerifiedProjectModel } from "../../../packages/web-builder/src/pr
 import {
   currentSlice,
   markSliceReady,
-  parseProjectPlanResult,
-  persistProposedProjectPlan,
-  projectPlanDelta,
-  projectPlanRepairPrompt,
-  projectPlanRevisionPrompt,
   readPersistedDesignBrief,
   readProjectDocs,
   readSliceState,
   setFrontendWorkflowStage,
   slicePrompt,
-  validateProjectPlanCoverage,
   type ProjectPlan,
   type SliceState,
 } from "../../../packages/web-builder/src/slice-docs.ts";
 import {
   DesignBriefSchema,
-  VisualDirectorService,
   designBriefPrompt,
   type DesignBrief,
-  type DesignReviewResult,
 } from "../../../packages/design-intelligence/src/index.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
-import { runFreshReview } from "./fresh-review.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, compactRecoveryEvidence, type RecoveryDecision } from "./recovery-policy.ts";
 import { VerificationService } from "./verification-service.ts";
+import { QualityGateService } from "./quality-gate-service.ts";
+import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
 import { repairGroundingSnapshot, sourceMutationSnapshot } from "./execution-grounding.ts";
 
 export type ExecutionEventSink = (event: Record<string, unknown>) => void;
@@ -95,10 +87,10 @@ export type ExecutionOrchestratorDependencies = {
   workflow: WorkflowEngine;
   tools: ToolBroker;
   teamPolicies: TeamPolicyService;
-  vision: VisionReviewService;
-  visualDirector: VisualDirectorService;
   access: AccessController;
   verificationService: VerificationService;
+  qualityGateService: QualityGateService;
+  projectPlanRevisionService: ProjectPlanRevisionService;
   ollamaUrl: string;
   model: string;
   maxRepairAttempts: number;
@@ -144,10 +136,10 @@ export class ExecutionOrchestrator {
       workflow,
       tools,
       teamPolicies,
-      vision,
-      visualDirector,
       access,
       verificationService,
+      qualityGateService,
+      projectPlanRevisionService,
       ollamaUrl,
       model,
       maxRepairAttempts,
@@ -525,319 +517,231 @@ export class ExecutionOrchestrator {
           continue;
         }
 
-        let visionReview: VisionReviewResult | null = null;
-        if (verification.browserEvidence && !designBrief) {
-          setExecutionState("BROWSER_VERIFY");
-          const visionStatus = vision.status();
-          appendTaskEvent(taskId, "VISION_REVIEW_STARTED", { provider: visionStatus.provider, model: visionStatus.model, attempt: task.attempts });
-          emit({ type: "vision.review.started", provider: visionStatus.provider, model: visionStatus.model });
-          visionReview = await vision.review({
-            taskId,
-            request: task.request,
-            worktreePath: approvedWorktreePath,
-            browserEvidence: verification.browserEvidence,
-            onRequestBody: (body) => recordModelInput(taskId, "vision_reviewer", visionStatus.model, compiledSlice?.sliceId ?? null, [], body),
-          });
-          const visionEvent = visionReview.status === "unavailable" ? "VISION_REVIEW_UNAVAILABLE"
-            : visionReview.status === "failed" ? "VISION_REVIEW_FAILED"
-            : visionReview.status === "inconclusive" ? "VISION_REVIEW_INCONCLUSIVE"
-            : visionReview.status === "disabled" ? "VISION_REVIEW_DISABLED"
-            : "VISION_REVIEW_COMPLETED";
-          appendTaskEvent(taskId, visionEvent, { review: visionReview, attempt: task.attempts });
-          emit({ type: "vision.review.completed", visionReview });
-          if (visionReview.status === "repair") {
-            finishRole(activeRoleAssignment, "completed", emit);
+        if (verification.browserEvidence || designBrief) setExecutionState("BROWSER_VERIFY");
+        const visualDecision = await qualityGateService.evaluateVisual({
+          taskId,
+          request: task.request,
+          worktreePath: approvedWorktreePath,
+          browserEvidence: verification.browserEvidence,
+          designBrief,
+          activeSlicePrompt,
+          projectPlan,
+          sliceState,
+          attempt: task.attempts,
+          emit,
+          appendTaskEvent: (type, payload) => appendTaskEvent(taskId, type, payload),
+          onVisionRequestBody: (body, selectedModel) => recordModelInput(taskId, "vision_reviewer", selectedModel, compiledSlice?.sliceId ?? null, [], body),
+          onDesignRequestBody: (body, selectedModel) => recordModelInput(taskId, "visual_director", selectedModel, compiledSlice?.sliceId ?? null, [], body),
+        });
+        const visionReview = visualDecision.visionReview;
+        const designReview = visualDecision.designReview;
+
+        if (visualDecision.action === "repair_current_slice") {
+          finishRole(activeRoleAssignment, "completed", emit);
+          activeRoleAssignment = null;
+
+          if (visualDecision.source === "local_vision") {
             recordHandoff({
               task,
               fromRole: "verifier",
               toRole: "implementer",
               objective: task.request,
-              evidence: [JSON.stringify(visionReview).slice(0, 20_000)],
-              openRisks: ["Local vision review found a blocking visual defect."],
+              evidence: [JSON.stringify(visualDecision.visionReview).slice(0, 20_000)],
+              openRisks: [visualDecision.reason],
               requiredNextAction: "Repair only the evidenced visual defect.",
             }, emit);
-            activeRoleAssignment = null;
-            recordCompletedReview(task, visionReview.findings, "repair", "Local vision review found a blocking visual defect.");
+            recordCompletedReview(task, visualDecision.findings, "repair", visualDecision.reason);
             emit({ type: "review.history.updated" });
             emit({ type: "stage.updated", stage: "Verification", status: "failed" });
             if (task.attempts >= maxRepairAttempts) {
               setExecutionState("BLOCKED");
               task = transitionTask(task, "BLOCKED", emit);
-              appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, visionReview });
+              appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", {
+                attempts: task.attempts,
+                visionReview: visualDecision.visionReview,
+              });
               emit({ type: "stream.blocked", message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.` });
-              
               return;
             }
-            repairEvidence = `Local vision review requires repair:\n${JSON.stringify(visionReview).slice(0, 60_000)}`;
+            repairEvidence = visualDecision.repairEvidence;
             setExecutionState("REPAIR");
-            task = scheduleRepair(task, emit, "Local vision review found a blocking visual defect.");
+            task = scheduleRepair(task, emit, visualDecision.reason);
             continue;
           }
+
+          emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
+          const refinements = designRefinementCount(taskId);
+          if (refinements >= maxDesignRefinements) {
+            setExecutionState("BLOCKED");
+            task = transitionTask(task, "BLOCKED", emit);
+            appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", {
+              refinements,
+              maximum: maxDesignRefinements,
+              review: visualDecision.designReview,
+            });
+            emit({ type: "stream.blocked", message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
+            return;
+          }
+          repairEvidence = visualDecision.repairEvidence;
+          setExecutionState("REPAIR");
+          task = scheduleDesignRefinement(task, emit, visualDecision.reason);
+          continue;
         }
 
-        let designReview: DesignReviewResult | null = null;
-        if (designBrief) {
-          setExecutionState("BROWSER_VERIFY");
-          if (!verification.browserEvidence) {
-            finishRole(activeRoleAssignment, "completed", emit);
-            activeRoleAssignment = null;
-            appendTaskEvent(taskId, "DESIGN_REVIEW_BLOCKED", { reason: "Missing browser evidence.", attempt: task.attempts });
+        if (visualDecision.action === "revise_project_plan") {
+          finishRole(activeRoleAssignment, "completed", emit);
+          activeRoleAssignment = null;
+          emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
+
+          if (!projectPlan || !sliceState || !websiteProject) {
             setExecutionState("BLOCKED");
             task = transitionTask(task, "BLOCKED", emit);
-            emit({ type: "design.review.blocked", message: "Premium frontend delivery requires responsive browser screenshots for aesthetic review." });
-            emit({ type: "stream.blocked", message: "Design quality could not be verified because responsive browser evidence is missing." });
-            
+            appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
+              reason: visualDecision.reason,
+              review: visualDecision.designReview,
+              error: "Durable project plan or active slice was unavailable for automatic plan revision.",
+            });
+            emit({ type: "stream.blocked", message: "The Visual Director requires a plan-level repair, but BORG could not resolve the durable active plan/slice needed to revise it safely." });
             return;
           }
-          const policy = vision.status();
-          emit({ type: "stage.updated", stage: "Visual Direction", status: "active" });
-          appendTaskEvent(taskId, "DESIGN_REVIEW_STARTED", { provider: policy.provider, model: policy.model, attempt: task.attempts });
-          emit({ type: "design.review.started", provider: policy.provider, model: policy.model });
-          const visualReviewSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
-          designReview = await visualDirector.review({
+
+          const revisionReason = visualDecision.reason;
+          const checkpoint = createCheckpointSnapshot(task, "pre_repair");
+          const recovered = workflow.markRecoveryRequired(task, {
+            category: "plan_repair_required",
+            checkpointId: checkpoint.id,
+            resumeAction: "replan",
+            reason: revisionReason,
+          });
+          task = recovered.task;
+          syncWorkflowProjection(task, recovered.workflow);
+          appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", {
+            review: visualDecision.designReview,
+            repairScope: visualDecision.scope,
+            reason: revisionReason,
+            currentSliceIndex: sliceState.current,
+            currentSliceId: projectPlan.slices[sliceState.current]?.id ?? null,
+          });
+          appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
+            reason: revisionReason,
+            repairScope: visualDecision.scope,
+            review: visualDecision.designReview,
+            checkpointId: checkpoint.id,
+          });
+
+          const revising = workflow.beginPlanRevision(task, revisionReason);
+          task = revising.task;
+          syncWorkflowProjection(task, revising.workflow);
+          setExecutionState("BLOCKED");
+          emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The current slice cannot satisfy the product-quality review. Revising the project plan without discarding the existing worktree." });
+
+          const revisionModel = teamPolicies.modelFor(teamPolicy, "architect", model, primaryDiscipline);
+          const revisionAssignment = beginRole(task, "architect", primaryDiscipline, revisionModel, packs, emit);
+          const revisionBrief = websiteProject.originalBrief || task.request;
+          const revision = await projectPlanRevisionService.generate({
             taskId,
-            request: [task.request, activeSlicePrompt].filter(Boolean).join("\n\n"),
-            worktreePath: approvedWorktreePath,
-            browserEvidence: verification.browserEvidence,
-            brief: designBrief,
-            policy,
-            scope: {
-              currentSlice: visualReviewSlice ? {
-                id: visualReviewSlice.id,
-                title: visualReviewSlice.title,
-                outcome: visualReviewSlice.outcome,
-                scope: visualReviewSlice.scope,
-              } : null,
-              projectPages: projectPlan?.sitemap.map((page) => ({ id: page.id, name: page.name, route: page.route })) ?? [],
-            },
-            onRequestBody: (body) => recordModelInput(taskId, "visual_director", policy.model, compiledSlice?.sliceId ?? null, [], body),
+            brief: revisionBrief,
+            currentPlan: projectPlan,
+            currentSliceIndex: sliceState.current,
+            conflictReason: revisionReason,
+            review: visualDecision.designReview,
+            template: websiteProject.template,
+            model: revisionModel,
+            tools,
+            disciplines: activeDisciplines,
+            emit,
+            appendTaskEvent: (type, payload) => appendTaskEvent(taskId, type, payload),
+            onRequestBody: (body) => recordModelInput(taskId, "architect", revisionModel, `plan-revision:${projectPlan.revision + 1}`, [], body),
           });
-          appendTaskEvent(taskId, designReview.status === "pass" || designReview.status === "repair" ? "DESIGN_REVIEW_COMPLETED" : "DESIGN_REVIEW_BLOCKED", {
-            review: designReview,
-            attempt: task.attempts,
-          });
-          emit({ type: "design.review.completed", designReview });
 
-          if (designReview.status === "repair") {
-            finishRole(activeRoleAssignment, "completed", emit);
-            activeRoleAssignment = null;
-            emit({ type: "stage.updated", stage: "Visual Direction", status: "failed" });
-
-            const requiresPlanRevision = designReview.repairScope === "cross_slice" || designReview.repairScope === "project_plan";
-            if (requiresPlanRevision) {
-              if (!projectPlan || !sliceState || !websiteProject) {
-                setExecutionState("BLOCKED");
-                task = transitionTask(task, "BLOCKED", emit);
-                appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
-                  reason: designReview.scopeReason || designReview.summary,
-                  review: designReview,
-                  error: "Durable project plan or active slice was unavailable for automatic plan revision.",
-                });
-                emit({ type: "stream.blocked", message: "The Visual Director requires a plan-level repair, but BORG could not resolve the durable active plan/slice needed to revise it safely." });
-                
-                return;
-              }
-
-              const revisionReason = designReview.scopeReason || designReview.summary;
-              const checkpoint = createCheckpointSnapshot(task, "pre_repair");
-              const recovered = workflow.markRecoveryRequired(task, {
-                category: "plan_repair_required",
-                checkpointId: checkpoint.id,
-                resumeAction: "replan",
-                reason: revisionReason,
-              });
-              task = recovered.task;
-              syncWorkflowProjection(task, recovered.workflow);
-              appendTaskEvent(taskId, "DESIGN_SCOPE_CONFLICT", {
-                review: designReview,
-                repairScope: designReview.repairScope,
-                reason: revisionReason,
-                currentSliceIndex: sliceState.current,
-                currentSliceId: projectPlan.slices[sliceState.current]?.id ?? null,
-              });
-              appendTaskEvent(taskId, "PLAN_REPAIR_REQUIRED", {
-                reason: revisionReason,
-                repairScope: designReview.repairScope,
-                review: designReview,
-                checkpointId: checkpoint.id,
-              });
-
-              const revising = workflow.beginPlanRevision(task, revisionReason);
-              task = revising.task;
-              syncWorkflowProjection(task, revising.workflow);
-              setExecutionState("BLOCKED");
-              emit({ type: "stage.updated", stage: "Plan", status: "active", message: "The current slice cannot satisfy the product-quality review. Revising the project plan without discarding the existing worktree." });
-
-              const revisionModel = teamPolicies.modelFor(teamPolicy, "architect", model, primaryDiscipline);
-              const revisionAssignment = beginRole(task, "architect", primaryDiscipline, revisionModel, packs, emit);
-              const revisionBrief = websiteProject.originalBrief || task.request;
-              const revisionRequest = {
-                ollamaUrl,
-                model: revisionModel,
-                tools,
-                mode: "plan" as const,
-                role: "architect" as const,
-                disciplines: activeDisciplines,
-                phase: "plan" as const,
-                emit,
-                limits: { toolRounds: 3, toolCalls: 4 },
-                onRequestBody: (body: string) => recordModelInput(taskId, "architect", revisionModel, `plan-revision:${projectPlan.revision + 1}`, [], body),
-                messages: [
-                  {
-                    role: "system" as const,
-                    content: "You are BORG's bounded project-plan repair architect. Revise planning authority only. Do not mutate source, run commands, restart repository discovery, or discard already-completed work. The original brief, durable current plan, active slice, and independent review evidence below are authoritative.",
-                  },
-                  {
-                    role: "user" as const,
-                    content: projectPlanRevisionPrompt({
-                      brief: revisionBrief,
-                      currentPlan: projectPlan,
-                      currentSliceIndex: sliceState.current,
-                      conflictReason: revisionReason,
-                      review: designReview,
-                    }),
-                  },
-                ],
-              };
-
-              let revisionResult = await runOllamaAgent(revisionRequest);
-              let parsedRevision = parseProjectPlanResult(revisionResult.answer, revisionBrief, websiteProject.template);
-              if (parsedRevision.source === "fallback") {
-                appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_SEMANTIC_RETRY", {
-                  reason: parsedRevision.fallbackReason,
-                  validation: parsedRevision.validation,
-                });
-                revisionResult = await runOllamaAgent({
-                  ...revisionRequest,
-                  messages: [
-                    ...revisionRequest.messages,
-                    { role: "assistant" as const, content: revisionResult.answer },
-                    { role: "user" as const, content: projectPlanRepairPrompt(parsedRevision) },
-                  ],
-                  limits: { toolRounds: 2, toolCalls: 2 },
-                });
-                parsedRevision = parseProjectPlanResult(revisionResult.answer, revisionBrief, websiteProject.template);
-              }
-
-              if (parsedRevision.source === "fallback" || !parsedRevision.validation.valid) {
-                finishRole(revisionAssignment, "failed", emit);
-                const failureReason = `Plan revision failed semantic validation: ${parsedRevision.fallbackReason ?? parsedRevision.validation.issues.join(" ")}`;
-                const failedRevision = workflow.markRecoveryRequired(task, {
-                  category: "plan_repair_required",
-                  checkpointId: checkpoint.id,
-                  resumeAction: "replan",
-                  reason: failureReason,
-                });
-                task = failedRevision.task;
-                syncWorkflowProjection(task, failedRevision.workflow);
-                appendTaskEvent(taskId, "PLAN_REVISION_FAILED", {
-                  reason: failureReason,
-                  validation: parsedRevision.validation,
-                });
-                emit({ type: "stream.blocked", message: failureReason });
-                
-                return;
-              }
-
-              const planWorkflow = workflow.setProjectPlan(task, parsedRevision.plan);
-              syncWorkflowProjection(task, planWorkflow);
-              const proposedPlan = planWorkflow.projectPlan as ProjectPlan;
-              const coverage = validateProjectPlanCoverage(proposedPlan, revisionBrief);
-              if (!coverage.valid) throw new Error(`Core plan revision failed coverage after parse validation: ${coverage.issues.join(" ")}`);
-              const delta = projectPlanDelta(projectPlan, proposedPlan);
-              persistProposedProjectPlan(approvedWorktreePath, revisionBrief, proposedPlan, taskId, {
-                coverage,
-                currentSlice: planWorkflow.planRevisionResumeIndex ?? sliceState.current,
-                revisionReason,
-              });
-              appendTaskEvent(taskId, "PROJECT_PLAN_COVERAGE_VALIDATED", {
-                revision: proposedPlan.revision,
-                coverage,
-                planRevision: true,
-              });
-              appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_PROPOSED", {
-                plan: proposedPlan,
-                delta,
-                repairScope: designReview.repairScope,
-                reason: revisionReason,
-                workflowVersion: planWorkflow.version,
-              });
-              appendTaskEvent(taskId, "PLAN_REVISION_MODEL_RESPONSE_COMPLETED", {
-                runtime: "ollama",
-                model: revisionModel,
-                role: "architect",
-                answer: revisionResult.answer,
-                usedTools: revisionResult.usedTools,
-              });
-              finishRole(revisionAssignment, "completed", emit);
-              emit({ type: "message.delta", taskId, text: revisionResult.answer });
-
-              const revisionApproval = {
-                ...createApproval({ id: randomUUID(), taskId }),
-                worktreePath: approval.worktreePath,
-                baseCommit: approval.baseCommit,
-              };
-              const requestedRevision = workflow.requestApproval(task, revisionApproval, "project_plan_revision");
-              task = requestedRevision.task;
-              syncWorkflowProjection(task, requestedRevision.workflow);
-              emit({ type: "task.state", taskId, state: task.state, workflow: requestedRevision.workflow });
-              emit({
-                type: "project.plan.approval.requested",
-                taskId,
-                approval: revisionApproval,
-                planText: revisionResult.answer,
-                projectPlan: proposedPlan,
-                planRevision: true,
-                planDelta: delta,
-                planRevisionReason: revisionReason,
-                message: `Plan revision ${proposedPlan.revision} resolves a ${designReview.repairScope.replaceAll("_", " ")} quality conflict. Approve it to resume the current worktree at the repaired slice boundary.`,
-              });
-              emit({ type: "stream.completed", taskId });
-              
-              return;
-            }
-
-            const refinements = designRefinementCount(taskId);
-            if (refinements >= maxDesignRefinements) {
-              setExecutionState("BLOCKED");
-              task = transitionTask(task, "BLOCKED", emit);
-              appendTaskEvent(taskId, "DESIGN_REFINEMENT_LIMIT_REACHED", { refinements, maximum: maxDesignRefinements, review: designReview });
-              emit({ type: "stream.blocked", message: `Visual Director still requires current-slice refinement after ${maxDesignRefinements} dedicated design passes. Changes remain isolated for inspection.` });
-              
-              return;
-            }
-
-            repairEvidence = `VISUAL DIRECTOR CURRENT-SLICE REFINEMENT REQUIRED. The Visual Director explicitly classified this repair as legal inside the current approved slice. Rework the design against the persisted Design Brief and screenshot evidence while preserving working behavior, then recapture responsive browser evidence.
-
-Structured scope decision:
-- repairScope: ${designReview.repairScope}
-- scopeReason: ${designReview.scopeReason}
-
-Work from the authoritative repair grounding that BORG injects automatically:
-- Start from the supplied changed-file list, current source diff, changed-file contents, and direct dependencies. Do not guess paths, components, or CSS selectors.
-- Read only further direct dependencies when necessary to repair an implicated file.
-- Trace every style change to markup that actually uses it.
-- Address the highest-severity visible findings with a material composition change, not small token or spacing adjustments.
-- Do not broaden beyond the current slice; a wider change requires a new plan-revision classification.
-- Capture mobile, tablet, and desktop evidence after editing and inspect whether the cited visual problem visibly changed before finishing.
-
-${JSON.stringify(designReview).slice(0, 70000)}`;
-            setExecutionState("REPAIR");
-            task = scheduleDesignRefinement(task, emit, designReview.summary);
-            continue;
-          }
-
-          if (designReview.status !== "pass") {
-            finishRole(activeRoleAssignment, "completed", emit);
-            activeRoleAssignment = null;
-            setExecutionState("BLOCKED");
-            task = transitionTask(task, "BLOCKED", emit);
-            emit({ type: "design.review.blocked", designReview, message: designReview.summary });
-            emit({ type: "stream.blocked", message: `Premium frontend delivery is blocked because mandatory aesthetic review is ${designReview.status}: ${designReview.summary}` });
-            
+          if (revision.status === "invalid") {
+            finishRole(revisionAssignment, "failed", emit);
+            const failedRevision = workflow.markRecoveryRequired(task, {
+              category: "plan_repair_required",
+              checkpointId: checkpoint.id,
+              resumeAction: "replan",
+              reason: revision.reason,
+            });
+            task = failedRevision.task;
+            syncWorkflowProjection(task, failedRevision.workflow);
+            appendTaskEvent(taskId, "PLAN_REVISION_FAILED", {
+              reason: revision.reason,
+              validation: revision.validation,
+            });
+            emit({ type: "stream.blocked", message: revision.reason });
             return;
           }
-          emit({ type: "stage.updated", stage: "Visual Direction", status: "complete" });
+
+          const planWorkflow = workflow.setProjectPlan(task, revision.candidate);
+          syncWorkflowProjection(task, planWorkflow);
+          const proposedPlan = planWorkflow.projectPlan as ProjectPlan;
+          const projection = projectPlanRevisionService.persistAuthoritativeProjection({
+            root: approvedWorktreePath,
+            taskId,
+            brief: revisionBrief,
+            previousPlan: projectPlan,
+            authoritativePlan: proposedPlan,
+            resumeSliceIndex: planWorkflow.planRevisionResumeIndex ?? sliceState.current,
+            revisionReason,
+          });
+          appendTaskEvent(taskId, "PROJECT_PLAN_COVERAGE_VALIDATED", {
+            revision: proposedPlan.revision,
+            coverage: projection.coverage,
+            planRevision: true,
+          });
+          appendTaskEvent(taskId, "PROJECT_PLAN_REVISION_PROPOSED", {
+            plan: proposedPlan,
+            delta: projection.delta,
+            repairScope: visualDecision.scope,
+            reason: revisionReason,
+            workflowVersion: planWorkflow.version,
+          });
+          appendTaskEvent(taskId, "PLAN_REVISION_MODEL_RESPONSE_COMPLETED", {
+            runtime: "ollama",
+            model: revisionModel,
+            role: "architect",
+            answer: revision.answer,
+            usedTools: revision.usedTools,
+          });
+          finishRole(revisionAssignment, "completed", emit);
+          emit({ type: "message.delta", taskId, text: revision.answer });
+
+          const revisionApproval = {
+            ...createApproval({ id: randomUUID(), taskId }),
+            worktreePath: approval.worktreePath,
+            baseCommit: approval.baseCommit,
+          };
+          const requestedRevision = workflow.requestApproval(task, revisionApproval, "project_plan_revision");
+          task = requestedRevision.task;
+          syncWorkflowProjection(task, requestedRevision.workflow);
+          emit({ type: "task.state", taskId, state: task.state, workflow: requestedRevision.workflow });
+          emit({
+            type: "project.plan.approval.requested",
+            taskId,
+            approval: revisionApproval,
+            planText: revision.answer,
+            projectPlan: proposedPlan,
+            planRevision: true,
+            planDelta: projection.delta,
+            planRevisionReason: revisionReason,
+            message: `Plan revision ${proposedPlan.revision} resolves a ${visualDecision.scope.replaceAll("_", " ")} quality conflict. Approve it to resume the current worktree at the repaired slice boundary.`,
+          });
+          emit({ type: "stream.completed", taskId });
+          return;
+        }
+
+        if (visualDecision.action === "block") {
+          finishRole(activeRoleAssignment, "completed", emit);
+          activeRoleAssignment = null;
+          setExecutionState("BLOCKED");
+          task = transitionTask(task, "BLOCKED", emit);
+          emit({
+            type: "design.review.blocked",
+            designReview: visualDecision.designReview,
+            message: visualDecision.reason,
+          });
+          emit({ type: "stream.blocked", message: visualDecision.reason });
+          return;
         }
 
         let status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "verifier", activeDisciplines) as { stdout?: string };
@@ -863,57 +767,57 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
         emit({ type: "stage.updated", stage: "Review", status: "active" });
         const reviewerModel = teamPolicies.modelFor(teamPolicy, "reviewer", model, primaryDiscipline);
         activeRoleAssignment = beginRole(task, "reviewer", primaryDiscipline, reviewerModel, packs, emit);
-        const activeSlice = sliceState && projectPlan ? projectPlan.slices[sliceState.current] ?? null : null;
-        const styleAcceptance = styleWorkspace && projectPlan?.styles
-          ? [
-              projectPlan.styles.direction,
-              ...projectPlan.styles.layoutPrinciples,
-              ...projectPlan.styles.responsive,
-              ...projectPlan.styles.accessibility,
-              ...projectPlan.styles.avoid.map((item) => `Avoid: ${item}`),
-            ]
-          : [];
-        const focusedAcceptance = focusedExecutionScope && projectPlan
-          ? focusedExecutionScope.type === "page"
-            ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
-            : projectPlan.components.find((component) => component.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
-          : [];
-        const review = await runFreshReview({
-          ollamaUrl,
-          model: reviewerModel,
+        const freshDecision = await qualityGateService.evaluateFreshReview({
           taskId,
           request: task.request,
-          projectGoal: projectPlan?.siteGoal,
-          sliceTitle: activeSlice?.title,
-          sliceOutcome: activeSlice?.outcome,
-          acceptanceCriteria: focusedAcceptance.length ? focusedAcceptance : styleAcceptance.length ? styleAcceptance : activeSlice?.acceptanceCriteria ?? projectPlan?.acceptanceCriteria ?? [],
+          projectPlan,
+          sliceState,
+          focusedScope: focusedExecutionScope,
+          styleWorkspace,
           implementationBudgetExhausted,
           diff: diff.stdout ?? "",
           verification,
+          reviewerModel,
           specialistInstructions: specialistInstructions.reviewer,
-          onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, [], body) : undefined,
+          onRequestBody: websiteProject
+            ? (body) => recordModelInput(taskId, "reviewer", reviewerModel, compiledFocus?.sliceId ?? compiledSlice?.sliceId ?? null, [], body)
+            : undefined,
         });
         finishRole(activeRoleAssignment, "completed", emit);
         activeRoleAssignment = null;
+        const review = freshDecision.review;
+        const focusedAcceptance = freshDecision.acceptanceCriteria;
         const reviewHistory = recordCompletedReview(
           task,
           [...(visionReview?.findings ?? []), ...review.findings],
           review.verdict,
           review.summary,
           task.attempts > 0
-            ? [`Deterministic verification passed on repair attempt ${task.attempts}.`, `Fresh review run did not reproduce the prior finding.`]
+            ? [`Deterministic verification passed on repair attempt ${task.attempts}.`, "Fresh review run did not reproduce the prior finding."]
             : [],
         );
         emit({ type: "review.history.updated" });
         const reviewedRepository = taskProjectRepository(taskId);
         if (reviewedRepository) for (const finding of review.findings) recordMemoryNote(reviewedRepository, {
-          id: `finding:${finding.id}`, kind: "finding", text: `${finding.severity}: ${finding.title} — ${finding.description}`,
-          taskId, path: finding.file && access.allowsRepositoryFile(finding.file) ? finding.file : null,
-          line: finding.line ?? null, createdAt: new Date().toISOString(),
+          id: `finding:${finding.id}`,
+          kind: "finding",
+          text: `${finding.severity}: ${finding.title} — ${finding.description}`,
+          taskId,
+          path: finding.file && access.allowsRepositoryFile(finding.file) ? finding.file : null,
+          line: finding.line ?? null,
+          createdAt: new Date().toISOString(),
         });
-        appendTaskEvent(taskId, "REVIEW_COMPLETED", { review, status, worktreePath: approval.worktreePath, model: reviewerModel, role: "reviewer", attempt: task.attempts });
+        appendTaskEvent(taskId, "REVIEW_COMPLETED", {
+          review,
+          status,
+          worktreePath: approval.worktreePath,
+          model: reviewerModel,
+          role: "reviewer",
+          attempt: task.attempts,
+        });
         emit({ type: "review.completed", review });
-        if (review.verdict === "repair") {
+
+        if (freshDecision.action === "repair_current_slice") {
           recordHandoff({
             task,
             fromRole: "reviewer",
@@ -929,12 +833,11 @@ ${JSON.stringify(designReview).slice(0, 70000)}`;
             task = transitionTask(task, "BLOCKED", emit);
             appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", { attempts: task.attempts, review });
             emit({ type: "stream.blocked", message: `Fresh review still found a blocking issue after ${maxRepairAttempts} repair attempts.` });
-            
             return;
           }
-          repairEvidence = `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 60_000)}`;
+          repairEvidence = freshDecision.repairEvidence;
           setExecutionState("REPAIR");
-          task = scheduleRepair(task, emit, "Fresh-context review found a blocking issue.");
+          task = scheduleRepair(task, emit, freshDecision.reason);
           continue;
         }
 
