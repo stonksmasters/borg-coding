@@ -18,7 +18,7 @@ export function taskProgress(state: string): { title: string; detail: string } |
     case "AWAITING_APPROVAL": return { title: "Waiting for approval", detail: "Review the proposed plan before BORG changes project files." };
     case "BLOCKED": return { title: "Build needs attention", detail: "A verification or review gate blocked the current slice. Open Review history, Terminal, and Docs for evidence." };
     case "FAILED": return { title: "Build stopped", detail: "The current task failed. The last confirmed changes and terminal evidence remain available for inspection." };
-    case "RECOVERY_REQUIRED": return { title: "Recovery required", detail: "BORG detected an interrupted mutation-capable task and will not guess how to resume it." };
+    case "RECOVERY_REQUIRED": return { title: "Recovery required", detail: "BORG reached a durable recovery boundary and preserved the last valid project state for a safe retry." };
     case "CANCELLED": return { title: "Task stopped", detail: "No further work is running for this task." };
     case "PAUSED": return { title: "Task paused", detail: "The task is paused with its current state preserved." };
     default: return null;
