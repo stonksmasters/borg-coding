@@ -486,6 +486,26 @@ export class WorktreeTools {
       throw new Error("Persistent development servers must use browser_server_start, which reuses the task preview URL.");
     }
     const cwd = input.cwd ? this.resolveExisting(root, input.cwd) : root;
+    if (command === "npm" && args[0]?.toLowerCase() === "run" && args[1]) {
+      let packageDirectory = cwd;
+      let packagePath = "";
+      while (isInside(root, packageDirectory)) {
+        const candidate = join(packageDirectory, "package.json");
+        if (existsSync(candidate) && lstatSync(candidate).isFile()) {
+          packagePath = candidate;
+          break;
+        }
+        if (packageDirectory === root) break;
+        const parent = dirname(packageDirectory);
+        if (parent === packageDirectory) break;
+        packageDirectory = parent;
+      }
+      if (!packagePath) throw new Error(`Tool usage error: npm run ${args[1]} cannot run because no package.json exists in the approved worktree scope.`);
+      const pkg = JSON.parse(readFileSync(packagePath, "utf8")) as { scripts?: Record<string, string> };
+      if (!pkg.scripts?.[args[1]]) {
+        throw new Error(`Tool usage error: npm script "${args[1]}" is not defined in package.json. Use verification_profiles or return control to BORG's deterministic verifier instead of guessing scripts.`);
+      }
+    }
     if (!statSync(cwd).isDirectory()) throw new Error("Command cwd must be a directory.");
     const kind: ProcessKind = args.some((value) => /(^|:)test$/.test(value)) ? "test"
       : args.some((value) => /(^|:)build$/.test(value)) ? "build"
