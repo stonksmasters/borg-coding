@@ -192,7 +192,7 @@ export function deriveWorkflowStatus(
       }
     : null;
   const completed = steps.filter((type) => events.some((event) => event.type === type));
-  const terminal = ["COMPLETE", "BLOCKED", "FAILED", "DELIVERY_READY"].includes(task.state);
+  const terminal = ["COMPLETE", "BLOCKED", "FAILED", "RECOVERY_REQUIRED", "DELIVERY_READY"].includes(task.state);
   const fallbackNextAction = task.state === "AWAITING_APPROVAL" ? "Review and approve the frontend plan."
     : task.state === "BLOCKED" || task.state === "FAILED" || task.state === "RECOVERY_REQUIRED" ? "Inspect the blocking evidence and continue from a safe checkpoint."
     : task.state === "DELIVERY_READY" ? "Save the verified slice checkpoint."
