@@ -31,6 +31,7 @@ export function formatBenchmarkReport(artifacts: BenchmarkTelemetryArtifacts) {
   lines.push(`Tasks observed: ${summary.taskCount}`);
   lines.push(`Slices observed: ${summary.observedSliceCount}`);
   lines.push(`Plan approvals: ${summary.approvals.projectPlan} · revisions: ${summary.approvals.projectPlanRevision}`);
+  lines.push(`Project replans during slices: ${summary.planning.outerReplanEventCount}`);
   lines.push("");
 
   if (summary.observedSlices.length) {
@@ -50,6 +51,14 @@ export function formatBenchmarkReport(artifacts: BenchmarkTelemetryArtifacts) {
   lines.push(`  Peak: ${summary.context.maximumCharacters.toLocaleString()} / ${summary.context.configuredMaximumCharacters.toLocaleString()} chars`);
   lines.push(`  Average: ${summary.context.averageCharacters.toLocaleString()} chars`);
   lines.push(`  Peak utilization: ${percent(summary.context.peakUtilization)}`);
+  const contextsBySlice = new Map<string, number>();
+  for (const pack of artifacts.contexts.packs) {
+    const label = pack.sliceTitle ?? pack.sliceId ?? "unscoped";
+    contextsBySlice.set(label, Math.max(contextsBySlice.get(label) ?? 0, pack.characters));
+  }
+  for (const [label, characters] of contextsBySlice) {
+    lines.push(`  ${label}: ${characters.toLocaleString()} chars`);
+  }
   lines.push("");
 
   lines.push("Quality");
