@@ -280,7 +280,7 @@ function buildDebugSnapshot(taskId: string): DebugSnapshot | null {
   const plan = projectPlanFromWorkflow(ownedWorkflow, root);
   const slice = sliceStateFromWorkflow(ownedWorkflow, plan, root);
   const baselineCandidates = pendingVisualBaselineCandidates(taskId);
-  const status = deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length });
+  const status = deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length, maxDesignRefinements });
 
   const contextPacks = tasks.listContextPacks(taskId).slice(0, 20).map((record) => ({
     id: record.id,
@@ -1134,7 +1134,7 @@ const server = createServer((request, response) => {
     const slice = sliceStateFromWorkflow(ownedWorkflow, plan, root);
     const baselineCandidates = pendingVisualBaselineCandidates(taskId);
     return send(response, 200, {
-      status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length }),
+      status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length, maxDesignRefinements }),
       blueprint: authorityWorkflow?.projectPlan ?? null,
       baselineCandidates,
     });
