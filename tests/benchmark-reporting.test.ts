@@ -285,3 +285,20 @@ test("telemetry artifacts never persist raw model input from debug snapshots", a
   const serialized = JSON.stringify(artifacts);
   assert.doesNotMatch(serialized, /inputText|rawModelInput|system prompt/i);
 });
+
+
+test("formatted report includes the full message for non-invariant runner failures", () => {
+  const failed = outcome();
+  failed.result.failures = [{
+    code: "BENCHMARK_RUNNER_ERROR",
+    category: "workflow",
+    message: "Choose a website name using letters or numbers (up to 60 characters).",
+    taskId: null,
+    sliceId: null,
+  }];
+  const report = formatBenchmarkReport(collectBenchmarkTelemetry(benchmark, failed));
+  assert.match(
+    report,
+    /\[workflow\] BENCHMARK_RUNNER_ERROR: Choose a website name using letters or numbers \(up to 60 characters\)\./,
+  );
+});
