@@ -277,3 +277,102 @@ test("runner refuses an implementation approval gate it does not own", async () 
     await new Promise<void>((resolveClose) => gateway.close(() => resolveClose()));
   }
 });
+
+
+test("runner downgrades nominal frontend completion when durable invariants fail", async () => {
+  const gateway = createServer((request, response) => {
+    const url = request.url ?? "/";
+    if (request.method === "GET" && url === "/health") {
+      return json(response, 200, { core: { runtimeConnected: true, modelAvailable: true } });
+    }
+    if (request.method === "POST" && url === "/api/websites") {
+      return json(response, 201, { session: { id: "session-3", workflowRole: "primary" } });
+    }
+    if (request.method === "POST" && url === "/api/chat") {
+      return ndjson(response, [
+        { type: "task.created", task: { id: "plan-3" } },
+        { type: "stream.completed", taskId: "plan-3" },
+      ]);
+    }
+    if (request.method === "GET" && url === "/api/sessions/session-3") {
+      return json(response, 200, {
+        session: { id: "session-3", workflowRole: "primary" },
+        latestTaskId: "slice-final",
+        task: { id: "slice-final", state: "COMPLETE" },
+        approval: null,
+        projectPlanApproval: false,
+        projectPlanRevisionApproval: false,
+        runtimeAvailable: true,
+        runtimeActive: false,
+      });
+    }
+    if (request.method === "GET" && url === "/api/tasks/slice-final/workflow-status") {
+      return json(response, 200, {
+        taskId: "slice-final",
+        taskState: "COMPLETE",
+        source: "sqlite",
+        phase: "frontend",
+        status: "frontend_complete",
+        sliceIndex: 1,
+        sliceTotal: 2,
+        sliceTitle: "Work",
+        verificationPassed: true,
+        repairAttempt: 0,
+        nextAction: "request_feedback",
+        run: {
+          stage: "ready",
+          headline: "Frontend complete",
+          nextAction: "request_feedback",
+          blocker: null,
+          verification: { status: "passed" },
+        },
+      });
+    }
+    if (request.method === "GET" && url === "/api/control/tasks/slice-final/snapshot") {
+      return json(response, 200, {
+        snapshot: {
+          version: 1,
+          generatedAt: new Date().toISOString(),
+          readOnly: true,
+          task: { id: "slice-final", state: "COMPLETE", attempts: 0 },
+          workflow: {
+            version: 9,
+            phase: "frontend",
+            status: "awaiting_feedback",
+            sliceIndex: 1,
+            sliceTotal: 2,
+            sliceTitle: "Work",
+            nextAction: "request_feedback",
+            repairAttempt: 0,
+            attemptPhase: "implementation",
+            verification: { status: "failed", attempt: 0 },
+            projectPlan: { backendRequired: false, sitemap: [{ route: "/" }, { route: "/work" }] },
+          },
+          approval: { status: "APPROVED", worktreePath: "/tmp/final", baseCommit: "base" },
+          events: [],
+          contextPacks: [{ id: "final-pack", sliceId: "work", characters: 10000, budgetCharacters: 24000 }],
+          git: { worktreePath: "/tmp/final", worktreeExists: true, baseCommit: "base", headCommit: "head" },
+          checkpoints: [{ id: "final-cp", kind: "pre_delivery", taskState: "DELIVERY_READY", verification: { status: "failed" } }],
+          diagnostics: [],
+        },
+      });
+    }
+    return json(response, 404, {});
+  });
+
+  try {
+    const port = await listen(gateway);
+    const outcome = await runFrontendBenchmark({
+      client: new BorgBenchmarkClient(`http://127.0.0.1:${port}`),
+      benchmark,
+      prompt: "Build Northline.",
+      timeoutMs: 500,
+      pollIntervalMs: 0,
+      sleep: async () => {},
+    });
+    assert.equal(outcome.result.status, "FAIL");
+    assert.equal(outcome.result.failures.some((item) => item.code === "FRONTEND_COMPLETION_WITHOUT_PASSED_VERIFICATION"), true);
+  } finally {
+    await new Promise<void>((resolveClose) => gateway.close(() => resolveClose()));
+  }
+});
