@@ -221,6 +221,7 @@ test("telemetry collector compacts observations and summarizes context, repair, 
   assert.equal(artifacts.summary.context.packCount, 2);
   assert.equal(artifacts.summary.context.maximumCharacters, 25_000);
   assert.equal(artifacts.summary.context.averageCharacters, 18_500);
+  assert.equal(artifacts.summary.planning.outerReplanEventCount, 0);
   assert.equal(artifacts.summary.repair.tasksWithRepair, 1);
   assert.equal(artifacts.summary.repair.maximumRepairAttempt, 1);
   assert.equal(artifacts.summary.verification.passedTaskCount, 2);
@@ -240,7 +241,10 @@ test("formatted report surfaces result, slices, bounded context, repairs, and in
   assert.match(report, /Result: FAIL/);
   assert.match(report, /1\. Home · passed · repair 1/);
   assert.match(report, /2\. Work · passed/);
+  assert.match(report, /Project replans during slices: 0/);
   assert.match(report, /Peak: 25,000 \/ 24,000 chars/);
+  assert.match(report, /Home: 25,000 chars/);
+  assert.match(report, /Work: 12,000 chars/);
   assert.match(report, /Tasks requiring repair: 1/);
   assert.match(report, /Invariant violations: 1/);
   assert.match(report, /CONTEXT_BUDGET_EXCEEDED/);
