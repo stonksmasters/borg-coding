@@ -343,6 +343,8 @@ export function BorgWorkspaceV2() {
         if (result.status.run.designRefinement) {
           setDesignRefinementCount(result.status.run.designRefinement.attempt);
           if (result.status.run.designRefinement.maximum) setMaxDesignRefinements(result.status.run.designRefinement.maximum);
+        } else {
+          setDesignRefinementCount(0);
         }
       }
       if (contextsResponse.ok) setContextRecords((await contextsResponse.json() as { contexts: ContextRecord[] }).contexts);
@@ -678,6 +680,7 @@ export function BorgWorkspaceV2() {
         setProcesses([]);
         setProcessEvents([]);
         setDesignReview(null);
+        setDesignRefinementCount(0);
         changeFingerprintRef.current = null;
         await Promise.allSettled([
           refreshTaskActivity(nextTaskId),
