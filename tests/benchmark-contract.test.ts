@@ -28,6 +28,16 @@ test("northline frontend-autonomy benchmark fixture validates", () => {
   assert.equal(parsed.limits.maxProjectPlanRevisions, 1);
 });
 
+test("northline fixture points at the preserved progressive-planning prompt", () => {
+  const fixture = parseFrontendAutonomyBenchmark(northlineFixture());
+  const promptPath = join(process.cwd(), "benchmarks", "frontend-autonomy", fixture.id, fixture.promptPath);
+  const prompt = readFileSync(promptPath, "utf8");
+  assert.match(prompt, /Northline Web/);
+  assert.match(prompt, /Home[\s\S]*Work[\s\S]*Services[\s\S]*About[\s\S]*Contact/);
+  assert.match(prompt, /Do not add login, dashboards, blogs, booking systems, careers, search, newsletters, or backend features/);
+  assert.match(prompt, /detailed plan for the Home page only/);
+});
+
 test("benchmark contract rejects duplicate routes and impossible page minimums", () => {
   const fixture = northlineFixture() as Record<string, unknown>;
   const expected = fixture.expected as Record<string, unknown>;
