@@ -671,9 +671,9 @@ export class ExecutionOrchestrator {
           activeRoleAssignment = null;
           createCheckpointSnapshot(task, "pre_repair");
 
-          const requestedQualityAction = visualDecision.source === "local_vision"
-            ? "technical_repair" as const
-            : "design_refinement" as const;
+          const requestedQualityAction = visualDecision.source === "visual_director"
+            ? "design_refinement" as const
+            : "technical_repair" as const;
           const qualityOutcome = workflow.applyQualityOutcome(task, {
             action: requestedQualityAction,
             reason: visualDecision.reason,
@@ -682,13 +682,13 @@ export class ExecutionOrchestrator {
           });
           adoptCoreMutation(qualityOutcome);
 
-          if (visualDecision.source === "local_vision") {
+          if (visualDecision.source !== "visual_director") {
             recordHandoff({
               task,
               fromRole: "verifier",
               toRole: "implementer",
               objective: task.request,
-              evidence: [JSON.stringify(visualDecision.visionReview).slice(0, 20_000)],
+              evidence: [visualDecision.repairEvidence.slice(0, 6_000)],
               openRisks: [visualDecision.reason],
               requiredNextAction: "Repair only the evidenced visual defect.",
             }, emit);
@@ -698,11 +698,12 @@ export class ExecutionOrchestrator {
             if (qualityOutcome.action === "block") {
               appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", {
                 attempts: task.attempts,
+                source: visualDecision.source,
                 visionReview: visualDecision.visionReview,
               });
               emit({
                 type: "stream.blocked",
-                message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.`,
+                message: `Render/visual verification still found a blocking defect after ${maxRepairAttempts} technical repair attempts.`,
               });
               return;
             }
