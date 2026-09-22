@@ -23,7 +23,8 @@
     "remote:dev": "node --experimental-strip-types apps/server/src/remote-gateway.ts",
     "verify:core": "node scripts/verify-local.mjs --core-only",
     "verify:all": "node scripts/verify-local.mjs",
-    "verify:clean": "node scripts/verify-local.mjs --fresh-install"
+    "verify:clean": "node scripts/verify-local.mjs --fresh-install",
+    "benchmark:frontend": "node --experimental-strip-types scripts/run-frontend-benchmark.mjs"
   },
   "dependencies": {
     "axe-core": "4.13.0",
