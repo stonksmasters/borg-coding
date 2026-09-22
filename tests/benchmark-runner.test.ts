@@ -118,6 +118,28 @@ test("runner follows gateway authority from planning approval through two autono
           run: { stage: "ready", headline: "Home is verified", nextAction: "advance_slice", blocker: null, verification: { status: "passed" } },
         });
       }
+      if (request.method === "GET" && url === "/api/control/tasks/slice-1/snapshot") {
+        return json(response, 200, {
+          snapshot: {
+            version: 1,
+            generatedAt: new Date().toISOString(),
+            readOnly: true,
+            task: { id: "slice-1", state: "COMPLETE", attempts: 0 },
+            workflow: {
+              version: 4, phase: "frontend", status: "running", sliceIndex: 0, sliceTotal: 2, sliceTitle: "Home",
+              nextAction: "advance_slice", repairAttempt: 0, attemptPhase: "implementation",
+              verification: { status: "passed", attempt: 0 },
+              projectPlan: { backendRequired: false, sitemap: [{ route: "/" }, { route: "/work" }] },
+            },
+            approval: { status: "APPROVED", worktreePath: "/tmp/slice-1", baseCommit: "base" },
+            events: [],
+            contextPacks: [{ id: "pack-1", sliceId: "home", characters: 10000, budgetCharacters: 24000 }],
+            git: { worktreePath: "/tmp/slice-1", worktreeExists: true, baseCommit: "base", headCommit: "head" },
+            checkpoints: [{ id: "cp-1", kind: "pre_delivery", taskState: "DELIVERY_READY", workflowVersion: 4, verification: { status: "passed" } }],
+            diagnostics: [],
+          },
+        });
+      }
       if (request.method === "GET" && url === "/api/tasks/slice-2/workflow-status") {
         return json(response, 200, {
           taskId: "slice-2",
@@ -132,6 +154,28 @@ test("runner follows gateway authority from planning approval through two autono
           repairAttempt: 0,
           nextAction: "request_feedback",
           run: { stage: "ready", headline: "Frontend complete", nextAction: "request_feedback", blocker: null, verification: { status: "passed" } },
+        });
+      }
+      if (request.method === "GET" && url === "/api/control/tasks/slice-2/snapshot") {
+        return json(response, 200, {
+          snapshot: {
+            version: 1,
+            generatedAt: new Date().toISOString(),
+            readOnly: true,
+            task: { id: "slice-2", state: "COMPLETE", attempts: 0 },
+            workflow: {
+              version: 5, phase: "frontend", status: "awaiting_feedback", sliceIndex: 1, sliceTotal: 2, sliceTitle: "Work",
+              nextAction: "request_feedback", repairAttempt: 0, attemptPhase: "implementation",
+              verification: { status: "passed", attempt: 0 },
+              projectPlan: { backendRequired: false, sitemap: [{ route: "/" }, { route: "/work" }] },
+            },
+            approval: { status: "APPROVED", worktreePath: "/tmp/slice-2", baseCommit: "base" },
+            events: [],
+            contextPacks: [{ id: "pack-2", sliceId: "work", characters: 11000, budgetCharacters: 24000 }],
+            git: { worktreePath: "/tmp/slice-2", worktreeExists: true, baseCommit: "base", headCommit: "head" },
+            checkpoints: [{ id: "cp-2", kind: "pre_delivery", taskState: "DELIVERY_READY", workflowVersion: 5, verification: { status: "passed" } }],
+            diagnostics: [],
+          },
         });
       }
       if (request.method === "POST" && url === "/api/frontend-workflow/continue") {
@@ -160,6 +204,7 @@ test("runner follows gateway authority from planning approval through two autono
     assert.equal(outcome.approvals.projectPlan, 1);
     assert.equal(outcome.approvals.projectPlanRevision, 0);
     assert.deepEqual(outcome.taskIds, ["plan-task", "slice-1", "slice-2"]);
+    assert.equal(outcome.snapshots.length, 2);
     assert.equal(continueCalls, 0, "runner must not call the manual frontend continuation endpoint");
     assert.ok(outcome.observations.some((item) => item.sliceTitle === "Home" && item.nextAction === "advance_slice"));
     assert.ok(outcome.observations.some((item) => item.sliceTitle === "Work" && item.nextAction === "request_feedback"));
