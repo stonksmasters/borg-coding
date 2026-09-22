@@ -92,9 +92,11 @@ async function responseError(response: Response) {
 
 export class BorgBenchmarkClient {
   readonly baseUrl: string;
+  private readonly fetchImpl: BenchmarkFetch;
 
-  constructor(baseUrl = "http://127.0.0.1:4312", private readonly fetchImpl: BenchmarkFetch = fetch) {
+  constructor(baseUrl = "http://127.0.0.1:4312", fetchImpl: BenchmarkFetch = fetch) {
     this.baseUrl = cleanBaseUrl(baseUrl);
+    this.fetchImpl = fetchImpl;
   }
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
