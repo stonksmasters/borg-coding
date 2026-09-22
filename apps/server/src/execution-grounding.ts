@@ -83,11 +83,11 @@ export function repairGroundingSnapshot(root: string, focusPaths: readonly strin
   const dependencyPaths = directRepairDependencies(root, basisPaths);
   const changedFiles = basisPaths.slice(0, 3).map((path) => {
     const content = safeWorktreeFile(root, path);
-    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 1_500)}`;
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 2_500)}`;
   });
   const dependencies = dependencyPaths.slice(0, 3).map((path) => {
     const content = safeWorktreeFile(root, path);
-    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 2_500)}`;
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 1_500)}`;
   });
   const body = [
     "CURRENT WORKTREE GROUNDING. This snapshot is authoritative for the repair pass; do not rediscover or guess paths.",
