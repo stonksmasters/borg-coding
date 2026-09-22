@@ -26,6 +26,31 @@ function evidence(taskId: string): BrowserEvidenceReport {
   };
 }
 
+
+function renderedEvidence(taskId: string, sha256: string): BrowserEvidenceReport {
+  const screenshot = {
+    name: "responsive-desktop",
+    path: ".borg/evidence/browser/desktop.png",
+    sha256,
+    width: 1440,
+    height: 900,
+    fullPage: true,
+  };
+  return {
+    ...evidence(taskId),
+    screenshots: [screenshot],
+    responsive: [{
+      name: "desktop",
+      width: 1440,
+      height: 900,
+      url: "http://127.0.0.1:5173/",
+      title: "Northline",
+      screenshot,
+      accessibility: null,
+    }],
+  };
+}
+
 function designBrief(taskId: string): DesignBrief {
   return {
     taskId,
@@ -215,4 +240,65 @@ test("QualityGateService normalizes fresh-review failure as current-slice repair
   if (result.action !== "repair_current_slice") return;
   assert.equal(result.source, "fresh_review");
   assert.match(result.repairEvidence, /Fresh-context review requires repair/);
+});
+
+
+test("QualityGateService reclassifies unchanged post-refinement screenshots as render-integrity repair", async () => {
+  const taskId = "quality-render-no-progress";
+  let designReviews = 0;
+  const deps = {
+    vision: {
+      status: () => ({ provider: "ollama", model: "vision-test" }),
+      review: async () => { throw new Error("legacy vision should not run"); },
+    },
+    visualDirector: {
+      review: async () => {
+        designReviews += 1;
+        return review(taskId, "current_slice");
+      },
+    },
+    ollamaUrl: "http://127.0.0.1:11434",
+    runReview: async () => ({ verdict: "pass" as const, summary: "Pass", criteria: [], findings: [] }),
+  } as unknown as QualityGateServiceDependencies;
+  const service = new QualityGateService(deps);
+  const plan = fallbackProjectPlan("Build a premium portfolio.", "portfolio");
+  const sliceState = {
+    version: 2 as const,
+    current: 0,
+    total: plan.slices.length,
+    currentTitle: plan.slices[0].title,
+    status: "working" as const,
+    brief: plan.siteGoal,
+    lastTaskId: taskId,
+    feedback: [],
+    planRevision: plan.revision,
+    backendRequired: plan.backendRequired,
+  };
+  const events: string[] = [];
+  const input = {
+    taskId,
+    request: "Build the homepage hero",
+    worktreePath: ".",
+    browserEvidence: renderedEvidence(taskId, "same-render"),
+    designBrief: designBrief(taskId),
+    activeSlicePrompt: "Homepage shell and hero",
+    projectPlan: plan,
+    sliceState,
+    attempt: 0,
+    emit: () => undefined,
+    appendTaskEvent: (type: string) => { events.push(type); },
+  };
+
+  const first = await service.evaluateVisual(input);
+  assert.equal(first.action, "repair_current_slice");
+  if (first.action !== "repair_current_slice") return;
+  assert.equal(first.source, "visual_director");
+
+  const second = await service.evaluateVisual(input);
+  assert.equal(second.action, "repair_current_slice");
+  if (second.action !== "repair_current_slice") return;
+  assert.equal(second.source, "render_integrity");
+  assert.match(second.repairEvidence, /screenshot fingerprint is unchanged/i);
+  assert.equal(designReviews, 1);
+  assert.ok(events.includes("VISUAL_RENDER_NO_PROGRESS"));
 });
