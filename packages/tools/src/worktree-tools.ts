@@ -226,6 +226,100 @@ function changedSourcePathsFromStatus(status: string) {
     .filter((value) => value && !value.startsWith(".localcode/") && /\.(?:tsx?|jsx?|css|scss|html)$/.test(value)))];
 }
 
+
+const sourceModuleExtensions = [".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".json"];
+
+function localImportSpecifiers(content: string): string[] {
+  const values = new Set<string>();
+  for (const pattern of [
+    /(?:from\s+|import\s*\(|require\s*\(|@import\s+(?:url\()?)[\"'](\.[^\"']+)[\"']/g,
+    /\bimport\s*[\"'](\.[^\"']+)[\"']/g,
+  ]) {
+    for (const match of content.matchAll(pattern)) if (match[1]) values.add(match[1]);
+  }
+  return [...values];
+}
+
+function resolveLocalImport(root: string, fromPath: string, specifier: string): string | null {
+  const clean = specifier.split(/[?#]/, 1)[0];
+  const base = resolve(root, dirname(fromPath), clean);
+  const candidates = [
+    base,
+    ...sourceModuleExtensions.map((extension) => base + extension),
+    ...sourceModuleExtensions.map((extension) => join(base, "index" + extension)),
+  ];
+  for (const candidate of candidates) {
+    if (!isInside(root, candidate) || !existsSync(candidate) || !lstatSync(candidate).isFile()) continue;
+    if (statSync(candidate).size > MAX_FILE_BYTES) continue;
+    return relative(root, candidate).replaceAll("\\", "/");
+  }
+  return null;
+}
+
+function reachableSourceFiles(root: string): Set<string> {
+  const entries = [
+    "src/main.tsx", "src/main.ts", "src/main.jsx", "src/main.js",
+    "src/index.tsx", "src/index.ts", "src/index.jsx", "src/index.js",
+  ].filter((path) => existsSync(join(root, path)) && lstatSync(join(root, path)).isFile());
+  const reachable = new Set<string>();
+  const pending = [...entries];
+  while (pending.length && reachable.size < 400) {
+    const path = pending.shift()!;
+    if (reachable.has(path)) continue;
+    reachable.add(path);
+    const absolute = join(root, path);
+    if (!existsSync(absolute) || !lstatSync(absolute).isFile() || statSync(absolute).size > MAX_FILE_BYTES) continue;
+    const content = readFileSync(absolute, "utf8");
+    for (const specifier of localImportSpecifiers(content)) {
+      const resolved = resolveLocalImport(root, path, specifier);
+      if (resolved && !reachable.has(resolved)) pending.push(resolved);
+    }
+  }
+  return reachable;
+}
+
+function renderIntegrityViolations(root: string, paths: readonly string[]): StyleContractViolation[] {
+  const changedStyles = paths.filter((path) => /\.(?:css|scss)$/i.test(path));
+  if (!changedStyles.length) return [];
+  const reachable = reachableSourceFiles(root);
+  if (!reachable.size) return [];
+
+  const reachableStyles = [...reachable].filter((path) => /\.(?:css|scss)$/i.test(path));
+  const definedVariables = new Set<string>();
+  for (const path of reachableStyles) {
+    const absolute = join(root, path);
+    if (!existsSync(absolute) || !lstatSync(absolute).isFile()) continue;
+    const content = readFileSync(absolute, "utf8");
+    for (const match of content.matchAll(/(--[a-z0-9_-]+)\s*:/gi)) definedVariables.add(match[1]);
+  }
+
+  const violations: StyleContractViolation[] = [];
+  for (const path of changedStyles.slice(0, 40)) {
+    if (!reachable.has(path)) {
+      violations.push({
+        path,
+        line: 1,
+        message: "Changed stylesheet is not reachable from the application entrypoint. Import it from the component or from an already-reachable stylesheet before visual verification.",
+      });
+      continue;
+    }
+    const absolute = join(root, path);
+    if (!existsSync(absolute) || !lstatSync(absolute).isFile()) continue;
+    const content = readFileSync(absolute, "utf8");
+    for (const match of content.matchAll(/var\(\s*(--[a-z0-9_-]+)\s*(,\s*[^)]*)?\)/gi)) {
+      if (match[2] || definedVariables.has(match[1])) continue;
+      const line = content.slice(0, match.index ?? 0).split(/\r?\n/).length;
+      violations.push({
+        path,
+        line,
+        message: `CSS custom property ${match[1]} is referenced without a fallback but is not defined by any stylesheet reachable from the application entrypoint.`,
+      });
+      if (violations.length >= 20) return violations;
+    }
+  }
+  return violations;
+}
+
 function styleContractViolations(root: string, paths: readonly string[]): StyleContractViolation[] {
   const stylesPath = join(root, ".localcode", "build", "styles.md");
   if (!existsSync(stylesPath) || !lstatSync(stylesPath).isFile()) return [];
@@ -582,20 +676,35 @@ export class WorktreeTools {
       commandPassed = results.length === profile.commands.length && results.every((item) => item.exitCode === 0 && !item.timedOut);
       if (commandPassed) {
         const status = await this.git(root, ["status", "--short", "--untracked-files=all"]);
-        const violations = styleContractViolations(root, changedSourcePathsFromStatus(status.stdout));
-        if (violations.length) {
-          const stderr = violations.map((violation) =>
-            `${violation.path}:${violation.line}:1: error BORG_STYLE: ${violation.message}`
+        const changedPaths = changedSourcePathsFromStatus(status.stdout);
+        const staticChecks = [
+          {
+            label: "BORG style contract",
+            arg: "style-contract",
+            code: "BORG_STYLE",
+            violations: styleContractViolations(root, changedPaths),
+          },
+          {
+            label: "BORG render integrity",
+            arg: "render-integrity",
+            code: "BORG_RENDER",
+            violations: renderIntegrityViolations(root, changedPaths),
+          },
+        ];
+        for (const check of staticChecks) {
+          if (!check.violations.length) continue;
+          const stderr = check.violations.map((violation) =>
+            `${violation.path}:${violation.line}:1: error ${check.code}: ${violation.message}`
           ).join("\n");
           results.push({
             command: "borg",
-            args: ["style-contract"],
+            args: [check.arg],
             exitCode: 1,
             stdout: "",
             stderr,
             timedOut: false,
             durationMs: 0,
-            label: "BORG style contract",
+            label: check.label,
           });
           commandPassed = false;
         }
