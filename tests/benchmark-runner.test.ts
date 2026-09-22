@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import test from "node:test";
 import { parseFrontendAutonomyBenchmark } from "../packages/benchmark/src/contracts.ts";
 import { BorgBenchmarkClient } from "../packages/benchmark/src/borg-client.ts";
-import { runFrontendBenchmark } from "../packages/benchmark/src/runner.ts";
+import { benchmarkWebsiteName, runFrontendBenchmark } from "../packages/benchmark/src/runner.ts";
 
 async function readJson(request: IncomingMessage) {
   let body = "";
@@ -30,6 +30,12 @@ async function listen(server: ReturnType<typeof createServer>) {
   if (!address || typeof address === "string") throw new Error("Fake gateway did not expose a TCP port.");
   return address.port;
 }
+
+test("generated benchmark website names stay within BORG's 60-character project limit", () => {
+  const name = benchmarkWebsiteName("northline-v1", new Date("2026-09-22T15:22:55.892Z"));
+  assert.equal(name, "BORG Benchmark northline-v1 20260922152255");
+  assert.ok(name.length <= 60);
+});
 
 const benchmark = parseFrontendAutonomyBenchmark({
   version: 1,
