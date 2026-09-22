@@ -12,6 +12,7 @@ export interface BenchmarkObservation {
   taskState: string | null;
   runtimeActive: boolean;
   approvalGate: BenchmarkApprovalGate;
+  workflowSource: string | null;
   stage: string | null;
   nextAction: string | null;
   sliceIndex: number | null;
@@ -58,6 +59,7 @@ export function observationFor(
     taskState: runtime.task?.state ?? null,
     runtimeActive: runtime.runtimeActive === true,
     approvalGate: approvalGate(runtime),
+    workflowSource: status?.source ?? null,
     stage: status?.run?.stage ?? null,
     nextAction: status?.nextAction ?? null,
     sliceIndex: status?.sliceIndex ?? null,
