@@ -118,6 +118,15 @@ export interface BenchmarkDebugSnapshot {
     budgetCharacters: number;
     [key: string]: unknown;
   }>;
+  modelContexts?: Array<{
+    id: string;
+    role?: string;
+    model?: string;
+    sliceId?: string | null;
+    manifestCount?: number;
+    createdAt?: string;
+    [key: string]: unknown;
+  }>;
   git: {
     worktreePath: string | null;
     worktreeExists: boolean | null;
