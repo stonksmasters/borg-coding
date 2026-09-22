@@ -2,6 +2,7 @@ import type { FrontendAutonomyBenchmark } from "./contracts.ts";
 import type { BenchmarkFailure, BenchmarkRunResult } from "./result.ts";
 import {
   BorgBenchmarkClient,
+  type BenchmarkDebugSnapshot,
   type BenchmarkSessionRuntime,
   type BenchmarkWorkflowStatus,
 } from "./borg-client.ts";
@@ -13,6 +14,7 @@ import {
   observationFor,
   type BenchmarkObservation,
 } from "./observer.ts";
+import { evaluateBenchmarkInvariants } from "./invariants.ts";
 
 export interface FrontendBenchmarkRunnerOptions {
   client: BorgBenchmarkClient;
@@ -31,6 +33,7 @@ export interface FrontendBenchmarkRunnerOutcome {
   sessionId: string | null;
   taskIds: string[];
   observations: BenchmarkObservation[];
+  snapshots: BenchmarkDebugSnapshot[];
   approvals: {
     projectPlan: number;
     projectPlanRevision: number;
@@ -86,18 +89,32 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
   const observations: BenchmarkObservation[] = [];
   const taskIds: string[] = [];
   const approvals = { projectPlan: 0, projectPlanRevision: 0 };
+  const snapshotByTask = new Map<string, BenchmarkDebugSnapshot>();
   let sessionId: string | null = null;
 
   const finish = (
     status: BenchmarkRunResult["status"],
     failures: BenchmarkFailure[],
-  ): FrontendBenchmarkRunnerOutcome => ({
-    result: result(benchmark.id, status, startedAt, now().toISOString(), failures),
-    sessionId,
-    taskIds,
-    observations,
-    approvals,
-  });
+  ): FrontendBenchmarkRunnerOutcome => {
+    const snapshots = [...snapshotByTask.values()];
+    const invariantFailures = evaluateBenchmarkInvariants({
+      benchmark,
+      observations,
+      snapshots,
+      approvals,
+      completionClaimed: status === "PASS",
+    });
+    const combined = [...failures, ...invariantFailures];
+    const finalStatus = status === "PASS" && invariantFailures.length ? "FAIL" : status;
+    return {
+      result: result(benchmark.id, finalStatus, startedAt, now().toISOString(), combined),
+      sessionId,
+      taskIds,
+      observations,
+      snapshots,
+      approvals,
+    };
+  };
 
   try {
     const health = await client.health();
@@ -138,6 +155,8 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
       let workflowStatus: BenchmarkWorkflowStatus | null = null;
       if (runtime.latestTaskId) {
         workflowStatus = await client.workflowStatus(runtime.latestTaskId);
+        const snapshot = await client.debugSnapshot(runtime.latestTaskId).catch(() => null);
+        if (snapshot) snapshotByTask.set(runtime.latestTaskId, snapshot);
       }
 
       const observation = observationFor(runtime, workflowStatus);
