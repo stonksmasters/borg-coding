@@ -75,8 +75,10 @@ export function formatBenchmarkReport(artifacts: BenchmarkTelemetryArtifacts) {
       lines.push(`  - [${failure.category}] ${failure.code}: ${failure.message}`);
     }
     const invariantCodes = new Set(artifacts.invariants.violations.map((item) => item.code));
-    for (const code of summary.failures.codes) {
-      if (!invariantCodes.has(code)) lines.push(`  - ${code}`);
+    for (const failure of summary.failures.items) {
+      if (!invariantCodes.has(failure.code)) {
+        lines.push(`  - [${failure.category}] ${failure.code}: ${failure.message}`);
+      }
     }
   }
 

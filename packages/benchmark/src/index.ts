@@ -44,6 +44,7 @@ export {
 } from "./observer.ts";
 
 export {
+  benchmarkWebsiteName,
   runFrontendBenchmark,
   type FrontendBenchmarkRunnerOptions,
   type FrontendBenchmarkRunnerOutcome,

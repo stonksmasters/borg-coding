@@ -73,6 +73,14 @@ function statusSliceId(status: BenchmarkWorkflowStatus | null) {
   return status.sliceTitle || `slice-${status.sliceIndex + 1}`;
 }
 
+export function benchmarkWebsiteName(benchmarkId: string, startedAt: Date) {
+  const prefix = "BORG Benchmark ";
+  const stamp = startedAt.toISOString().replace(/\D/g, "").slice(0, 14);
+  const maxIdLength = Math.max(1, 60 - prefix.length - stamp.length - 1);
+  const compactId = benchmarkId.slice(0, maxIdLength).replace(/-+$/, "") || "run";
+  return `${prefix}${compactId} ${stamp}`;
+}
+
 export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptions): Promise<FrontendBenchmarkRunnerOutcome> {
   const {
     client,
@@ -84,7 +92,8 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const timeoutMs = options.timeoutMs ?? 30 * 60_000;
   const pollIntervalMs = options.pollIntervalMs ?? 500;
-  const startedAt = now().toISOString();
+  const started = now();
+  const startedAt = started.toISOString();
   const deadline = Date.now() + timeoutMs;
   const observations: BenchmarkObservation[] = [];
   const taskIds: string[] = [];
@@ -125,7 +134,7 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
     }
 
     const website = await client.createWebsite({
-      name: options.websiteName ?? `Benchmark ${benchmark.name} ${now().toISOString().replace(/[:.]/g, "-")}`,
+      name: options.websiteName ?? benchmarkWebsiteName(benchmark.id, started),
       brief: prompt,
       template: "auto",
     });
