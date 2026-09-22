@@ -21,6 +21,7 @@ export {
 
 export {
   BorgBenchmarkClient,
+  type BenchmarkDebugSnapshot,
   type BenchmarkFetch,
   type BenchmarkGatewayHealth,
   type BenchmarkRunView,
@@ -47,3 +48,13 @@ export {
   type FrontendBenchmarkRunnerOptions,
   type FrontendBenchmarkRunnerOutcome,
 } from "./runner.ts";
+
+export {
+  evaluateBenchmarkInvariants,
+  type BenchmarkInvariantInput,
+} from "./invariants.ts";
+
+export {
+  benchmarkViolationCodes,
+  type BenchmarkViolationCode,
+} from "./violations.ts";
