@@ -80,7 +80,6 @@ function renderFingerprint(evidence: BrowserEvidenceReport | null | undefined): 
 
 export class QualityGateService {
   private readonly deps: QualityGateServiceDependencies;
-  private readonly pendingVisualRefinement = new Map<string, string>();
 
   constructor(deps: QualityGateServiceDependencies) {
     this.deps = deps;
@@ -100,6 +99,7 @@ export class QualityGateService {
     appendTaskEvent: QualityTaskEventSink;
     onVisionRequestBody?: (body: string, model: string) => void;
     onDesignRequestBody?: (body: string, model: string) => void;
+    previousVisualFingerprint?: string | null;
   }): Promise<VisualQualityDecision> {
     let visionReview: VisionReviewResult | null = null;
 
@@ -131,7 +131,7 @@ export class QualityGateService {
           action: "repair_current_slice",
           source: "local_vision",
           reason: "Local vision review found a blocking visual defect.",
-          repairEvidence: `Local vision review requires repair:\n${JSON.stringify(visionReview).slice(0, 12_000)}`,
+          repairEvidence: `Local vision review requires repair:\n${JSON.stringify(visionReview).slice(0, 6_000)}`,
           findings: visionReview.findings,
           visionReview,
           designReview: null,
@@ -158,7 +158,7 @@ export class QualityGateService {
     }
 
     const fingerprint = renderFingerprint(input.browserEvidence);
-    const pendingFingerprint = this.pendingVisualRefinement.get(input.taskId);
+    const pendingFingerprint = input.previousVisualFingerprint ?? null;
     if (pendingFingerprint && fingerprint && pendingFingerprint === fingerprint) {
       input.appendTaskEvent("VISUAL_RENDER_NO_PROGRESS", {
         attempt: input.attempt,
@@ -185,10 +185,6 @@ export class QualityGateService {
         visionReview,
       };
     }
-    if (pendingFingerprint && fingerprint && pendingFingerprint !== fingerprint) {
-      this.pendingVisualRefinement.delete(input.taskId);
-    }
-
     const policy = this.deps.vision.status();
     input.emit({ type: "stage.updated", stage: "Visual Direction", status: "active" });
     input.appendTaskEvent("DESIGN_REVIEW_STARTED", {
@@ -233,7 +229,6 @@ export class QualityGateService {
     if (designReview.status === "repair") {
       const reason = designReview.scopeReason || designReview.summary;
       if (designReview.repairScope === "cross_slice" || designReview.repairScope === "project_plan") {
-        this.pendingVisualRefinement.delete(input.taskId);
         return {
           action: "revise_project_plan",
           scope: designReview.repairScope,
@@ -242,7 +237,12 @@ export class QualityGateService {
           visionReview,
         };
       }
-      if (fingerprint) this.pendingVisualRefinement.set(input.taskId, fingerprint);
+      if (fingerprint) {
+        input.appendTaskEvent("VISUAL_REFINEMENT_RENDER_BASELINE", {
+          attempt: input.attempt,
+          fingerprint,
+        });
+      }
       return {
         action: "repair_current_slice",
         source: "visual_director",
@@ -255,7 +255,6 @@ export class QualityGateService {
     }
 
     if (designReview.status !== "pass") {
-      this.pendingVisualRefinement.delete(input.taskId);
       return {
         action: "block",
         source: "visual_director",
@@ -265,7 +264,6 @@ export class QualityGateService {
       };
     }
 
-    this.pendingVisualRefinement.delete(input.taskId);
     input.emit({ type: "stage.updated", stage: "Visual Direction", status: "complete" });
     return { action: "pass", visionReview, designReview };
   }
@@ -315,7 +313,7 @@ export class QualityGateService {
         action: "repair_current_slice",
         source: "fresh_review",
         reason: "Fresh-context review found a blocking issue.",
-        repairEvidence: `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 12_000)}`,
+        repairEvidence: `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 6_000)}`,
         findings: review.findings,
         review,
         acceptanceCriteria,
@@ -366,6 +364,6 @@ Work from the authoritative repair grounding that BORG injects automatically:
 - Do not broaden beyond the current slice; a wider change requires a new plan-revision classification.
 - Capture mobile, tablet, and desktop evidence after editing and inspect whether the cited visual problem visibly changed before finishing.
 
-${JSON.stringify(review).slice(0, 12_000)}`;
+${JSON.stringify(review).slice(0, 6_000)}`;
   }
 }
