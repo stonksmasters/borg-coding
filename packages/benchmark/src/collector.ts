@@ -91,6 +91,9 @@ export interface BenchmarkTelemetrySummary {
     projectPlan: number;
     projectPlanRevision: number;
   };
+  planning: {
+    outerReplanEventCount: number;
+  };
   context: {
     packCount: number;
     maximumCharacters: number;
@@ -330,6 +333,14 @@ export function collectBenchmarkTelemetry(
   for (const item of outcome.result.failures) {
     failureCategories[item.category] = (failureCategories[item.category] ?? 0) + 1;
   }
+  const outerReplanEventCount = distinctEvents(
+    outcome.snapshots.flatMap((snapshot) =>
+      snapshot.events.filter((event) =>
+        event.sourceType === "PROJECT_PLAN_PROPOSED"
+        && typeof snapshot.workflow?.sliceIndex === "number"),
+    ),
+  ).length;
+
   const violationSet = new Set<string>(benchmarkViolationCodes);
   const violations = outcome.result.failures
     .filter((item) => violationSet.has(item.code))
@@ -362,6 +373,9 @@ export function collectBenchmarkTelemetry(
       observedSliceCount: observedSlices.length,
       observedSlices,
       approvals: { ...outcome.approvals },
+      planning: {
+        outerReplanEventCount,
+      },
       context: {
         packCount: packs.length,
         maximumCharacters: contextChars.length ? Math.max(...contextChars) : 0,
