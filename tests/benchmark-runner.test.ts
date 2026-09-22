@@ -382,3 +382,74 @@ test("runner downgrades nominal frontend completion when durable invariants fail
     await new Promise<void>((resolveClose) => gateway.close(() => resolveClose()));
   }
 });
+
+
+test("runner retains task id and authoritative snapshot when planning stream fails after task creation", async () => {
+  const gateway = createServer((request, response) => {
+    const url = request.url ?? "/";
+    if (request.method === "GET" && url === "/health") {
+      return json(response, 200, { core: { runtimeConnected: true, modelAvailable: true } });
+    }
+    if (request.method === "POST" && url === "/api/websites") {
+      return json(response, 201, { session: { id: "session-failed", workflowRole: "primary" } });
+    }
+    if (request.method === "POST" && url === "/api/chat") {
+      return ndjson(response, [
+        { type: "task.created", task: { id: "plan-failed", state: "PLANNING" } },
+        { type: "runtime.failed", taskId: "plan-failed", message: "Blueprint component architecture invalid." },
+      ]);
+    }
+    if (request.method === "GET" && url === "/api/control/tasks/plan-failed/snapshot") {
+      return json(response, 200, {
+        snapshot: {
+          version: 1,
+          generatedAt: new Date().toISOString(),
+          readOnly: true,
+          task: { id: "plan-failed", state: "RECOVERY_REQUIRED", attempts: 0 },
+          workflow: {
+            version: 5,
+            phase: "planning",
+            status: "recovery_required",
+            sliceIndex: null,
+            sliceTotal: null,
+            sliceTitle: null,
+            nextAction: "recover",
+            repairAttempt: 0,
+            attemptPhase: null,
+            verification: { status: "pending", attempt: 0 },
+            projectPlan: null,
+          },
+          approval: null,
+          events: [],
+          contextPacks: [],
+          git: { worktreePath: null, worktreeExists: null, baseCommit: null, headCommit: null },
+          checkpoints: [],
+          diagnostics: [],
+        },
+      });
+    }
+    return json(response, 404, {});
+  });
+
+  try {
+    const port = await listen(gateway);
+    const outcome = await runFrontendBenchmark({
+      client: new BorgBenchmarkClient(`http://127.0.0.1:${port}`),
+      benchmark,
+      prompt: "Build Northline.",
+      timeoutMs: 500,
+      pollIntervalMs: 0,
+      sleep: async () => {},
+    });
+
+    assert.equal(outcome.result.status, "INVALID_RUN");
+    assert.deepEqual(outcome.taskIds, ["plan-failed"]);
+    assert.equal(outcome.snapshots.length, 1);
+    assert.equal(outcome.snapshots[0]?.task.id, "plan-failed");
+    assert.equal(outcome.result.failures[0]?.taskId, "plan-failed");
+    assert.equal(outcome.result.failures[0]?.code, "BENCHMARK_RUNNER_ERROR");
+    assert.match(outcome.result.failures[0]?.message ?? "", /Blueprint component architecture invalid/);
+  } finally {
+    await new Promise<void>((resolveClose) => gateway.close(() => resolveClose()));
+  }
+});
