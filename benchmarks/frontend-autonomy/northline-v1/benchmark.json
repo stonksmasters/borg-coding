@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "northline-v1",
+  "name": "Northline Web progressive frontend autonomy",
+  "kind": "frontend-autonomy",
+  "promptPath": "prompt.md",
+  "expected": {
+    "frontendOnly": true,
+    "requiredRoutes": [
+      "/",
+      "/work",
+      "/services",
+      "/about",
+      "/contact"
+    ],
+    "minimumPages": 5,
+    "requireBrowserVerification": true,
+    "requireResponsiveVerification": true,
+    "requireAccessibilityVerification": true,
+    "requireFrontendComplete": true
+  },
+  "limits": {
+    "maxProjectPlanRevisions": 1,
+    "maxRepairAttemptsPerSlice": 3,
+    "maxContextCharacters": 24000
+  }
+}
