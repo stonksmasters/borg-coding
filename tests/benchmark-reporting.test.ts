@@ -221,12 +221,14 @@ test("telemetry collector compacts observations and summarizes context, repair, 
   assert.equal(artifacts.summary.context.packCount, 2);
   assert.equal(artifacts.summary.context.maximumCharacters, 25_000);
   assert.equal(artifacts.summary.context.averageCharacters, 18_500);
+  assert.equal(Math.round(artifacts.summary.context.peakUtilization * 100), 104);
   assert.equal(artifacts.summary.planning.outerReplanEventCount, 0);
   assert.equal(artifacts.summary.repair.tasksWithRepair, 1);
   assert.equal(artifacts.summary.repair.maximumRepairAttempt, 1);
   assert.equal(artifacts.summary.verification.passedTaskCount, 2);
   assert.equal(artifacts.summary.verification.preDeliveryCheckpointCount, 2);
   assert.equal(artifacts.summary.invariantViolationCount, 1);
+  assert.equal(artifacts.summary.failures.items[0]?.message, "Context grew past the benchmark limit.");
   assert.equal(artifacts.contexts.modelContexts.length, 1);
   assert.equal(artifacts.invariants.passed, false);
   assert.equal(artifacts.invariants.violations[0]?.code, "CONTEXT_BUDGET_EXCEEDED");
@@ -243,6 +245,7 @@ test("formatted report surfaces result, slices, bounded context, repairs, and in
   assert.match(report, /2\. Work · passed/);
   assert.match(report, /Project replans during slices: 0/);
   assert.match(report, /Peak: 25,000 \/ 24,000 chars/);
+  assert.match(report, /Peak utilization: 104%/);
   assert.match(report, /Home: 25,000 chars/);
   assert.match(report, /Work: 12,000 chars/);
   assert.match(report, /Tasks requiring repair: 1/);
