@@ -29,6 +29,7 @@ export interface RunView {
   verification: { status: "pending" | "passed" | "failed"; visualStatus: string | null };
   recovery: { status: string; category: string | null; previousTaskState: string | null; checkpointId: string | null; resumeAction: string; reason: string } | null;
   repair: { attempt: number; maximum: number | null } | null;
+  designRefinement: { attempt: number; maximum: number | null } | null;
   planRevision: {
     from: number;
     to: number;
@@ -55,6 +56,7 @@ function activityDetail(event: TaskEvent) {
   if (event.type === "VISUAL_REGRESSION_COMPLETED") return `Visual regression: ${String((event.payload.report as { status?: string } | undefined)?.status ?? "completed")}`;
   if (event.type === "DESIGN_REVIEW_COMPLETED") return `Visual review: ${String((event.payload.review as { status?: string } | undefined)?.status ?? "completed")}`;
   if (event.type === "DESIGN_REFINEMENT_LIMIT_REACHED") return "Visual review still requires structural refinement after the bounded refinement limit.";
+  if (event.type === "VISUAL_RENDER_NO_PROGRESS") return "Rendered screenshots did not change after visual source edits; switching to technical render-integrity repair.";
   if (event.type === "PLAN_REPAIR_REQUIRED") return String(event.payload.reason ?? "The approved plan cannot satisfy the current product-quality findings.");
   if (event.type === "CONTEXT_PACK_COMPILED") return `Prepared ${String((event.payload.profile as { kind?: string } | undefined)?.kind ?? "scoped")} context pack`;
   if (event.type === "MODEL_CONTEXT_RECORDED") return `Saved ${String(event.payload.role ?? "model")} input`;
@@ -153,7 +155,7 @@ export function deriveWorkflowStatus(
   plan: ProjectPlan | null,
   slice: SliceState | null,
   workflow: WorkflowState | null = null,
-  options: { baselineApprovalCount?: number } = {},
+  options: { baselineApprovalCount?: number; maxDesignRefinements?: number } = {},
 ) {
   const normalizedEvents = normalizeWorkflowEvents(task, events);
   const latestActivity = events.findLast((event) => event.type === "AGENT_ACTIVITY");
@@ -163,6 +165,7 @@ export function deriveWorkflowStatus(
     || event.type === "DESIGN_REVIEW_BLOCKED"
     || event.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
     || event.type === "PLAN_REPAIR_REQUIRED"
+    || event.type === "VISUAL_RENDER_NO_PROGRESS"
     || event.type === "VISUAL_REGRESSION_COMPLETED");
   const revisionEvent = events.findLast((event) => event.type === "PROJECT_PLAN_REVISION_PROPOSED");
   const revisionPayload = revisionEvent?.payload as {
@@ -225,6 +228,8 @@ export function deriveWorkflowStatus(
       ? "refinement_limit"
       : latestVisual?.type === "PLAN_REPAIR_REQUIRED"
         ? "plan_repair_required"
+        : latestVisual?.type === "VISUAL_RENDER_NO_PROGRESS"
+          ? "render_no_progress"
         : latestVisual
           ? String((latestVisual.payload.review as { status?: string } | undefined)?.status ?? (latestVisual.type === "DESIGN_REVIEW_BLOCKED" ? "blocked" : "completed"))
           : null;
@@ -248,7 +253,11 @@ export function deriveWorkflowStatus(
       ? "Visual baseline approval required"
       : stage === "awaiting_approval" && planRevision
         ? `Plan revision ${planRevision.from} → ${planRevision.to} ready for approval`
-        : headlineFor(stage, slice),
+        : workflow?.attemptPhase === "design_refinement"
+          ? `Refining visual quality for ${slice?.currentTitle || "current slice"}`
+          : workflow?.attemptPhase === "technical_repair" && latestVisual?.type === "VISUAL_RENDER_NO_PROGRESS"
+            ? `Repairing render integrity for ${slice?.currentTitle || "current slice"}`
+            : headlineFor(stage, slice),
     detail,
     currentAction,
     verification: {
@@ -257,6 +266,9 @@ export function deriveWorkflowStatus(
     },
     recovery: workflow && workflow.recovery.status !== "inactive" ? workflow.recovery : null,
     repair: task.attempts > 0 ? { attempt: task.attempts, maximum: null } : null,
+    designRefinement: workflow?.designRefinementAttempt
+      ? { attempt: workflow.designRefinementAttempt, maximum: options.maxDesignRefinements ?? null }
+      : null,
     planRevision,
     blocker: null,
     nextAction,
