@@ -98,5 +98,5 @@ export function repairGroundingSnapshot(root: string, focusPaths: readonly strin
     dependencies.length ? `Current direct-dependency contents:\n${dependencies.join("\n\n")}` : "",
     "Use this bounded neighborhood first. Read beyond it only when a direct dependency proves another file is required for the evidenced repair.",
   ].filter(Boolean).join("\n\n");
-  return body.slice(0, 9_000);
+  return body.slice(0, 6_000);
 }
