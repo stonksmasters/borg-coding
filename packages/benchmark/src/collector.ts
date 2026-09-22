@@ -116,6 +116,13 @@ export interface BenchmarkTelemetrySummary {
     count: number;
     byCategory: Record<string, number>;
     codes: string[];
+    items: Array<{
+      code: string;
+      category: string;
+      message: string;
+      taskId: string | null;
+      sliceId: string | null;
+    }>;
   };
   invariantViolationCount: number;
 }
@@ -245,7 +252,9 @@ export function collectBenchmarkTelemetry(
         stage: typeof extended.stage === "string" ? extended.stage : null,
         characters: pack.characters,
         budgetCharacters: pack.budgetCharacters,
-        utilization: pack.budgetCharacters > 0 ? pack.characters / pack.budgetCharacters : 0,
+        utilization: Math.min(pack.budgetCharacters, benchmark.limits.maxContextCharacters) > 0
+          ? pack.characters / Math.min(pack.budgetCharacters, benchmark.limits.maxContextCharacters)
+          : 0,
         manifestCount: typeof extended.manifestCount === "number" ? extended.manifestCount : null,
         createdAt: typeof extended.createdAt === "string" ? extended.createdAt : null,
       });
@@ -318,6 +327,14 @@ export function collectBenchmarkTelemetry(
   timeline.sort((a, b) => a.at.localeCompare(b.at));
 
   const uniqueSlices = new Map<number, { index: number; title: string | null; taskId: string | null }>();
+  for (const snapshot of outcome.snapshots) {
+    if (typeof snapshot.workflow?.sliceIndex !== "number") continue;
+    uniqueSlices.set(snapshot.workflow.sliceIndex, {
+      index: snapshot.workflow.sliceIndex,
+      title: typeof snapshot.workflow.sliceTitle === "string" ? snapshot.workflow.sliceTitle : null,
+      taskId: snapshot.task.id,
+    });
+  }
   for (const observation of outcome.observations) {
     if (observation.sliceIndex === null) continue;
     uniqueSlices.set(observation.sliceIndex, {
@@ -400,6 +417,13 @@ export function collectBenchmarkTelemetry(
         count: outcome.result.failures.length,
         byCategory: failureCategories,
         codes: outcome.result.failures.map((item) => item.code),
+        items: outcome.result.failures.map((item) => ({
+          code: item.code,
+          category: item.category,
+          message: item.message,
+          taskId: item.taskId,
+          sliceId: item.sliceId,
+        })),
       },
       invariantViolationCount: violations.length,
     },
