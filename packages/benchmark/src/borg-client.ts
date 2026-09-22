@@ -73,6 +73,70 @@ export interface ChatStreamResult {
   taskId: string | null;
 }
 
+export interface BenchmarkDebugSnapshot {
+  version: number;
+  generatedAt: string;
+  readOnly: boolean;
+  task: { id: string; state: string; attempts?: number; [key: string]: unknown };
+  workflow: {
+    version?: number;
+    phase?: string;
+    status?: string;
+    sliceIndex?: number | null;
+    sliceTotal?: number | null;
+    sliceTitle?: string | null;
+    nextAction?: string;
+    repairAttempt?: number;
+    attemptPhase?: string | null;
+    verification?: { status?: string; attempt?: number; [key: string]: unknown };
+    projectPlan?: {
+      backendRequired?: boolean;
+      sitemap?: Array<{ route?: string; [key: string]: unknown }>;
+      [key: string]: unknown;
+    } | null;
+    [key: string]: unknown;
+  } | null;
+  approval: {
+    status?: string;
+    worktreePath?: string | null;
+    baseCommit?: string | null;
+    [key: string]: unknown;
+  } | null;
+  events: Array<{
+    id: string;
+    sourceType: string;
+    occurredAt: string;
+    workflowVersion?: number | null;
+    status?: string;
+    data?: Record<string, unknown>;
+    [key: string]: unknown;
+  }>;
+  contextPacks: Array<{
+    id: string;
+    sliceId: string | null;
+    characters: number;
+    budgetCharacters: number;
+    [key: string]: unknown;
+  }>;
+  git: {
+    worktreePath: string | null;
+    worktreeExists: boolean | null;
+    baseCommit?: string | null;
+    headCommit?: string | null;
+    [key: string]: unknown;
+  };
+  checkpoints: Array<{
+    id: string;
+    kind: string;
+    taskState: string;
+    workflowVersion?: number | null;
+    verification?: { status?: string; [key: string]: unknown };
+    [key: string]: unknown;
+  }>;
+  diagnostics?: Array<{ id?: string; severity?: string; [key: string]: unknown }>;
+  [key: string]: unknown;
+}
+
 export type BenchmarkFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 function cleanBaseUrl(value: string) {
@@ -135,6 +199,11 @@ export class BorgBenchmarkClient {
 
   async workflowStatus(taskId: string) {
     return this.json<BenchmarkWorkflowStatus>(`/api/tasks/${encodeURIComponent(taskId)}/workflow-status`);
+  }
+
+  async debugSnapshot(taskId: string) {
+    const body = await this.json<{ snapshot: BenchmarkDebugSnapshot }>(`/api/control/tasks/${encodeURIComponent(taskId)}/snapshot`);
+    return body.snapshot;
   }
 
   async submitPrompt(sessionId: string, request: string): Promise<ChatStreamResult> {
