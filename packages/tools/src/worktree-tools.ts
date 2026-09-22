@@ -279,6 +279,9 @@ function reachableSourceFiles(root: string): Set<string> {
 }
 
 function renderIntegrityViolations(root: string, paths: readonly string[]): StyleContractViolation[] {
+  // Strict stylesheet reachability is a BORG website invariant. Arbitrary repositories
+  // may resolve imports through framework aliases that this bounded static graph does not model.
+  if (!existsSync(join(root, ".borg-website.json"))) return [];
   const changedStyles = paths.filter((path) => /\.(?:css|scss)$/i.test(path));
   if (!changedStyles.length) return [];
   const reachable = reachableSourceFiles(root);
