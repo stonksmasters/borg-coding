@@ -136,7 +136,7 @@ export function extractExplicitPageRequirements(brief: string): string[] {
   }
 
   const orderedList = brief.match(/(?:required pages?|pages?)(?:\s*,?\s*in this order)?\s*:\s*([\s\S]*?)(?=\n\s*\n|\n\s*(?:This is|Use progressive|Do not|After)\b|$)/i)?.[1] ?? "";
-  for (const match of orderedList.matchAll(/^\s*\d+[.)]\s*([^:\n]+?)(?:\s*:\s*\/[^\s]*)?\s*$/gm)) add(match[1]);
+  for (const match of orderedList.matchAll(/^\s*(?:\d+[.)]|[-*•])\s*([^:\n]+?)(?:\s*:\s*\/[^\s]*)?\s*$/gm)) add(match[1]);
 
   if (found.length < 3) {
     const lower = brief.toLowerCase();
