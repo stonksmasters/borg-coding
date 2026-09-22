@@ -274,7 +274,7 @@ test("QualityGateService reclassifies unchanged post-refinement screenshots as r
     planRevision: plan.revision,
     backendRequired: plan.backendRequired,
   };
-  const events: string[] = [];
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
   const input = {
     taskId,
     request: "Build the homepage hero",
@@ -286,19 +286,21 @@ test("QualityGateService reclassifies unchanged post-refinement screenshots as r
     sliceState,
     attempt: 0,
     emit: () => undefined,
-    appendTaskEvent: (type: string) => { events.push(type); },
+    appendTaskEvent: (type: string, payload: Record<string, unknown>) => { events.push({ type, payload }); },
   };
 
   const first = await service.evaluateVisual(input);
   assert.equal(first.action, "repair_current_slice");
   if (first.action !== "repair_current_slice") return;
   assert.equal(first.source, "visual_director");
+  const persistedBaseline = events.find((event) => event.type === "VISUAL_REFINEMENT_RENDER_BASELINE")?.payload.fingerprint;
+  assert.equal(typeof persistedBaseline, "string");
 
-  const second = await service.evaluateVisual(input);
+  const second = await service.evaluateVisual({ ...input, previousVisualFingerprint: String(persistedBaseline) });
   assert.equal(second.action, "repair_current_slice");
   if (second.action !== "repair_current_slice") return;
   assert.equal(second.source, "render_integrity");
   assert.match(second.repairEvidence, /screenshot fingerprint is unchanged/i);
   assert.equal(designReviews, 1);
-  assert.ok(events.includes("VISUAL_RENDER_NO_PROGRESS"));
+  assert.ok(events.some((event) => event.type === "VISUAL_RENDER_NO_PROGRESS"));
 });
