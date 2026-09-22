@@ -81,11 +81,11 @@ export function repairGroundingSnapshot(root: string, focusPaths: readonly strin
   const normalizedFocus = [...new Set(focusPaths.map((path) => path.replaceAll("\\", "/")).filter(Boolean))];
   const basisPaths = normalizedFocus.length ? normalizedFocus : snapshot.paths;
   const dependencyPaths = directRepairDependencies(root, basisPaths);
-  const changedFiles = basisPaths.slice(0, 4).map((path) => {
+  const changedFiles = basisPaths.slice(0, 3).map((path) => {
     const content = safeWorktreeFile(root, path);
-    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 4_000)}`;
+    return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 1_500)}`;
   });
-  const dependencies = dependencyPaths.slice(0, 4).map((path) => {
+  const dependencies = dependencyPaths.slice(0, 3).map((path) => {
     const content = safeWorktreeFile(root, path);
     return content === null ? `### ${path}\n[unavailable or non-text]` : `### ${path}\n${content.slice(0, 2_500)}`;
   });
@@ -93,10 +93,10 @@ export function repairGroundingSnapshot(root: string, focusPaths: readonly strin
     "CURRENT WORKTREE GROUNDING. This snapshot is authoritative for the repair pass; do not rediscover or guess paths.",
     `Repair focus files:\n${basisPaths.length ? basisPaths.slice(0, 12).map((path) => `- ${path}`).join("\n") : "- none"}`,
     dependencyPaths.length ? `Direct relative dependencies automatically resolved from focus files:\n${dependencyPaths.map((path) => `- ${path}`).join("\n")}` : "",
-    `Current source diff (bounded):\n${snapshot.diff.slice(0, 8_000) || "[no tracked diff]"}`,
+    `Current source diff (bounded):\n${snapshot.diff.slice(0, 4_000) || "[no tracked diff]"}`,
     changedFiles.length ? `Current focus-file contents:\n${changedFiles.join("\n\n")}` : "",
     dependencies.length ? `Current direct-dependency contents:\n${dependencies.join("\n\n")}` : "",
     "Use this bounded neighborhood first. Read beyond it only when a direct dependency proves another file is required for the evidenced repair.",
   ].filter(Boolean).join("\n\n");
-  return body.slice(0, 18_000);
+  return body.slice(0, 9_000);
 }
