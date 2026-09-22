@@ -73,6 +73,18 @@ export interface ChatStreamResult {
   taskId: string | null;
 }
 
+export class BenchmarkChatStreamError extends Error {
+  readonly taskId: string | null;
+  readonly events: Record<string, unknown>[];
+
+  constructor(message: string, taskId: string | null, events: Record<string, unknown>[]) {
+    super(message);
+    this.name = "BenchmarkChatStreamError";
+    this.taskId = taskId;
+    this.events = events;
+  }
+}
+
 export interface BenchmarkDebugSnapshot {
   version: number;
   generatedAt: string;
@@ -238,7 +250,11 @@ export class BorgBenchmarkClient {
         taskId = task?.id ?? taskId;
       }
       if (event.type === "stream.failed" || event.type === "runtime.failed") {
-        throw new Error(String(event.message ?? "BORG planning stream failed."));
+        throw new BenchmarkChatStreamError(
+          String(event.message ?? "BORG planning stream failed."),
+          taskId,
+          [...events],
+        );
       }
     };
 
