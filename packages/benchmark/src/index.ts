@@ -18,3 +18,32 @@ export {
   type BenchmarkRunResult,
   type BenchmarkRunStatus,
 } from "./result.ts";
+
+export {
+  BorgBenchmarkClient,
+  type BenchmarkFetch,
+  type BenchmarkGatewayHealth,
+  type BenchmarkRunView,
+  type BenchmarkSession,
+  type BenchmarkSessionRuntime,
+  type BenchmarkWorkflowStatus,
+  type ChatStreamResult,
+  type CreateBenchmarkWebsiteInput,
+  type CreateBenchmarkWebsiteResult,
+} from "./borg-client.ts";
+
+export {
+  approvalGate,
+  isFrontendComplete,
+  isWorkflowBlocked,
+  isWorkflowFailure,
+  observationFor,
+  type BenchmarkApprovalGate,
+  type BenchmarkObservation,
+} from "./observer.ts";
+
+export {
+  runFrontendBenchmark,
+  type FrontendBenchmarkRunnerOptions,
+  type FrontendBenchmarkRunnerOutcome,
+} from "./runner.ts";
