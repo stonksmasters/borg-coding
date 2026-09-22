@@ -271,7 +271,7 @@ export class ExecutionOrchestrator {
             || event.type === "PLAN_REPAIR_REQUIRED")
         : null;
       let repairEvidence = blockedRetry
-        ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
+        ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 8_000)}`
         : "";
       let activeRepairContext: RepairContext | null = null;
       refreshTaskContext();
@@ -371,7 +371,11 @@ export class ExecutionOrchestrator {
         try {
           implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
-          limits: sliceState || focusedExecutionScope || styleWorkspace ? { toolRounds: 12, toolCalls: 28 } : undefined,
+          limits: sliceState || focusedExecutionScope || styleWorkspace
+            ? attemptStartedInRepair
+              ? { toolRounds: 8, toolCalls: 18 }
+              : { toolRounds: 12, toolCalls: 28 }
+            : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledExecutionContext?.sliceId ?? null, compiledExecutionContext?.manifest ?? [], body) : undefined,
           messages: [
             ...(taskContext.attemptPhase !== "implementation" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated worktree files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification. Do not use base-repository language-intelligence tools during repair. Do not guess npm scripts or invent verification commands; BORG's deterministic verifier reads package.json after you return control." }] : []),
@@ -643,7 +647,7 @@ export class ExecutionOrchestrator {
           repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({
             browserEvidence: verification.browserEvidence,
             specialistEvidence: verification.specialistEvidence,
-          }).slice(0, 12_000)}`;
+          }).slice(0, 6_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
           continue;
         }
