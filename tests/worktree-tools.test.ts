@@ -138,6 +138,7 @@ test("worktree mutation requires approval and remains inside the recorded task w
     const styleRepaired = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
     assert.equal(styleRepaired.passed, true);
 
+    writeFileSync(join(worktree.path, ".borg-website.json"), JSON.stringify({ framework: "vite-react", slug: "render-test" }));
     writeFileSync(join(worktree.path, "src", "main.tsx"), "import './style.css';\nexport {};\n");
     writeFileSync(join(worktree.path, "src", "style.css"), ":root { --font-body: system-ui; }\nbody { font-family: var(--font-body); }\n");
     writeFileSync(join(worktree.path, "src", "Hero.css"), ".hero { font-size: 48px; }\n");
