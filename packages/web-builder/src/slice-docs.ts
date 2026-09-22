@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileS
 import { join, resolve } from "node:path";
 import type { WorkflowState } from "../../core/src/contracts.ts";
 import type { ProjectComponent, ProjectPage, ProjectPlan, ProjectSlice, ProjectStyleSystem } from "../../core/src/project-domain.ts";
-import { briefForcesFrontendOnly, fallbackFlows, normalizeStyleDirection } from "./blueprint-planning.ts";
+import { applyBlueprintFoundation, briefForcesFrontendOnly, fallbackFlows, normalizeStyleDirection, type ProductMap } from "./blueprint-planning.ts";
 import { initializeProjectModel } from "./project-model.ts";
 import { parseStructuredJson, structuredJsonArtifactBody } from "./structured-json.ts";
 
@@ -663,12 +663,26 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
   };
 }
 
-export function parseProjectPlanResult(answer: string, brief: string, template = ""): ProjectPlanParseResult {
+export type ProjectPlanParseOptions = {
+  frozenProductMap?: ProductMap | null;
+  frozenStyles?: ProjectStyleSystem | null;
+};
+
+export function parseProjectPlanResult(
+  answer: string,
+  brief: string,
+  template = "",
+  options: ProjectPlanParseOptions = {},
+): ProjectPlanParseResult {
   const fallback = fallbackProjectPlan(brief, template);
   const frontendOnly = briefForcesFrontendOnly(brief);
   const resolvedBackendRequired = (value: unknown) =>
     frontendOnly ? false : typeof value === "boolean" ? value : fallback.backendRequired;
   const fallbackValidation = validateProjectPlanCoverage(fallback, brief);
+  const applyFrozenAuthority = (plan: ProjectPlan) =>
+    options.frozenProductMap && options.frozenStyles
+      ? applyBlueprintFoundation(plan, options.frozenProductMap, options.frozenStyles)
+      : plan;
   const selectFallback = (reason: string, candidateValidation: ProjectPlanValidation = fallbackValidation): ProjectPlanParseResult => ({
     plan: fallback,
     source: "fallback",
@@ -960,12 +974,16 @@ export function parseProjectPlanResult(answer: string, brief: string, template =
       slices,
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
-    const validation = validateProjectPlanCoverage(candidate, brief);
+    const authoritativeCandidate = applyFrozenAuthority(candidate);
+    const validation = validateProjectPlanCoverage(authoritativeCandidate, brief);
     if (!validation.valid) return selectFallback(validation.issues.join(" "), validation);
     const framingRepair = artifact.framed ? null : artifact.framingRepair;
-    const repairReason = [framingRepair, parsedJson.repairSummary].filter(Boolean).join("; ") || null;
+    const foundationRepair = authoritativeCandidate !== candidate
+      ? "reapplied frozen Product Map and Global Style System authority"
+      : null;
+    const repairReason = [framingRepair, parsedJson.repairSummary, foundationRepair].filter(Boolean).join("; ") || null;
     return {
-      plan: candidate,
+      plan: authoritativeCandidate,
       source: repairReason ? "repaired" : "model",
       fallbackReason: null,
       repairReason,
