@@ -110,6 +110,55 @@ test("explicit page extraction ignores planning vocabulary near an ordered page 
   assert.deepEqual(extractExplicitPageRequirements(brief), ["Home", "Work", "Services", "About", "Contact"]);
 });
 
+
+test("explicit page extraction preserves bulleted page lists from simple portfolio briefs", () => {
+  const brief = "Build a simple portfolio website.\n\nI want these pages:\n- Home\n- Work\n- Services\n- About\n- Contact\n\nDo not add login, dashboards, blogs, search, or backend features.";
+  assert.deepEqual(extractExplicitPageRequirements(brief), ["Home", "Work", "Services", "About", "Contact"]);
+});
+
+test("stage 3-4 parsing reapplies frozen product-map authority before coverage validation", () => {
+  const brief = "Build a simple frontend-only portfolio website.\n\nI want these pages:\n- Home\n- Work\n- Services\n- About\n- Contact\n\nDo not add backend features.";
+  const foundation = fallbackProjectPlan(brief, "portfolio");
+  const frozenProductMap = {
+    siteGoal: foundation.siteGoal,
+    audience: foundation.audience,
+    features: foundation.features,
+    sitemap: foundation.sitemap.map((page) => ({ ...page, componentIds: [], acceptanceCriteria: [] })),
+    flows: foundation.flows ?? [],
+    backendRequired: foundation.backendRequired,
+  };
+  const pageQueue = [
+    { id: "home", name: "Home", purpose: "Build Home", sections: ["Hero"] },
+    { id: "work", name: "Work", purpose: "Build Work", sections: ["Projects"] },
+    { id: "services", name: "Services", purpose: "Build Services", sections: ["Services"] },
+    { id: "about", name: "About", purpose: "Build About", sections: ["Story"] },
+    { id: "contact", name: "Contact", purpose: "Build Contact", sections: ["Contact"] },
+    { id: "frontend-review", name: "Frontend Completion Review", purpose: "Review frontend", sections: ["Responsive review"] },
+  ];
+  const answer = `<borg-project-plan>${JSON.stringify({
+    pageQueue,
+    sitemap: [
+      { id: "work", name: "Work", route: "/work", purpose: "Accidentally incomplete Stage 3 copy", sections: ["Projects"] },
+    ],
+    components: [],
+  })}</borg-project-plan>`;
+
+  const withoutAuthority = parseProjectPlanResult(answer, brief, "portfolio");
+  assert.equal(withoutAuthority.source, "fallback");
+  assert.ok(withoutAuthority.validation.missingPages.includes("Home"));
+
+  const withAuthority = parseProjectPlanResult(answer, brief, "portfolio", {
+    frozenProductMap,
+    frozenStyles: foundation.styles,
+  });
+  assert.notEqual(withAuthority.source, "fallback");
+  assert.deepEqual(withAuthority.plan.sitemap.map((page) => page.name), ["Home", "Work", "Services", "About", "Contact"]);
+  assert.equal(withAuthority.plan.sitemap[0]?.route, "/");
+  assert.deepEqual(withAuthority.plan.components, []);
+  assert.equal(withAuthority.validation.valid, true);
+  assert.match(withAuthority.repairReason ?? "", /frozen Product Map/i);
+});
+
 test("progressive nested page-queue artifacts normalize without commerce fallback", () => {
   const brief = "Build a frontend-only portfolio site. Do not add ecommerce, login, dashboards, blogs, search, or backend features.";
   const answer = `<borg-project-plan>${JSON.stringify({
