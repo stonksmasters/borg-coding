@@ -7,6 +7,9 @@ import {
 } from "../packages/benchmark/src/index.ts";
 
 const id = process.argv[2] || "northline-v1";
+if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+  throw new Error("Benchmark id must be a lowercase kebab-case identifier.");
+}
 const root = resolve(process.cwd(), "benchmarks", "frontend-autonomy", id);
 const benchmark = parseFrontendAutonomyBenchmark(JSON.parse(await readFile(resolve(root, "benchmark.json"), "utf8")));
 const prompt = await readFile(resolve(root, benchmark.promptPath), "utf8");
