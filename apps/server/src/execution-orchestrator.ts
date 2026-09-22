@@ -648,6 +648,9 @@ export class ExecutionOrchestrator {
           continue;
         }
 
+        const previousVisualFingerprint = tasks.listEvents(taskId)
+          .findLast((event) => event.type === "VISUAL_REFINEMENT_RENDER_BASELINE")
+          ?.payload.fingerprint;
         const visualDecision = await qualityGateService.evaluateVisual({
           taskId,
           request: task.request,
@@ -662,6 +665,7 @@ export class ExecutionOrchestrator {
           appendTaskEvent: (type, payload) => appendTaskEvent(taskId, type, payload),
           onVisionRequestBody: (body, selectedModel) => recordModelInput(taskId, "vision_reviewer", selectedModel, compiledSlice?.sliceId ?? null, [], body),
           onDesignRequestBody: (body, selectedModel) => recordModelInput(taskId, "visual_director", selectedModel, compiledSlice?.sliceId ?? null, [], body),
+          previousVisualFingerprint: typeof previousVisualFingerprint === "string" ? previousVisualFingerprint : null,
         });
         const visionReview = visualDecision.visionReview;
         const designReview = visualDecision.designReview;
