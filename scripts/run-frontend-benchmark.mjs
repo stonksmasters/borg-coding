@@ -2,8 +2,11 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   BorgBenchmarkClient,
+  collectBenchmarkTelemetry,
+  formatBenchmarkReport,
   parseFrontendAutonomyBenchmark,
   runFrontendBenchmark,
+  writeBenchmarkArtifacts,
 } from "../packages/benchmark/src/index.ts";
 
 const id = process.argv[2] || "northline-v1";
@@ -33,13 +36,10 @@ const outcome = await runFrontendBenchmark({
   },
 });
 
-console.log(`\nRESULT: ${outcome.result.status}`);
-console.log(`Session: ${outcome.sessionId ?? "none"}`);
-console.log(`Tasks observed: ${outcome.taskIds.length}`);
-console.log(`Project plan approvals: ${outcome.approvals.projectPlan}`);
-console.log(`Project plan revision approvals: ${outcome.approvals.projectPlanRevision}`);
-for (const item of outcome.result.failures) {
-  console.error(`- [${item.category}] ${item.code}: ${item.message}`);
-}
+const artifacts = collectBenchmarkTelemetry(benchmark, outcome);
+const written = await writeBenchmarkArtifacts(artifacts);
+
+console.log("\n" + formatBenchmarkReport(artifacts));
+console.log(`\nArtifacts: ${written.directory}`);
 
 if (outcome.result.status !== "PASS") process.exitCode = 1;

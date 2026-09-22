@@ -58,3 +58,22 @@ export {
   benchmarkViolationCodes,
   type BenchmarkViolationCode,
 } from "./violations.ts";
+
+export {
+  benchmarkRunId,
+  collectBenchmarkTelemetry,
+  type BenchmarkContextTelemetry,
+  type BenchmarkModelContextTelemetry,
+  type BenchmarkRepairTelemetry,
+  type BenchmarkTelemetryArtifacts,
+  type BenchmarkTelemetrySummary,
+  type BenchmarkTimelineEntry,
+  type BenchmarkVerificationTelemetry,
+} from "./collector.ts";
+
+export { formatBenchmarkReport } from "./report.ts";
+
+export {
+  writeBenchmarkArtifacts,
+  type BenchmarkArtifactWriteResult,
+} from "./writer.ts";
