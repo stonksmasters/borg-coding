@@ -961,7 +961,7 @@ export class PlanningOrchestrator {
 
       let proposedProjectPlan: ProjectPlan | null = null;
       if (projectPlanning && websiteProject) {
-        let parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+        let parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template, blueprintCompletionPlanning ? { frozenProductMap: stagedProductMap, frozenStyles: stagedStyleSystem } : {});
         if (parseResult.source === "repaired") {
           appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
             stage: "Component Architecture / Build Roadmap",
@@ -998,7 +998,7 @@ export class PlanningOrchestrator {
           });
           answer = repaired.answer;
           usedTools ||= repaired.usedTools;
-          parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+          parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template, blueprintCompletionPlanning ? { frozenProductMap: stagedProductMap, frozenStyles: stagedStyleSystem } : {});
           appendTaskEvent(task.id, "PROJECT_PLAN_SYNTAX_RETRY_COMPLETED", {
             source: parseResult.source,
             fallbackReason: parseResult.fallbackReason,
@@ -1044,7 +1044,7 @@ export class PlanningOrchestrator {
           });
           answer = repaired.answer;
           usedTools ||= repaired.usedTools;
-          parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+          parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template, blueprintCompletionPlanning ? { frozenProductMap: stagedProductMap, frozenStyles: stagedStyleSystem } : {});
           appendTaskEvent(task.id, "PROJECT_PLAN_SEMANTIC_RETRY_COMPLETED", {
             source: parseResult.source,
             fallbackReason: parseResult.fallbackReason,
@@ -1095,7 +1095,7 @@ export class PlanningOrchestrator {
             });
             answer = repaired.answer;
             usedTools ||= repaired.usedTools;
-            parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template);
+            parseResult = parseProjectPlanResult(answer, planningBrief, websiteProject.template, blueprintCompletionPlanning ? { frozenProductMap: stagedProductMap, frozenStyles: stagedStyleSystem } : {});
             if (parseResult.source === "repaired") {
               appendTaskEvent(task.id, "BLUEPRINT_ARTIFACT_SYNTAX_REPAIRED", {
                 stage: "Component Architecture / Build Roadmap",
