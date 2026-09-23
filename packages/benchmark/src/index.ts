@@ -20,6 +20,7 @@ export {
 } from "./result.ts";
 
 export {
+  BenchmarkChatStreamError,
   BorgBenchmarkClient,
   type BenchmarkDebugSnapshot,
   type BenchmarkFetch,

@@ -1,6 +1,7 @@
 import type { FrontendAutonomyBenchmark } from "./contracts.ts";
 import type { BenchmarkFailure, BenchmarkRunResult } from "./result.ts";
 import {
+  BenchmarkChatStreamError,
   BorgBenchmarkClient,
   type BenchmarkDebugSnapshot,
   type BenchmarkSessionRuntime,
@@ -242,12 +243,17 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
       ),
     ]);
   } catch (error) {
+    if (error instanceof BenchmarkChatStreamError && error.taskId) {
+      if (!taskIds.includes(error.taskId)) taskIds.push(error.taskId);
+      const snapshot = await client.debugSnapshot(error.taskId).catch(() => null);
+      if (snapshot) snapshotByTask.set(error.taskId, snapshot);
+    }
     return finish("INVALID_RUN", [
       failure(
         "BENCHMARK_RUNNER_ERROR",
         "workflow",
         error instanceof Error ? error.message : String(error),
-        taskIds.at(-1) ?? null,
+        error instanceof BenchmarkChatStreamError ? error.taskId : taskIds.at(-1) ?? null,
       ),
     ]);
   }
