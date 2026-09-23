@@ -384,6 +384,59 @@ test("workflow status prefers authoritative design terminal causes over stale to
   assert.equal(status.run.verification.visualStatus, "refinement_limit");
 });
 
+
+test("workflow status exposes persisted design-refinement progress", () => {
+  const now = new Date().toISOString();
+  const base = createTask({ id: "status-design-refine", projectId: "status-design-project", request: "Polish the Northline hero" });
+  const task = { ...base, state: "IMPLEMENTING" as const, updatedAt: now };
+  const plan = fallbackProjectPlan("Build a premium portfolio.", "portfolio");
+  const slice = {
+    version: 2 as const,
+    current: 0,
+    total: plan.slices.length,
+    currentTitle: plan.slices[0].title,
+    status: "working" as const,
+    brief: plan.siteGoal,
+    lastTaskId: task.id,
+    feedback: [],
+    planRevision: plan.revision,
+    backendRequired: plan.backendRequired,
+  };
+  const workflow = {
+    projectId: task.projectId,
+    taskId: task.id,
+    loop: "slice",
+    phase: "frontend",
+    status: "running",
+    nextAction: "implement",
+    planApprovalId: "approval",
+    planApproved: true,
+    projectPlan: plan,
+    planRevisionResumeIndex: null,
+    sliceIndex: 0,
+    sliceTotal: plan.slices.length,
+    sliceTitle: plan.slices[0].title,
+    feedback: [],
+    handoff: null,
+    pendingCommand: null,
+    lastConsumedCommandId: null,
+    verification: { status: "passed", attempt: 0, profile: "quick", summary: "passed", browserPassed: true, specialistPassed: true, resultSha256: null, completedAt: now },
+    recovery: { status: "inactive", category: null, previousTaskState: null, checkpointId: null, resumeAction: "none", reason: "", updatedAt: null },
+    attemptPhase: "design_refinement",
+    designRefinementAttempt: 2,
+    repairAttempt: 0,
+    recoveryCategory: null,
+    detail: "Applying visual refinement 2.",
+    version: 12,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const status = deriveWorkflowStatus(task, [], plan, slice, workflow as never, { maxDesignRefinements: 3 });
+  assert.equal(status.run.stage, "repairing");
+  assert.equal(status.run.headline, `Refining visual quality for ${slice.currentTitle}`);
+  assert.deepEqual(status.run.designRefinement, { attempt: 2, maximum: 3 });
+});
+
 test("workflow status exposes plan repair as the recovery action", () => {
   const base = createTask({ id: "status-plan-repair", projectId: "status-plan-project", request: "Build ForgeOps" });
   const recovered = { ...base, state: "RECOVERY_REQUIRED" as const };

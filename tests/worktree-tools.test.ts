@@ -138,6 +138,26 @@ test("worktree mutation requires approval and remains inside the recorded task w
     const styleRepaired = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
     assert.equal(styleRepaired.passed, true);
 
+    writeFileSync(join(worktree.path, ".borg-website.json"), JSON.stringify({ framework: "vite-react", slug: "render-test" }));
+    writeFileSync(join(worktree.path, "src", "main.tsx"), "import './style.css';\nexport {};\n");
+    writeFileSync(join(worktree.path, "src", "style.css"), ":root { --font-body: system-ui; }\nbody { font-family: var(--font-body); }\n");
+    writeFileSync(join(worktree.path, "src", "Hero.css"), ".hero { font-size: 48px; }\n");
+    const orphanStyle = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean; results: Array<{ label: string; stderr?: string }> };
+    assert.equal(orphanStyle.passed, false);
+    assert.equal(orphanStyle.results.at(-1)?.label, "BORG render integrity");
+    assert.match(orphanStyle.results.at(-1)?.stderr ?? "", /Hero\.css.*not reachable from the application entrypoint/i);
+
+    writeFileSync(join(worktree.path, "src", "main.tsx"), "import './style.css';\nimport './Hero.css';\nexport {};\n");
+    writeFileSync(join(worktree.path, "src", "Hero.css"), ".hero { font-size: var(--font-size-display-xl); }\n");
+    const unresolvedToken = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean; results: Array<{ label: string; stderr?: string }> };
+    assert.equal(unresolvedToken.passed, false);
+    assert.equal(unresolvedToken.results.at(-1)?.label, "BORG render integrity");
+    assert.match(unresolvedToken.results.at(-1)?.stderr ?? "", /--font-size-display-xl.*not defined/i);
+
+    writeFileSync(join(worktree.path, "src", "style.css"), ":root { --font-body: system-ui; --font-size-display-xl: 48px; }\nbody { font-family: var(--font-body); }\n");
+    const renderRepaired = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
+    assert.equal(renderRepaired.passed, true);
+
     await assert.rejects(() => tools.execute("worktree_write", { path: "../../outside.ts", content: "escape" }, context), /Unsafe|relative|escapes/);
     await assert.rejects(() => tools.execute("worktree_read", { path: "../README.md" }, context), /Unsafe|relative/);
     execFileSync("git", ["-C", repository, "worktree", "remove", "--force", worktree.path], { stdio: "ignore" });

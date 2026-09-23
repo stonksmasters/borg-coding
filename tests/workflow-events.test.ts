@@ -64,3 +64,20 @@ test("tool failures retain raw provenance while using canonical tool event kind"
   assert.equal(event.sourceType, "TOOL_FAILED");
   assert.equal(event.data.tool, "worktree_patch");
 });
+
+
+test("render no-progress evidence is exposed as a failed review event", () => {
+  const task = createTask({ id: "render-progress-task", projectId: "event-project", request: "Polish hero" });
+  const event = normalizeWorkflowEvent(task, {
+    id: "render-no-progress",
+    taskId: task.id,
+    type: "VISUAL_RENDER_NO_PROGRESS",
+    payload: { reason: "Responsive screenshot fingerprint did not change.", fingerprint: "abc" },
+    occurredAt: new Date().toISOString(),
+  });
+
+  assert.equal(event.kind, "review.updated");
+  assert.equal(event.category, "review");
+  assert.equal(event.status, "failed");
+  assert.match(event.detail, /fingerprint did not change/i);
+});

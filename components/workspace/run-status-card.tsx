@@ -12,6 +12,7 @@ export interface RunView {
   verification: { status: "pending" | "passed" | "failed"; visualStatus: string | null };
   recovery: { status: string; category: string | null; previousTaskState: string | null; checkpointId: string | null; resumeAction: string; reason: string } | null;
   repair: { attempt: number; maximum: number | null } | null;
+  designRefinement: { attempt: number; maximum: number | null } | null;
   planRevision: {
     from: number;
     to: number;
@@ -52,6 +53,7 @@ export function RunStatusCard({ run, active }: { run: RunView; active: boolean }
           <p className={`text-sm font-semibold ${blocked ? "text-red-100" : "text-[#d9ffb5]"}`}>{run.headline}</p>
           {run.slice && <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-400">Slice {run.slice.index + 1}/{run.slice.total}</span>}
           {run.repair && <span className="rounded bg-amber-200/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-100">Repair {run.repair.attempt}{run.repair.maximum ? `/${run.repair.maximum}` : ""}</span>}
+          {run.designRefinement && <span className="rounded bg-violet-200/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-100">Design {run.designRefinement.attempt}{run.designRefinement.maximum ? `/${run.designRefinement.maximum}` : ""}</span>}
           {run.recovery && <span className="rounded bg-red-200/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-red-100">{run.recovery.category ?? "recovery"}</span>}
         </div>
         <p className="mt-1 text-xs leading-5 text-slate-400">{run.blocker?.detail ?? run.detail}</p>

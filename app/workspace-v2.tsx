@@ -340,6 +340,12 @@ export function BorgWorkspaceV2() {
         setWorkflowStatus(result.status);
         setBlueprint(result.blueprint ?? null);
         setBaselineCandidates(result.baselineCandidates ?? []);
+        if (result.status.run.designRefinement) {
+          setDesignRefinementCount(result.status.run.designRefinement.attempt);
+          if (result.status.run.designRefinement.maximum) setMaxDesignRefinements(result.status.run.designRefinement.maximum);
+        } else {
+          setDesignRefinementCount(0);
+        }
       }
       if (contextsResponse.ok) setContextRecords((await contextsResponse.json() as { contexts: ContextRecord[] }).contexts);
     };
@@ -643,6 +649,52 @@ export function BorgWorkspaceV2() {
     const timer = window.setInterval(poll, 4000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [activeSession?.repositoryPath]);
+
+  useEffect(() => {
+    if (!activeSession?.repositoryPath) return;
+    const sessionId = activeSession.id;
+    let cancelled = false;
+    let polling = false;
+    const syncRuntime = () => {
+      if (polling || cancelled) return;
+      polling = true;
+      void fetch(`${API}/api/sessions/${encodeURIComponent(sessionId)}`).then(async (response) => {
+        if (!response.ok || cancelled) return;
+        const result = await response.json() as {
+          session: ChatSession;
+          latestTaskId: string | null;
+          task: { id: string; state: string } | null;
+          runtimeActive?: boolean;
+        };
+        if (cancelled) return;
+        setRuntimeActive(Boolean(result.runtimeActive));
+        if (result.task?.state) setTaskState(result.task.state);
+        if (!result.latestTaskId || result.latestTaskId === activeTaskRef.current) return;
+
+        const nextTaskId = result.latestTaskId;
+        activeTaskRef.current = nextTaskId;
+        setActiveTaskId(nextTaskId);
+        setWorkflowStatus(null);
+        setActivities([]);
+        setChanges(EMPTY_CHANGE_SET);
+        setProcesses([]);
+        setProcessEvents([]);
+        setDesignReview(null);
+        setDesignRefinementCount(0);
+        changeFingerprintRef.current = null;
+        await Promise.allSettled([
+          refreshTaskActivity(nextTaskId),
+          refreshChanges(nextTaskId, { refreshPreviewOnChange: false }),
+          refreshProcesses(nextTaskId),
+          refreshDesign(nextTaskId),
+          refreshDocs(nextTaskId),
+        ]);
+      }).catch(() => undefined).finally(() => { polling = false; });
+    };
+    syncRuntime();
+    const timer = window.setInterval(syncRuntime, 1200);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeSession?.id, activeSession?.repositoryPath, refreshChanges, refreshDesign, refreshDocs, refreshProcesses, refreshTaskActivity]);
 
   useEffect(() => {
     if (!followTranscriptRef.current) return;

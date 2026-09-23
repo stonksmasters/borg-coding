@@ -271,7 +271,7 @@ export class ExecutionOrchestrator {
             || event.type === "PLAN_REPAIR_REQUIRED")
         : null;
       let repairEvidence = blockedRetry
-        ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 60_000)}`
+        ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 8_000)}`
         : "";
       let activeRepairContext: RepairContext | null = null;
       refreshTaskContext();
@@ -371,7 +371,11 @@ export class ExecutionOrchestrator {
         try {
           implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
-          limits: sliceState || focusedExecutionScope || styleWorkspace ? { toolRounds: 12, toolCalls: 28 } : undefined,
+          limits: sliceState || focusedExecutionScope || styleWorkspace
+            ? attemptStartedInRepair
+              ? { toolRounds: 8, toolCalls: 18 }
+              : { toolRounds: 12, toolCalls: 28 }
+            : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledExecutionContext?.sliceId ?? null, compiledExecutionContext?.manifest ?? [], body) : undefined,
           messages: [
             ...(taskContext.attemptPhase !== "implementation" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated worktree files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification. Do not use base-repository language-intelligence tools during repair. Do not guess npm scripts or invent verification commands; BORG's deterministic verifier reads package.json after you return control." }] : []),
@@ -643,11 +647,14 @@ export class ExecutionOrchestrator {
           repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({
             browserEvidence: verification.browserEvidence,
             specialistEvidence: verification.specialistEvidence,
-          }).slice(0, 12_000)}`;
+          }).slice(0, 6_000)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
           continue;
         }
 
+        const previousVisualFingerprint = tasks.listEvents(taskId)
+          .findLast((event) => event.type === "VISUAL_REFINEMENT_RENDER_BASELINE")
+          ?.payload.fingerprint;
         const visualDecision = await qualityGateService.evaluateVisual({
           taskId,
           request: task.request,
@@ -662,6 +669,7 @@ export class ExecutionOrchestrator {
           appendTaskEvent: (type, payload) => appendTaskEvent(taskId, type, payload),
           onVisionRequestBody: (body, selectedModel) => recordModelInput(taskId, "vision_reviewer", selectedModel, compiledSlice?.sliceId ?? null, [], body),
           onDesignRequestBody: (body, selectedModel) => recordModelInput(taskId, "visual_director", selectedModel, compiledSlice?.sliceId ?? null, [], body),
+          previousVisualFingerprint: typeof previousVisualFingerprint === "string" ? previousVisualFingerprint : null,
         });
         const visionReview = visualDecision.visionReview;
         const designReview = visualDecision.designReview;
@@ -671,9 +679,9 @@ export class ExecutionOrchestrator {
           activeRoleAssignment = null;
           createCheckpointSnapshot(task, "pre_repair");
 
-          const requestedQualityAction = visualDecision.source === "local_vision"
-            ? "technical_repair" as const
-            : "design_refinement" as const;
+          const requestedQualityAction = visualDecision.source === "visual_director"
+            ? "design_refinement" as const
+            : "technical_repair" as const;
           const qualityOutcome = workflow.applyQualityOutcome(task, {
             action: requestedQualityAction,
             reason: visualDecision.reason,
@@ -682,13 +690,13 @@ export class ExecutionOrchestrator {
           });
           adoptCoreMutation(qualityOutcome);
 
-          if (visualDecision.source === "local_vision") {
+          if (visualDecision.source !== "visual_director") {
             recordHandoff({
               task,
               fromRole: "verifier",
               toRole: "implementer",
               objective: task.request,
-              evidence: [JSON.stringify(visualDecision.visionReview).slice(0, 20_000)],
+              evidence: [visualDecision.repairEvidence.slice(0, 6_000)],
               openRisks: [visualDecision.reason],
               requiredNextAction: "Repair only the evidenced visual defect.",
             }, emit);
@@ -698,11 +706,12 @@ export class ExecutionOrchestrator {
             if (qualityOutcome.action === "block") {
               appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", {
                 attempts: task.attempts,
+                source: visualDecision.source,
                 visionReview: visualDecision.visionReview,
               });
               emit({
                 type: "stream.blocked",
-                message: `Local vision review still found a blocking visual defect after ${maxRepairAttempts} repair attempts.`,
+                message: `Render/visual verification still found a blocking defect after ${maxRepairAttempts} technical repair attempts.`,
               });
               return;
             }

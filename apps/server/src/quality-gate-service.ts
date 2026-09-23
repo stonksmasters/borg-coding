@@ -21,7 +21,7 @@ export type VisualQualityDecision =
     }
   | {
       action: "repair_current_slice";
-      source: "local_vision" | "visual_director";
+      source: "local_vision" | "visual_director" | "render_integrity";
       reason: string;
       repairEvidence: string;
       findings: Finding[];
@@ -66,6 +66,18 @@ export type QualityGateServiceDependencies = {
   runReview: typeof runFreshReview;
 };
 
+function renderFingerprint(evidence: BrowserEvidenceReport | null | undefined): string | null {
+  if (!evidence) return null;
+  const screenshots = evidence.responsive.length
+    ? evidence.responsive.map((item) => item.screenshot)
+    : evidence.screenshots;
+  if (!screenshots.length) return null;
+  return screenshots
+    .map((item) => `${item.name}:${item.width}x${item.height}:${item.sha256}`)
+    .sort()
+    .join("|");
+}
+
 export class QualityGateService {
   private readonly deps: QualityGateServiceDependencies;
 
@@ -87,6 +99,7 @@ export class QualityGateService {
     appendTaskEvent: QualityTaskEventSink;
     onVisionRequestBody?: (body: string, model: string) => void;
     onDesignRequestBody?: (body: string, model: string) => void;
+    previousVisualFingerprint?: string | null;
   }): Promise<VisualQualityDecision> {
     let visionReview: VisionReviewResult | null = null;
 
@@ -118,7 +131,7 @@ export class QualityGateService {
           action: "repair_current_slice",
           source: "local_vision",
           reason: "Local vision review found a blocking visual defect.",
-          repairEvidence: `Local vision review requires repair:\n${JSON.stringify(visionReview).slice(0, 60_000)}`,
+          repairEvidence: `Local vision review requires repair:\n${JSON.stringify(visionReview).slice(0, 6_000)}`,
           findings: visionReview.findings,
           visionReview,
           designReview: null,
@@ -144,6 +157,34 @@ export class QualityGateService {
       };
     }
 
+    const fingerprint = renderFingerprint(input.browserEvidence);
+    const pendingFingerprint = input.previousVisualFingerprint ?? null;
+    if (pendingFingerprint && fingerprint && pendingFingerprint === fingerprint) {
+      input.appendTaskEvent("VISUAL_RENDER_NO_PROGRESS", {
+        attempt: input.attempt,
+        fingerprint,
+        reason: "Responsive screenshot fingerprint did not change after an approved visual refinement.",
+      });
+      input.emit({
+        type: "render.integrity.failed",
+        message: "Source changed but responsive browser output did not materially change. Repair stylesheet/import/token linkage before another design refinement.",
+      });
+      return {
+        action: "repair_current_slice",
+        source: "render_integrity",
+        reason: "The previous visual refinement did not change the rendered responsive screenshots.",
+        repairEvidence: [
+          "RENDER INTEGRITY REPAIR REQUIRED.",
+          "The previous approved visual refinement changed source but the responsive screenshot fingerprint is unchanged.",
+          "Treat this as a technical render-linkage failure, not another design iteration.",
+          "Check stylesheet imports from the application entrypoint/component tree, unresolved CSS custom properties, stale or disconnected selectors, and whether the edited stylesheet is actually loaded by the rendered component.",
+          `Unchanged responsive fingerprint: ${fingerprint}`,
+        ].join("\n"),
+        findings: [],
+        designReview: null,
+        visionReview,
+      };
+    }
     const policy = this.deps.vision.status();
     input.emit({ type: "stage.updated", stage: "Visual Direction", status: "active" });
     input.appendTaskEvent("DESIGN_REVIEW_STARTED", {
@@ -195,6 +236,12 @@ export class QualityGateService {
           designReview,
           visionReview,
         };
+      }
+      if (fingerprint) {
+        input.appendTaskEvent("VISUAL_REFINEMENT_RENDER_BASELINE", {
+          attempt: input.attempt,
+          fingerprint,
+        });
       }
       return {
         action: "repair_current_slice",
@@ -266,7 +313,7 @@ export class QualityGateService {
         action: "repair_current_slice",
         source: "fresh_review",
         reason: "Fresh-context review found a blocking issue.",
-        repairEvidence: `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 60_000)}`,
+        repairEvidence: `Fresh-context review requires repair:\n${JSON.stringify(review).slice(0, 6_000)}`,
         findings: review.findings,
         review,
         acceptanceCriteria,
@@ -317,6 +364,6 @@ Work from the authoritative repair grounding that BORG injects automatically:
 - Do not broaden beyond the current slice; a wider change requires a new plan-revision classification.
 - Capture mobile, tablet, and desktop evidence after editing and inspect whether the cited visual problem visibly changed before finishing.
 
-${JSON.stringify(review).slice(0, 70_000)}`;
+${JSON.stringify(review).slice(0, 6_000)}`;
   }
 }

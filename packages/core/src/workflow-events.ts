@@ -60,6 +60,7 @@ function statusFor(event: TaskEvent): WorkflowEvent["status"] {
     return "active";
   }
   if (type.includes("RECOVERY_REQUIRED")) return "blocked";
+  if (type === "VISUAL_RENDER_NO_PROGRESS") return "failed";
   if (/(FAILED|FAILURE|BLOCKED|REJECTED|LIMIT_REACHED)$/.test(type)) return type.includes("BLOCKED") || type.includes("LIMIT_REACHED") ? "blocked" : "failed";
   if (/(COMPLETED|APPROVED|READY|ACCEPTED)$/.test(type)) return "succeeded";
   if (/(STARTED|SCHEDULED|SELECTED|ACTIVITY|STATE_CHANGED)$/.test(type)) return "active";
@@ -81,7 +82,7 @@ function eventShape(type: string): Pick<WorkflowEvent, "category" | "kind"> {
   }
   if (type.startsWith("DELIVERY_") || type === "CHANGESET_CAPTURED") return { category: "delivery", kind: "delivery.updated" };
   if (type === "CONTEXT_PACK_COMPILED" || type === "MODEL_CONTEXT_RECORDED") return { category: "context", kind: "context.updated" };
-  if (type.includes("REVIEW") || type.startsWith("VISION_") || type.startsWith("DESIGN_")) return { category: "review", kind: "review.updated" };
+  if (type.includes("REVIEW") || type.startsWith("VISION_") || type.startsWith("DESIGN_") || type === "VISUAL_RENDER_NO_PROGRESS" || type === "VISUAL_REFINEMENT_RENDER_BASELINE") return { category: "review", kind: "review.updated" };
   if (type.startsWith("TOOL_")) return { category: "tool", kind: "tool.updated" };
   if (type.includes("CHECKPOINT") || type === "TASK_CONTINUED") return { category: "checkpoint", kind: "checkpoint.updated" };
   if (type === "AGENT_ACTIVITY" || type === "EXECUTION_STATE_CHANGED" || type.startsWith("IMPLEMENTATION_BUDGET_")) {
