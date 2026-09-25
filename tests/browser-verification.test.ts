@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { BrowserVerification, assertLoopbackUrl, resolveTaskBrowserUrl } from "../packages/browser-verification/src/index.ts";
+import { BrowserVerification, assertLoopbackUrl, resolveTaskBrowserUrl, routeJourneyIssue } from "../packages/browser-verification/src/index.ts";
 
 async function availablePort(): Promise<number> {
   return await new Promise((resolvePort, reject) => {
@@ -34,6 +34,12 @@ test("browser verification accepts only loopback application URLs", () => {
 test("browser navigation uses the task preview origin even when a model guesses the BORG UI port", () => {
   assert.equal(resolveTaskBrowserUrl("http://localhost:5173/music?tab=latest", "http://127.0.0.1:62144/"), "http://127.0.0.1:62144/music?tab=latest");
   assert.throws(() => resolveTaskBrowserUrl("https://example.com", "http://127.0.0.1:62144/"), /loopback/);
+});
+
+test("route journeys reject links that render the entry page at a different URL", () => {
+  assert.match(routeJourneyIssue({ route: "/products", name: "Products", linked: true, reached: true, renderedDistinctContent: false }) ?? "", /same page content/i);
+  assert.match(routeJourneyIssue({ route: "/products", name: "Products", linked: false, reached: false, renderedDistinctContent: false }) ?? "", /No rendered navigation link/i);
+  assert.equal(routeJourneyIssue({ route: "/products", name: "Products", linked: true, reached: true, renderedDistinctContent: true }), null);
 });
 
 test("browser tools expose the complete evidence workflow", () => {

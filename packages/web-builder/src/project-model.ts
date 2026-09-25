@@ -168,7 +168,12 @@ export function ensureProjectModel(root: string, plan: ProjectPlan): boolean {
   return true;
 }
 
-export function updateVerifiedProjectModel(root: string, changedPaths: string[], acceptanceCriteria: string[] = []) {
+export function updateProjectModelFromChanges(
+  root: string,
+  changedPaths: string[],
+  acceptanceCriteria: string[] = [],
+  resultingStatus: "in_progress" | "verified" = "in_progress",
+) {
   const model = readProjectModel(root);
   const changed = new Set(changedPaths.map((path) => path.replaceAll("\\", "/")));
   const sourceFiles = [...changed].filter((path) => sourceExtensions.has(extname(path).toLowerCase()) && !path.startsWith(".localcode/")).map((path) => validateProjectSource(root, path));
@@ -179,7 +184,7 @@ export function updateVerifiedProjectModel(root: string, changedPaths: string[],
       const planned = model.components.find((item) => item.id === id || slug(item.name) === id);
       if (planned && !planned.files.includes(path)) planned.files.push(path);
       else if (/component|section|ui/i.test(path) && !model.components.some((item) => item.files.includes(path))) {
-        model.components.push({ id, name, kind: "ui", purpose: `${name} discovered from verified source.`, files: [path], usedBy: [], dependencies: [], variants: [], status: "verified", acceptanceCriteria });
+        model.components.push({ id, name, kind: "ui", purpose: `${name} discovered from implementation source.`, files: [path], usedBy: [], dependencies: [], variants: [], status: resultingStatus, acceptanceCriteria });
       }
     }
     const page = model.pages.find((item) => path.toLowerCase().includes(`/${item.id}/`) || slug(name) === item.id || (item.id === "home" && path === "src/App.tsx"));
@@ -200,8 +205,12 @@ export function updateVerifiedProjectModel(root: string, changedPaths: string[],
     const discovered = model.components.filter((item) => item.usedBy.includes(page.id)).map((item) => item.id);
     page.components = [...new Set([...page.components.filter((id) => validComponentIds.has(id)), ...discovered])];
   }
-  for (const item of [...model.pages, ...model.components]) if (item.files.some((path) => changed.has(path))) item.status = "verified";
+  for (const item of [...model.pages, ...model.components]) if (item.files.some((path) => changed.has(path))) item.status = resultingStatus;
   writeProjectModel(root, model);
+}
+
+export function updateVerifiedProjectModel(root: string, changedPaths: string[], acceptanceCriteria: string[] = []) {
+  updateProjectModelFromChanges(root, changedPaths, acceptanceCriteria, "verified");
 }
 
 /** Enrich the frozen planning blueprint with entities discovered and verified by completed slices. */

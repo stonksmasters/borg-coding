@@ -56,6 +56,19 @@ function plannedRoutes(root: string): string[] {
   }
 }
 
+function verifiedPageRoutes(root: string): Array<{ route: string; name: string }> {
+  const pagesPath = join(root, ".localcode", "build", "pages.json");
+  if (!existsSync(pagesPath) || !lstatSync(pagesPath).isFile()) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(pagesPath, "utf8")) as { pages?: Array<{ route?: string | null; name?: string; status?: string }> };
+    return (parsed.pages ?? [])
+      .filter((page) => page.status === "verified" && page.route?.startsWith("/"))
+      .map((page) => ({ route: String(page.route), name: String(page.name ?? page.route) }));
+  } catch {
+    return [];
+  }
+}
+
 function routeMatches(pathname: string, planned: string) {
   const segments = (value: string) => value.split("/").filter(Boolean);
   const actual = segments(pathname);
@@ -713,7 +726,10 @@ export class WorktreeTools {
         }
       }
     } finally {
-      if (commandPassed) await this.browser.ensureEvidenceForVerification({ taskId: context.taskId, worktreePath: root }).catch(() => null);
+      if (commandPassed) await this.browser.ensureEvidenceForVerification(
+        { taskId: context.taskId, worktreePath: root },
+        verifiedPageRoutes(root),
+      ).catch(() => null);
       browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
     browserEvidence = validateBrowserEvidence(browserEvidence, commandPassed, plannedRoutes(root));

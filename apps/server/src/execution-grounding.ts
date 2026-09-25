@@ -63,6 +63,7 @@ export function compactBrowserRepairEvidence(browserEvidence: unknown, specialis
       accessibility: browser.accessibility,
       console: browser.console,
       network: browser.network,
+      routeChecks: browser.routeChecks,
       responsive,
     } : null,
     specialistEvidence,

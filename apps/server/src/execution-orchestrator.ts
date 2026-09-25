@@ -40,7 +40,7 @@ import {
   type CompiledContext,
   type ContextItem,
 } from "../../../packages/web-builder/src/context-compiler.ts";
-import { updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
+import { updateProjectModelFromChanges, updateVerifiedProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import {
   currentSlice,
   markSliceReady,
@@ -561,6 +561,26 @@ export class ExecutionOrchestrator {
         }
         if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
         appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, budgetExhausted: Boolean(budgetExhausted), attempt: task.attempts });
+        if (websiteProject && projectPlan) {
+          const implementedPaths = sourceMutationSnapshot(approvedWorktreePath).paths;
+          updateProjectModelFromChanges(
+            approvedWorktreePath,
+            implementedPaths,
+            sliceState
+              ? currentSlice(projectPlan, sliceState).acceptanceCriteria
+              : focusedExecutionScope?.type === "page"
+                ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
+                : focusedExecutionScope?.type === "component"
+                  ? projectPlan.components.find((component) => component.id === focusedExecutionScope.id)?.acceptanceCriteria ?? []
+                  : [],
+            "in_progress",
+          );
+          appendTaskEvent(taskId, "PROJECT_MODEL_IMPLEMENTATION_REGISTERED", {
+            changedPaths: implementedPaths,
+            status: "in_progress",
+            attempt: task.attempts,
+          });
+        }
         finishRole(activeRoleAssignment, "completed", emit);
         recordHandoff({
           task,

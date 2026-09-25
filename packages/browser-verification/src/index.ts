@@ -28,6 +28,24 @@ export interface BrowserEvidenceReport {
   screenshots: ScreenshotEvidence[];
   responsive: ResponsiveEvidence[];
   server: ServerEvidence | null;
+  routeChecks?: BrowserRouteEvidence[];
+}
+
+export interface BrowserRouteEvidence {
+  route: string;
+  name: string;
+  linked: boolean;
+  reached: boolean;
+  renderedDistinctContent: boolean;
+  finalUrl: string | null;
+  issue: string | null;
+}
+
+export function routeJourneyIssue(input: Pick<BrowserRouteEvidence, "route" | "name" | "linked" | "reached" | "renderedDistinctContent">, root = { route: "/", name: "Home" }): string | null {
+  if (!input.linked) return `No rendered navigation link reaches ${input.name} (${input.route}).`;
+  if (!input.reached) return `The navigation link for ${input.name} did not reach ${input.route}.`;
+  if (!input.renderedDistinctContent) return `${input.name} (${input.route}) renders the same page content as ${root.name} (${root.route}).`;
+  return null;
 }
 
 export interface BrowserDomElement {
@@ -111,6 +129,7 @@ interface BrowserSession {
   responsive: ResponsiveEvidence[];
   dom: BrowserDomElement[];
   accessibility: AccessibilityEvidence | null;
+  routeChecks: BrowserRouteEvidence[];
   viewport: { width: number; height: number };
 }
 
@@ -297,10 +316,11 @@ export class BrowserVerification {
   definitions() { return Object.values(browserToolDefinitions); }
   latest(taskId: string) { return this.reports.get(taskId) ?? null; }
 
-  async ensureEvidenceForVerification(context: BrowserTaskContext) {
+  async ensureEvidenceForVerification(context: BrowserTaskContext, routes: Array<{ route: string; name: string }> = []) {
     const server = this.processRuntime.findRunning(context.taskId, "dev_server");
     if (!server?.url || server.status !== "running") return this.latest(context.taskId);
     await this.responsive({ url: server.url }, context);
+    if (routes.length) await this.verifyLinkedRoutes(server.url, routes, context);
     return this.latest(context.taskId);
   }
 
@@ -410,6 +430,7 @@ export class BrowserVerification {
       responsive: [],
       dom: [],
       accessibility: null,
+      routeChecks: [],
       viewport,
     };
     this.sessions.set(context.taskId, session);
@@ -544,6 +565,43 @@ export class BrowserVerification {
     return { url, viewports: session.responsive, console: session.console, network: session.network };
   }
 
+  private async verifyLinkedRoutes(serverUrl: string, routes: Array<{ route: string; name: string }>, context: BrowserTaskContext) {
+    const session = this.requireSession(context.taskId);
+    const root = routes.find((item) => item.route === "/") ?? { route: "/", name: "Home" };
+    const rootUrl = new URL(root.route, serverUrl).toString();
+    await session.page.goto(rootUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await session.page.waitForTimeout(150);
+    const rootContent = (await session.page.locator("body").innerText()).replace(/\s+/g, " ").trim();
+    const checks: BrowserRouteEvidence[] = [];
+    for (const item of routes.filter((candidate) => candidate.route !== "/" && !/[:\[]/.test(candidate.route))) {
+      await session.page.goto(rootUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      const links = session.page.locator("a[href]");
+      const hrefs = await links.evaluateAll((elements) => elements.map((element) => (element as HTMLAnchorElement).href));
+      const linkIndex = hrefs.findIndex((href) => {
+        try { return new URL(href).pathname === item.route; } catch { return false; }
+      });
+      let linked = linkIndex >= 0;
+      if (linked) {
+        try {
+          await links.nth(linkIndex).click();
+          await session.page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => undefined);
+          await session.page.waitForTimeout(150);
+        } catch {
+          linked = false;
+        }
+      }
+      const finalUrl = linked ? session.page.url() : null;
+      const reached = Boolean(finalUrl && new URL(finalUrl).pathname === item.route);
+      const content = linked ? (await session.page.locator("body").innerText()).replace(/\s+/g, " ").trim() : "";
+      const renderedDistinctContent = reached && content.length > 0 && content !== rootContent;
+      const issue = routeJourneyIssue({ route: item.route, name: item.name, linked, reached, renderedDistinctContent }, root);
+      checks.push({ route: item.route, name: item.name, linked, reached, renderedDistinctContent, finalUrl, issue });
+    }
+    session.routeChecks = checks;
+    session.dom = await this.inspectDom(session.page, "body, body *", 160);
+    this.updateReport(context.taskId);
+  }
+
   private async screenshot(session: BrowserSession, context: BrowserTaskContext, rawName: unknown, fullPage: boolean): Promise<ScreenshotEvidence> {
     const evidenceRoot = resolve(context.worktreePath, ".borg", "evidence", "browser");
     if (!isInside(resolve(context.worktreePath), evidenceRoot)) throw new Error("Browser evidence path escaped the worktree.");
@@ -654,6 +712,7 @@ export class BrowserVerification {
     const accessibility = session?.accessibility ?? previous?.accessibility ?? null;
     const screenshots = session?.screenshots ?? previous?.screenshots ?? [];
     const responsive = session?.responsive ?? previous?.responsive ?? [];
+    const routeChecks = session?.routeChecks ?? previous?.routeChecks ?? [];
     const accessibilityResults = [accessibility, ...responsive.map((item) => item.accessibility)].filter((item): item is AccessibilityEvidence => item !== null);
     const blockingA11y = accessibilityResults.flatMap((item) => item.violations).filter((item) => item.impact === "critical" || item.impact === "serious").length;
     const issues: string[] = [];
@@ -663,6 +722,7 @@ export class BrowserVerification {
     if (consoleErrors) issues.push(`${consoleErrors} browser console error(s) were captured.`);
     if (network.length) issues.push(`${network.length} failed, blocked, or HTTP-error request(s) were captured.`);
     if (blockingA11y) issues.push(`${blockingA11y} serious or critical accessibility violation(s) were captured.`);
+    issues.push(...routeChecks.flatMap((check) => check.issue ? [check.issue] : []));
     const report: BrowserEvidenceReport = {
       taskId,
       passed: issues.length === 0,
@@ -677,6 +737,7 @@ export class BrowserVerification {
       screenshots,
       responsive,
       server: server ? this.serverEvidence(server) : this.reports.get(taskId)?.server ?? null,
+      routeChecks,
     };
     this.reports.set(taskId, report);
   }

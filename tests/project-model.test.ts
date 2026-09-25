@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   initializeProjectModel,
   projectPlanWithVerifiedModel,
+  readProjectModel,
+  updateProjectModelFromChanges,
   updateVerifiedProjectModel,
 } from "../packages/web-builder/src/project-model.ts";
 import { fallbackProjectPlan } from "../packages/web-builder/src/slice-docs.ts";
@@ -19,12 +21,15 @@ test("verified slice components enrich the blueprint shown by the workspace", ()
     writeFileSync(join(root, "src", "components", "HeroSection.tsx"), "export function HeroSection() { return <section>Hero</section>; }\n");
     writeFileSync(join(root, "src", "App.tsx"), "import { HeroSection } from './components/HeroSection'; export default function App() { return <HeroSection />; }\n");
     initializeProjectModel(root, plan);
+    updateProjectModelFromChanges(root, ["src/App.tsx", "src/components/HeroSection.tsx"], ["Homepage renders"]);
+    assert.equal(readProjectModel(root).components[0]?.status, "in_progress");
     updateVerifiedProjectModel(root, ["src/App.tsx", "src/components/HeroSection.tsx"], ["Homepage renders"]);
 
     const enriched = projectPlanWithVerifiedModel(root, plan);
     assert.equal(plan.components.length, 0);
     assert.equal(enriched.components[0]?.id, "hero-section");
     assert.equal(enriched.components[0]?.usedBy[0], "home");
+    assert.equal(readProjectModel(root).components[0]?.status, "verified");
     assert.ok(enriched.sitemap.find((page) => page.id === "home")?.componentIds.includes("hero-section"));
   } finally {
     rmSync(root, { recursive: true, force: true });

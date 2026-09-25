@@ -1251,6 +1251,9 @@ const server = createServer((request, response) => {
         continuationId: continuation.id,
         sourceFailureEventId: sourceFailure?.id ?? null,
         repositoryState: inspection.state,
+        previousAttempts: task.attempts,
+        resetAttempts: resumed.task.attempts,
+        maximumRepairAttempts: maxRepairAttempts,
       });
       return send(response, 200, { task: resumed.task, workflow: resumed.workflow, continuation, checkpoint });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to retry blocked task." }));
