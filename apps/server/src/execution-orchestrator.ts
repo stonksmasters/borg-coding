@@ -60,10 +60,10 @@ import {
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, classifyObservedToolFailures, compactRecoveryEvidence } from "./recovery-policy.ts";
-import { VerificationService } from "./verification-service.ts";
+import { findingsFromVerification, VerificationService } from "./verification-service.ts";
 import { QualityGateService } from "./quality-gate-service.ts";
 import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
-import { repairGroundingSnapshot, sourceMutationSnapshot } from "./execution-grounding.ts";
+import { browserRepairSourceHints, compactBrowserRepairEvidence, ImplementationBudgetContinuations, isTransientModelRuntimeFailure, repairGroundingSnapshot, shouldVerifyPersistedRetryFirst, sourceMutationSnapshot, webInterfaceExecutionOrder } from "./execution-grounding.ts";
 
 export type ExecutionEventSink = (event: Record<string, unknown>) => void;
 
@@ -107,7 +107,7 @@ export type ExecutionOrchestratorDependencies = {
   finishRole(assignment: RoleAssignment, status: "completed" | "failed", emit?: ExecutionEventSink): RoleAssignment;
   recordHandoff(input: HandoffInput, emit?: ExecutionEventSink): unknown;
   createCheckpointSnapshot(task: Task, kind: TaskCheckpoint["kind"]): TaskCheckpoint;
-  recordCompletedReview(task: Task, findings: Finding[], verdict: "pass" | "repair" | "unknown", summary: string, resolutionEvidence?: string[]): { records: ReviewFindingRecord[] };
+  recordCompletedReview(task: Task, findings: Finding[], verdict: "pass" | "repair" | "unknown", summary: string, resolutionEvidence?: string[], resolutionFilter?: (record: ReviewFindingRecord) => boolean): { records: ReviewFindingRecord[] };
   recordMemoryNote(root: string, note: MemoryNote): void;
   contextSourceHints(root: string, query: string): string[];
 };
@@ -270,11 +270,21 @@ export class ExecutionOrchestrator {
             || event.type === "DESIGN_REFINEMENT_LIMIT_REACHED"
             || event.type === "PLAN_REPAIR_REQUIRED")
         : null;
+      const blockedRuntimeFailure = blockedRetry
+        ? taskEvents.findLast((event) => event.type === "IMPLEMENTATION_FAILURE_CLASSIFIED")
+        : null;
+      const blockedRuntimeMessage = (blockedRuntimeFailure?.payload.decision as { message?: unknown } | undefined)?.message;
+      let verifyPersistedRetryFirst = shouldVerifyPersistedRetryFirst({
+        blockedRetry: Boolean(blockedRetry),
+        failure: blockedRuntimeMessage,
+        changedPaths: sourceMutationSnapshot(approvedWorktreePath).paths,
+      });
       let repairEvidence = blockedRetry
         ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 8_000)}`
         : "";
       let activeRepairContext: RepairContext | null = null;
       refreshTaskContext();
+      const budgetContinuations = new ImplementationBudgetContinuations();
       let implementationBudgetContinuations = 0;
       let implementationBudgetExhausted = false;
       performPreflight("execution_start");
@@ -369,53 +379,88 @@ export class ExecutionOrchestrator {
           : `Approved plan:\n${typeof savedPlan === "string" ? savedPlan : "No saved plan text was found; inspect the repository and implement conservatively."}`;
         let implementationResult: Awaited<ReturnType<typeof runOllamaAgent>>;
         try {
-          implementationResult = await runOllamaAgent({
+          if (verifyPersistedRetryFirst) {
+            verifyPersistedRetryFirst = false;
+            implementationResult = {
+              answer: "A prior transient model failure occurred after source work was saved. Verify the persisted worktree before requesting another model repair.",
+              usedTools: false,
+              toolFailures: [],
+            };
+            appendTaskEvent(taskId, "BLOCKED_RETRY_VERIFYING_PERSISTED_WORKTREE", {
+              sourceFailureEventId: blockedRuntimeFailure?.id ?? null,
+              changedFiles: preAttemptSnapshot.paths,
+            });
+            emit({
+              type: "runtime.notice",
+              message: "BORG is verifying the saved worktree before asking the local model for another repair.",
+            });
+          } else implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
           limits: sliceState || focusedExecutionScope || styleWorkspace
             ? attemptStartedInRepair
-              ? { toolRounds: 8, toolCalls: 18 }
+              ? { toolRounds: 12, toolCalls: 28 }
               : { toolRounds: 12, toolCalls: 28 }
             : undefined,
           onRequestBody: websiteProject ? (body) => recordModelInput(taskId, "implementer", implementerModel, compiledExecutionContext?.sliceId ?? null, compiledExecutionContext?.manifest ?? [], body) : undefined,
           messages: [
             ...(taskContext.attemptPhase !== "implementation" ? [{ role: "system" as const, content: "You are BORG's bounded repair agent. Resolve only the supplied failure evidence. Do not restart planning or perform repository-wide discovery. Inspect only implicated worktree files and direct dependencies, make the smallest root-cause correction, and return control to deterministic verification. Do not use base-repository language-intelligence tools during repair. Do not guess npm scripts or invent verification commands; BORG's deterministic verifier reads package.json after you return control." }] : []),
-            { role: "system", content: `${scopedAuthorityPrompt}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful. For web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${scopedDesignContext}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
+            { role: "system", content: `${scopedAuthorityPrompt}You are BORG's approved implementation agent. Work only inside the task worktree through the provided worktree tools. Create new files with worktree_write; it safely creates missing parent directories. Use worktree_patch for exact edits to existing files. Inspect Git status and diff; run relevant bounded commands when useful.\n\n${webInterfaceExecutionOrder}\n\nFor web-interface tasks, call browser_server_start to reuse the managed live preview, then use the URL it returns for browser_open and browser_responsive. Do not guess a fixed port or run a development server through worktree_command. Inspect and interact with the site through browser tools, and capture responsive screenshots, console/network failures, DOM evidence, and accessibility results. The development server is shared with the desktop Preview, so leave it running unless it crashes or an explicit restart is required; browser_close is enough to end the Chromium verification session. Browser verification is loopback-only and its latest report is attached to deterministic verification and fresh review. Use activity_update to keep the user informed in plain English: before each meaningful block of work, state what you are doing and which subsystem or files you expect to touch; report important discoveries that change your approach; after a meaningful mutation, explain what you changed; and before verification, say what you are checking. Do not emit activity updates for every trivial read, search, or tool call. The activity files field describes expected/current work context only; do not claim a file actually changed until runtime evidence proves it. Do not claim a mutation or verification that a tool result does not prove. The server will run deterministic verification after your work.\n\nActive specialist capability packs:\n${specialistInstructions.implementer}${scopedDesignContext}\n\nApproved worktree: ${approval.worktreePath}\nImmutable base commit: ${approval.baseCommit}` },
             { role: "user", content: `Implement this approved request:\n${task.request}\n\n${repairPrompt}` },
           ],
           });
         } catch (error) {
-          if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
-          activeRoleAssignment = null;
-          const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
-          appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
-          emit({ type: "recovery.classified", decision, phase: "implementation" });
-          if (decision.disposition === "retry") {
-            const recoveryPreflight = performPreflight("implementation_recovery");
-            activeRepairContext = null;
-            repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
-            createCheckpointSnapshot(task, "pre_repair");
-          }
-          const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
-            retryKind: "technical_repair",
-            eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
-          });
-          adoptCoreMutation(recoveryOutcome);
-          if (recoveryOutcome.action === "retry") {
-            emit({
-              type: "recovery.scheduled",
-              attempt: recoveryOutcome.task.attempts,
-              maximum: maxRepairAttempts,
-              reason: decision.reason,
-              category: decision.category,
-              action: decision.action,
-              message: decision.action,
+          const failureMessage = error instanceof Error ? error.message : String(error);
+          const postFailureSnapshot = sourceMutationSnapshot(approvedWorktreePath);
+          const sourceProgressBeforeFailure = preAttemptSnapshot.fingerprint !== postFailureSnapshot.fingerprint;
+          if (isTransientModelRuntimeFailure(error) && sourceProgressBeforeFailure) {
+            implementationResult = {
+              answer: `The model transport stopped after source changes were written. Continue with deterministic verification. Runtime failure: ${failureMessage}`,
+              usedTools: true,
+              toolFailures: [failureMessage],
+            };
+            appendTaskEvent(taskId, "MODEL_FAILURE_AFTER_SOURCE_PROGRESS", {
+              message: failureMessage,
+              changedFiles: postFailureSnapshot.paths,
+              action: "verify",
             });
+            emit({
+              type: "runtime.notice",
+              message: "The local model stopped after saving source changes. BORG will verify the worktree before deciding whether another repair is needed.",
+            });
+          } else {
+            if (activeRoleAssignment) finishRole(activeRoleAssignment, "failed", emit);
+            activeRoleAssignment = null;
+            const decision = classifyImplementationFailure(error, task.attempts, maxRepairAttempts);
+            appendTaskEvent(taskId, "IMPLEMENTATION_FAILURE_CLASSIFIED", { decision, phase: "implementation" });
+            emit({ type: "recovery.classified", decision, phase: "implementation" });
+            if (decision.disposition === "retry") {
+              const recoveryPreflight = performPreflight("implementation_recovery");
+              activeRepairContext = null;
+              repairEvidence = compactRecoveryEvidence(decision, recoveryPreflight);
+              createCheckpointSnapshot(task, "pre_repair");
+            }
+            const recoveryOutcome = workflow.applyRecoveryDecision(task, decision, {
+              retryKind: "technical_repair",
+              eventType: "IMPLEMENTATION_RETRY_SCHEDULED",
+            });
+            adoptCoreMutation(recoveryOutcome);
+            if (recoveryOutcome.action === "retry") {
+              emit({
+                type: "recovery.scheduled",
+                attempt: recoveryOutcome.task.attempts,
+                maximum: maxRepairAttempts,
+                reason: decision.reason,
+                category: decision.category,
+                action: decision.action,
+                message: decision.action,
+              });
+            }
+            if (recoveryOutcome.action === "block") {
+              emit({ type: "stream.blocked", message: decision.action });
+              return;
+            }
+            continue;
           }
-          if (recoveryOutcome.action === "block") {
-            emit({ type: "stream.blocked", message: decision.action });
-            return;
-          }
-          continue;
         }
         const { answer, usedTools, budgetExhausted, toolFailures: directToolFailures = [] } = implementationResult;
         implementationBudgetExhausted = Boolean(budgetExhausted);
@@ -493,19 +538,24 @@ export class ExecutionOrchestrator {
             continue;
           }
         }
-        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted && implementationBudgetContinuations < 1) {
+        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted && budgetContinuations.claim(task.attempts, taskContext.attemptPhase)) {
           implementationBudgetContinuations += 1;
           appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_CONTINUATION", {
             continuation: implementationBudgetContinuations,
+            attempt: task.attempts,
+            attemptPhase: taskContext.attemptPhase,
             toolBudgetExhausted: true,
           });
           if (activeRoleAssignment) finishRole(activeRoleAssignment, "completed", emit);
           activeRoleAssignment = null;
-          repairEvidence = focusedExecutionScope
+          const continuationScope = focusedExecutionScope
             ? `The bounded implementation tool budget ended before the focused ${focusedExecutionScope.type} edit demonstrated completion. Continue the SAME focused scope [${focusedExecutionScope.id}] from the current worktree state. Do not re-plan or inspect unrelated pages/components.`
             : styleWorkspace
               ? "The bounded implementation tool budget ended before the global style edit demonstrated completion. Continue the SAME style task from the current worktree state without changing site structure."
               : "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
+          repairEvidence = attemptStartedInRepair && repairEvidence
+            ? `${continuationScope}\n\nThe repair is still bounded to this original verification failure; do not switch back to general slice work:\n${repairEvidence}`
+            : continuationScope;
           emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same scoped task once with compact context instead of treating partial progress as complete." });
           continue;
         }
@@ -602,6 +652,15 @@ export class ExecutionOrchestrator {
         });
 
         if (verificationOutcome.action !== "quality_review") {
+          recordCompletedReview(
+            task,
+            findingsFromVerification(taskId, verification),
+            "repair",
+            verificationSummary,
+            [`Verification attempt ${verificationAttempt} no longer reproduced this failure.`],
+            (record) => record.finding.category.startsWith("verification/"),
+          );
+          emit({ type: "review.history.updated" });
           finishRole(activeRoleAssignment, "completed", emit);
           recordHandoff({
             task,
@@ -644,10 +703,10 @@ export class ExecutionOrchestrator {
             recentChanges,
           });
           activeRepairContext = context;
-          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${JSON.stringify({
-            browserEvidence: verification.browserEvidence,
-            specialistEvidence: verification.specialistEvidence,
-          }).slice(0, 6_000)}`;
+          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${compactBrowserRepairEvidence(
+            verification.browserEvidence,
+            verification.specialistEvidence,
+          )}\n\n${browserRepairSourceHints(approvedWorktreePath, verification.browserEvidence)}`;
           appendTaskEvent(taskId, "REPAIR_CONTEXT_CREATED", { context });
           continue;
         }

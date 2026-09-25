@@ -3,9 +3,36 @@ import test from "node:test";
 import type { BrowserEvidenceReport } from "../packages/browser-verification/src/index.ts";
 import { selectSpecialistPacks } from "../packages/orchestration/src/index.ts";
 import {
+  findingsFromVerification,
   VerificationService,
+  type VerificationOutcome,
   type VerificationServiceDependencies,
 } from "../apps/server/src/verification-service.ts";
+
+test("failed verification becomes actionable review findings", () => {
+  const report = browserEvidence("task-findings", false);
+  report.issues = ["2 enabled buttons have no observable action.", "1 serious accessibility violation was found."];
+  report.accessibility = {
+    incomplete: 0,
+    passes: 10,
+    violations: [{
+      id: "color-contrast", impact: "serious", help: "Elements must meet minimum color contrast ratio thresholds",
+      helpUrl: "https://dequeuniversity.com/rules/axe/color-contrast",
+      nodes: [{ target: [".product-price"], html: "<span class=\"product-price\">$20</span>", failureSummary: "Contrast is 2.1:1." }],
+    }],
+  };
+  const verification = {
+    passed: false, results: [], browserEvidence: report, focusedBrowserRoute: null, focusedBrowserFailure: null,
+    specialistEvidence: { passed: true, failures: [] }, specialistInstructions: "",
+  } as unknown as VerificationOutcome;
+
+  const findings = findingsFromVerification("task-findings", verification);
+  assert.equal(findings.length, 2);
+  assert.equal(findings[0].severity, "high");
+  assert.match(findings[0].title, /Accessibility/);
+  assert.match(findings[0].evidence ?? "", /product-price/);
+  assert.match(findings[1].remediation ?? "", /working interaction/i);
+});
 
 function browserEvidence(taskId: string, passed = true): BrowserEvidenceReport {
   return {

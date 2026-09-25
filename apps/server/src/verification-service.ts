@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import type { EngineeringDiscipline } from "../../../packages/core/src/contracts.ts";
+import { createHash, randomUUID } from "node:crypto";
+import type { EngineeringDiscipline, Finding } from "../../../packages/core/src/contracts.ts";
 import type { BrowserEvidenceReport } from "../../../packages/browser-verification/src/index.ts";
 import {
   evaluateSpecialistEvidence,
@@ -63,6 +63,102 @@ export type VerificationServiceDependencies = {
   tools: ToolBroker;
   processRuntime: ProcessRuntime;
 };
+
+function boundedEvidence(value: string, maximum = 4_000): string {
+  return value.trim().slice(0, maximum);
+}
+
+function issueIdentity(issue: string): { category: string; title: string; remediation: string } {
+  const normalized = issue.toLowerCase();
+  if (normalized.includes("accessibility")) return {
+    category: "verification/accessibility",
+    title: "Accessibility verification failed",
+    remediation: "Fix every reported accessibility violation, then rerun browser verification at all required viewports.",
+  };
+  if (normalized.includes("button") || normalized.includes("control") || normalized.includes("action")) return {
+    category: "verification/interaction",
+    title: "An enabled control does not complete its action",
+    remediation: "Connect each enabled control to a working interaction and verify the resulting state or navigation in the browser.",
+  };
+  if (normalized.includes("link") || normalized.includes("href") || normalized.includes("route")) return {
+    category: "verification/navigation",
+    title: "Navigation verification failed",
+    remediation: "Give every visible navigation element a meaningful destination and verify the target route renders.",
+  };
+  return {
+    category: "verification/browser",
+    title: "Browser verification failed",
+    remediation: "Repair the reported browser behavior and rerun the same verification check.",
+  };
+}
+
+export function findingsFromVerification(taskId: string, verification: VerificationOutcome): Finding[] {
+  const findings: Finding[] = [];
+  const accessibility = verification.browserEvidence?.accessibility;
+  for (const violation of accessibility?.violations ?? []) {
+    const nodes = violation.nodes.slice(0, 8).map((node) => [
+      node.target.join(" "),
+      node.failureSummary,
+    ].filter(Boolean).join(": ")).join("\n");
+    findings.push({
+      id: randomUUID(), taskId, discipline: "frontend",
+      severity: violation.impact === "critical" ? "critical" : violation.impact === "serious" ? "high" : "medium",
+      category: `verification/accessibility/${violation.id}`,
+      title: `Accessibility: ${violation.help}`,
+      description: `${violation.nodes.length} element${violation.nodes.length === 1 ? "" : "s"} failed the ${violation.id} accessibility rule.`,
+      evidence: boundedEvidence(nodes || violation.helpUrl),
+      remediation: `Resolve the ${violation.id} rule on every listed element, then rerun accessibility verification. ${violation.helpUrl}`,
+      confidence: 1,
+    });
+  }
+
+  for (const issue of verification.browserEvidence?.issues ?? []) {
+    if (accessibility?.violations.length && issue.toLowerCase().includes("accessibility")) continue;
+    const identity = issueIdentity(issue);
+    findings.push({
+      id: randomUUID(), taskId, discipline: "frontend", severity: "high",
+      ...identity, description: issue, evidence: issue, confidence: 1,
+    });
+  }
+
+  for (const result of verification.results ?? []) {
+    if (result.exitCode === undefined || result.exitCode === 0) continue;
+    const label = result.label || result.command || "Project check";
+    findings.push({
+      id: randomUUID(), taskId, discipline: "generalist", severity: "high",
+      category: `verification/command/${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      title: `${label} failed`,
+      description: `The ${label} verification command exited with code ${result.exitCode}.`,
+      evidence: boundedEvidence([result.stderr, result.stdout].filter(Boolean).join("\n") || "No command output was captured."),
+      remediation: `Fix the reported ${label} errors and rerun deterministic verification.`,
+      confidence: 1,
+    });
+  }
+
+  for (const failure of verification.specialistEvidence.failures ?? []) {
+    findings.push({
+      id: randomUUID(), taskId, discipline: "generalist", severity: "high",
+      category: "verification/specialist", title: "Specialist verification failed",
+      description: failure, evidence: failure,
+      remediation: "Address the specialist requirement described here and rerun verification.", confidence: 1,
+    });
+  }
+
+  if (verification.focusedBrowserFailure) findings.push({
+    id: randomUUID(), taskId, discipline: "frontend", severity: "high",
+    category: "verification/focused-route", title: "Focused route verification could not complete",
+    description: verification.focusedBrowserFailure, evidence: verification.focusedBrowserFailure,
+    remediation: "Restore the managed development server and verify the focused route before continuing.", confidence: 1,
+  });
+
+  if (!findings.length && !verification.passed) findings.push({
+    id: randomUUID(), taskId, discipline: "generalist", severity: "high",
+    category: "verification/unknown", title: "Deterministic verification failed",
+    description: "Verification did not pass, but no more specific failure was captured.",
+    remediation: "Inspect the verification logs, repair the failing check, and rerun verification.", confidence: 0.7,
+  });
+  return findings;
+}
 
 export class VerificationService {
   private readonly deps: VerificationServiceDependencies;

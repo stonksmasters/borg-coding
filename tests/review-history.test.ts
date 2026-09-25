@@ -88,6 +88,21 @@ test("successful repair evidence fixes an absent finding and recurrence reopens 
   assert.equal(blockingReviewFindings(reopened.records).length, 1);
 });
 
+test("scoped repair evidence only fixes findings owned by that verification phase", () => {
+  let sequence = 0;
+  const ids = () => `scoped-${++sequence}`;
+  const verificationFinding = finding({ id: "verification", category: "verification/interaction", title: "Dead button" });
+  const visualFinding = finding({ id: "visual", category: "design/hierarchy", title: "Weak hierarchy" });
+  const first = reconcileReviewRun({ run: run("run-scope-1"), incoming: [verificationFinding, visualFinding], existing: [], idFactory: ids });
+  const repaired = reconcileReviewRun({
+    run: run("run-scope-2", 1), incoming: [], existing: first.records,
+    resolutionEvidence: ["The next verification run did not reproduce this failure."],
+    resolutionFilter: (record) => record.finding.category.startsWith("verification/"), idFactory: ids,
+  });
+  assert.equal(repaired.records.find((record) => record.finding.title === "Dead button")?.state, "fixed");
+  assert.equal(repaired.records.find((record) => record.finding.title === "Weak hierarchy")?.state, "open");
+});
+
 test("waivers require reasons, critical findings cannot be waived, and system review cannot overwrite operator protection", () => {
   const record = reconcileReviewRun({ run: run("run-1"), incoming: [finding()], existing: [], idFactory: () => "record-1" }).records[0];
   assert.throws(() => applyReviewDecision(record, decision(record, "waive", { reason: "" })), /requires a reason/i);

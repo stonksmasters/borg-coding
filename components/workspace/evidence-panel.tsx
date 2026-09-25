@@ -10,6 +10,7 @@ export function EvidencePanel({
   refinementCount,
   maxRefinements,
   blockingFindings,
+  findings,
   baselineCandidates,
   baselineBusy,
   baselineError,
@@ -22,6 +23,7 @@ export function EvidencePanel({
   refinementCount: number;
   maxRefinements: number;
   blockingFindings: number;
+  findings: Array<{ id: string; state: string; finding: { severity: string; title: string; description: string; evidence?: string; remediation?: string } }>;
   baselineCandidates: Array<{ profileId: string; screenshotName: string }>;
   baselineBusy: boolean;
   baselineError: string;
@@ -79,6 +81,21 @@ export function EvidencePanel({
             <div><p className="text-[11px] leading-5 text-slate-400">{item.evidence}</p>{item.verdict === "repair" && <p className="mt-1 text-[11px] leading-5 text-amber-100/80">Refine: {item.recommendation}</p>}</div>
           </div>)}
         </div>}
+      </section>}
+
+      {findings.length > 0 && <section className="rounded-xl border border-red-300/15 bg-red-300/[0.025] p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-red-200/70">What failed and what to repair next</p>
+        <div className="mt-3 space-y-4">
+          {findings.map((record) => <div key={record.id} className="border-t border-white/6 pt-3 first:border-0 first:pt-0">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm font-medium text-slate-200">{record.finding.title}</p>
+              <span className="shrink-0 rounded border border-red-300/15 px-1.5 py-0.5 text-[9px] uppercase text-red-200/80">{record.finding.severity}</span>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-slate-400">{record.finding.description}</p>
+            {record.finding.evidence && record.finding.evidence !== record.finding.description && <p className="mt-2 whitespace-pre-wrap rounded bg-black/20 px-2.5 py-2 font-mono text-[10px] leading-4 text-slate-500">{record.finding.evidence}</p>}
+            {record.finding.remediation && <p className="mt-2 text-xs leading-5 text-amber-100/80"><span className="font-medium">Next iteration:</span> {record.finding.remediation}</p>}
+          </div>)}
+        </div>
       </section>}
 
       <div className="flex flex-wrap gap-2">

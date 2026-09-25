@@ -15,6 +15,7 @@ import {
   type EngineeringRole,
   type Finding,
   type ReviewDecision,
+  type ReviewFindingRecord,
   type RoleAssignment,
   type Task,
   type TaskCheckpoint,
@@ -30,6 +31,7 @@ import { evaluateContinuation } from "../../../packages/core/src/continuation-po
 import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
+import { projectPlanWithVerifiedModel } from "../../../packages/web-builder/src/project-model.ts";
 import { RepositoryMemory, type MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
 import { GitWorktreeManager } from "../../../packages/repository/src/git-worktree-manager.ts";
 import { WorktreeDelivery } from "../../../packages/repository/src/worktree-delivery.ts";
@@ -114,7 +116,7 @@ const visualDirector = new VisualDirectorService(ollamaUrl);
 const visualRegression = new VisualRegressionService();
 const disciplineRouter = new DisciplineRouter();
 const teamPolicies = new TeamPolicyService();
-const maxRepairAttempts = 2;
+const maxRepairAttempts = 3;
 const maxDesignRefinements = 3;
 
 const planningOrchestrator = new PlanningOrchestrator({
@@ -462,6 +464,7 @@ function recordCompletedReview(
   verdict: "pass" | "repair" | "unknown",
   summary: string,
   resolutionEvidence: string[] = [],
+  resolutionFilter?: (record: ReviewFindingRecord) => boolean,
 ) {
   const safeFindings = findings.map((finding) => finding.file && !access.allowsRepositoryFile(finding.file)
     ? { ...finding, file: undefined, line: undefined }
@@ -478,6 +481,7 @@ function recordCompletedReview(
     incoming: safeFindings,
     existing: tasks.listReviewFindings(task.id),
     resolutionEvidence,
+    resolutionFilter,
   });
   tasks.saveReviewHistory({ run, ...reconciled });
   // Compatibility projection for pre-history clients. The durable source of
@@ -1135,7 +1139,9 @@ const server = createServer((request, response) => {
     const baselineCandidates = pendingVisualBaselineCandidates(taskId);
     return send(response, 200, {
       status: deriveWorkflowStatus(task, events, plan, slice, ownedWorkflow, { baselineApprovalCount: baselineCandidates.length, maxDesignRefinements }),
-      blueprint: authorityWorkflow?.projectPlan ?? null,
+      blueprint: plan && root
+        ? (() => { try { return projectPlanWithVerifiedModel(root, plan); } catch { return plan; } })()
+        : plan,
       baselineCandidates,
     });
   }

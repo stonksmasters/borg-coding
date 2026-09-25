@@ -204,4 +204,26 @@ export function updateVerifiedProjectModel(root: string, changedPaths: string[],
   writeProjectModel(root, model);
 }
 
+/** Enrich the frozen planning blueprint with entities discovered and verified by completed slices. */
+export function projectPlanWithVerifiedModel(root: string, plan: ProjectPlan): ProjectPlan {
+  const model = readProjectModel(root);
+  const pages = new Map(model.pages.map((page) => [page.id, page]));
+  return {
+    ...plan,
+    sitemap: plan.sitemap.map((page) => ({
+      ...page,
+      componentIds: pages.get(page.id)?.components ?? page.componentIds,
+    })),
+    components: model.components.map((component) => ({
+      id: component.id,
+      name: component.name,
+      kind: component.kind,
+      purpose: component.purpose,
+      usedBy: component.usedBy,
+      variants: component.variants,
+      acceptanceCriteria: component.acceptanceCriteria,
+    })),
+  };
+}
+
 export function projectModelHash(model: ProjectModel) { return createHash("sha256").update(JSON.stringify(model)).digest("hex"); }

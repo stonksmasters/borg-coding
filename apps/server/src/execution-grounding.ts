@@ -3,6 +3,109 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 
+export const webInterfaceExecutionOrder = [
+  "For a web-interface slice, work in runnable order.",
+  "First inspect the package manifest and actual application entrypoint supplied in context.",
+  "Then make the smallest entrypoint-connected vertical slice that replaces any starter placeholder and renders the approved page structure.",
+  "Add extracted components, data, styling, and interactions after that runnable shell exists.",
+  "Do not spend the attempt building detached components that the entrypoint does not render.",
+  "Treat the visible page body, heading hierarchy, accessible names, and every enabled control as part of the slice's completion contract.",
+  "Before returning control, inspect the final diff and render the actual entry route; a successful build alone does not complete a user-facing slice.",
+].join(" ");
+
+export class ImplementationBudgetContinuations {
+  private readonly continuedAttempts = new Set<string>();
+
+  claim(attempt: number, phase: string | null | undefined) {
+    const key = `${attempt}:${phase ?? "implementation"}`;
+    if (this.continuedAttempts.has(key)) return false;
+    this.continuedAttempts.add(key);
+    return true;
+  }
+}
+
+export function isTransientModelRuntimeFailure(input: unknown) {
+  const message = input instanceof Error ? input.message : String(input ?? "");
+  return /Ollama returned 50[0234]|fetch failed|network error|ECONNRESET|socket hang up|terminated/i.test(message);
+}
+
+export function shouldVerifyPersistedRetryFirst(input: {
+  blockedRetry: boolean;
+  failure: unknown;
+  changedPaths: readonly string[];
+}) {
+  return input.blockedRetry && input.changedPaths.length > 0 && isTransientModelRuntimeFailure(input.failure);
+}
+
+export function compactBrowserRepairEvidence(browserEvidence: unknown, specialistEvidence: unknown) {
+  const browser = browserEvidence && typeof browserEvidence === "object"
+    ? browserEvidence as Record<string, unknown>
+    : null;
+  const responsive = Array.isArray(browser?.responsive)
+    ? browser.responsive.map((item) => {
+        const result = item && typeof item === "object" ? item as Record<string, unknown> : {};
+        const accessibility = result.accessibility && typeof result.accessibility === "object"
+          ? result.accessibility as Record<string, unknown>
+          : null;
+        return {
+          name: result.name,
+          width: result.width,
+          height: result.height,
+          accessibility: accessibility ? { violations: accessibility.violations, incomplete: accessibility.incomplete } : null,
+        };
+      })
+    : [];
+  return JSON.stringify({
+    browserEvidence: browser ? {
+      passed: browser.passed,
+      issues: browser.issues,
+      url: browser.url,
+      accessibility: browser.accessibility,
+      console: browser.console,
+      network: browser.network,
+      responsive,
+    } : null,
+    specialistEvidence,
+  }).slice(0, 12_000);
+}
+
+export function browserRepairSourceHints(root: string, browserEvidence: unknown) {
+  const browser = browserEvidence && typeof browserEvidence === "object" ? browserEvidence as Record<string, unknown> : null;
+  const accessibility = browser?.accessibility && typeof browser.accessibility === "object"
+    ? browser.accessibility as Record<string, unknown>
+    : null;
+  const violations = Array.isArray(accessibility?.violations) ? accessibility.violations : [];
+  const needles = new Set<string>();
+  for (const rawViolation of violations) {
+    const violation = rawViolation && typeof rawViolation === "object" ? rawViolation as Record<string, unknown> : {};
+    for (const rawNode of Array.isArray(violation.nodes) ? violation.nodes : []) {
+      const node = rawNode && typeof rawNode === "object" ? rawNode as Record<string, unknown> : {};
+      const html = typeof node.html === "string" ? node.html : "";
+      const className = html.match(/\bclass=["']([^"']+)["']/)?.[1];
+      if (className && className.length >= 8) needles.add(className);
+      const id = html.match(/\bid=["']([^"']+)["']/)?.[1];
+      if (id) needles.add(id);
+    }
+  }
+  if (!needles.size) return "";
+  const paths = sourceMutationSnapshot(root).paths;
+  const matches: string[] = [];
+  for (const path of paths) {
+    const content = safeWorktreeFile(root, path);
+    if (!content) continue;
+    const lines = content.split(/\r?\n/);
+    for (const needle of needles) {
+      const lineIndex = lines.findIndex((line) => line.includes(needle));
+      if (lineIndex < 0) continue;
+      const start = Math.max(0, lineIndex - 2);
+      const end = Math.min(lines.length, lineIndex + 3);
+      matches.push(`${path}:${lineIndex + 1}\n${lines.slice(start, end).map((line, index) => `${start + index + 1}: ${line}`).join("\n")}`);
+    }
+  }
+  if (!matches.length) return "";
+  return `Likely source locations matched from the failing rendered HTML:\n${[...new Set(matches)].slice(0, 8).join("\n\n")}`;
+}
+
 function gitRead(root: string, args: string[]): string | null {
   if (!existsSync(root)) return null;
   try {

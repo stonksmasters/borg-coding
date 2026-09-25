@@ -1680,11 +1680,13 @@ export function BorgWorkspaceV2() {
               : rightPanel === "plan"
                 ? <PlanPanel plan={latestPlan} designBrief={designBrief} />
               : rightPanel === "sitemap"
-                ? <StructurePanel view="sitemap" docs={buildDocs} focusBusy={focusBusy || taskBusy} onOpenPage={(page) => void openFocusedWorkspace("page", page.id)} />
+                ? <StructurePanel view="sitemap" blueprint={blueprint} docs={buildDocs} focusBusy={focusBusy || taskBusy} onOpenPage={(page) => void openFocusedWorkspace("page", page.id)} />
               : rightPanel === "components"
-                ? <StructurePanel view="components" docs={buildDocs} focusBusy={focusBusy || taskBusy} onOpenComponent={(component) => void openFocusedWorkspace("component", component.id)} />
+                ? <StructurePanel view="components" blueprint={blueprint} docs={buildDocs} focusBusy={focusBusy || taskBusy} onOpenComponent={(component) => void openFocusedWorkspace("component", component.id)} />
               : rightPanel === "styles"
-                ? <StructurePanel view="styles" docs={buildDocs} styleBusy={styleBusy || taskBusy} onStyleFeedback={startStyleWorkspace} />
+                ? <StructurePanel view="styles" blueprint={blueprint} docs={buildDocs} styleBusy={styleBusy || taskBusy} onStyleFeedback={startStyleWorkspace} />
+              : rightPanel === "roadmap"
+                ? <StructurePanel view="roadmap" blueprint={blueprint} docs={buildDocs} />
               : rightPanel === "files"
                 ? <ProjectBrowser entries={projectEntries} content={projectFile?.content ?? ""} selectedPath={projectFile?.path ?? null} loading={projectLoading} error={projectError} onOpen={openProjectFile} />
               : rightPanel === "environment"
@@ -1692,7 +1694,7 @@ export function BorgWorkspaceV2() {
               : rightPanel === "changes"
                 ? <ChangesPanel changes={changes} />
                 : rightPanel === "evidence"
-                  ? <EvidencePanel verificationStatus={workflowStatus?.run.verification.status ?? "pending"} designReview={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} blockingFindings={blockingFindingIds.length} baselineCandidates={baselineCandidates} baselineBusy={baselineBusy} baselineError={baselineError} onAcceptBaselines={acceptVisualBaselines} onOpenReviewHistory={() => setReviewOpen(true)} onOpenLogs={() => setRightPanel("logs")} />
+                  ? <EvidencePanel verificationStatus={workflowStatus?.run.verification.status ?? "pending"} designReview={designReview} refinementCount={designRefinementCount} maxRefinements={maxDesignRefinements} blockingFindings={blockingFindingIds.length} findings={reviewFindings.filter((record) => record.state === "open" || record.state === "accepted" || record.state === "reopened")} baselineCandidates={baselineCandidates} baselineBusy={baselineBusy} baselineError={baselineError} onAcceptBaselines={acceptVisualBaselines} onOpenReviewHistory={() => setReviewOpen(true)} onOpenLogs={() => setRightPanel("logs")} />
                   : rightPanel === "logs"
                     ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
                     : rightPanel === "memory"

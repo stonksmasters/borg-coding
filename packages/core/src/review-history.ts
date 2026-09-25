@@ -60,6 +60,7 @@ export function reconcileReviewRun(input: {
   incoming: Finding[];
   existing: ReviewFindingRecord[];
   resolutionEvidence?: string[];
+  resolutionFilter?: (record: ReviewFindingRecord) => boolean;
   now?: string;
   idFactory?: () => string;
 }): { records: ReviewFindingRecord[]; occurrences: ReturnType<typeof ReviewFindingOccurrenceSchema.parse>[]; decisions: ReviewDecision[] } {
@@ -101,7 +102,7 @@ export function reconcileReviewRun(input: {
 
   if (input.resolutionEvidence?.length) {
     for (const [fingerprint, record] of records) {
-      if (observed.has(fingerprint) || !activeStates.has(record.state) || record.lastSeenRunId === input.run.id) continue;
+      if (observed.has(fingerprint) || !activeStates.has(record.state) || record.lastSeenRunId === input.run.id || (input.resolutionFilter && !input.resolutionFilter(record))) continue;
       const decision = ReviewDecisionSchema.parse({
         id: id(), taskId: input.run.taskId, findingId: record.id, runId: input.run.id,
         checkpointId: input.run.checkpointId, continuationId: input.run.continuationId,
