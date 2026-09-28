@@ -207,8 +207,24 @@ export class SqliteSecurityRepository implements SecurityStore {
   }
 
   deleteExecutionNode(id: string): boolean {
-    const result = this.database.prepare("DELETE FROM execution_nodes WHERE id = ?").run(id);
-    return Number(result.changes) > 0;
+    const affectedRows = this.database.prepare(
+      "SELECT data FROM security_assessments WHERE execution_node_id = ?",
+    ).all(id) as { data: string }[];
+    const affected = affectedRows.map((row) => SecurityAssessmentSchema.parse(JSON.parse(row.data)));
+
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const now = new Date().toISOString();
+      for (const assessment of affected) {
+        this.saveSecurityAssessment({ ...assessment, executionNodeId: null, updatedAt: now });
+      }
+      const result = this.database.prepare("DELETE FROM execution_nodes WHERE id = ?").run(id);
+      this.database.exec("COMMIT");
+      return Number(result.changes) > 0;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   close(): void {
