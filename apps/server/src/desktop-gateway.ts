@@ -40,6 +40,7 @@ type CoreWorkflowState = {
   status: string;
   nextAction: string;
   planApproved?: boolean;
+  security?: { assessmentId: string; operationId: string | null; executionId: string | null } | null;
   recovery?: { status?: string; category?: string | null; resumeAction?: string; reason?: string } | null;
   pendingCommand?: CoreWorkflowCommand | null;
   lastConsumedCommandId?: string | null;
