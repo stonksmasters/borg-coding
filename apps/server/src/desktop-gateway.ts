@@ -36,7 +36,7 @@ type CoreWorkflowCommand = { id: string; action: string; workflowVersion: number
 type CoreWorkflowState = {
   projectId: string;
   taskId: string | null;
-  loop?: "project" | "slice" | "backend" | "general";
+  loop?: "project" | "slice" | "backend" | "security" | "general";
   status: string;
   nextAction: string;
   planApproved?: boolean;
