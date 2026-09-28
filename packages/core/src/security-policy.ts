@@ -1,16 +1,16 @@
 import {
   AssessmentScopeSchema,
   SecurityAssessmentSchema,
+  securityOperationClasses,
   type AssessmentScope,
   type SecurityAssessment,
+  type SecurityTarget,
 } from "./security-domain.ts";
 import {
   evaluateScopeTarget,
   type ScopeDecision,
-  type SecurityTarget,
 } from "./security-scope.ts";
 
-export const securityOperationClasses = ["passive", "active_recon", "manual"] as const;
 export type SecurityOperationClass = (typeof securityOperationClasses)[number];
 
 export type SecurityOperationRequest = {
