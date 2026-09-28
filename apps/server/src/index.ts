@@ -1694,9 +1694,8 @@ const server = createServer((request, response) => {
         classification: input.classification,
         targets: input.targets,
       });
-      let bound;
       try {
-        bound = workflow.bindSecurityOperation(
+        workflow.bindSecurityOperation(
           task,
           planned.execution.operationId,
           planned.execution.id,
