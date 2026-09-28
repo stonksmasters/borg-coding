@@ -1013,6 +1013,25 @@ export function BorgWorkspaceV2() {
     }
   }
 
+  async function queueInstruction(text: string) {
+    const clean = text.trim();
+    if (!activeSession || !clean || !runtimeActive) return;
+    setRequest("");
+    setMessages((current) => [...current, transientMessage("user", clean, "status")]);
+    try {
+      const response = await fetch(`${API}/api/instructions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: activeSession.id, text: clean }),
+      });
+      const result = await response.json().catch(() => ({})) as { message?: string; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Unable to queue instruction.");
+      setMessages((current) => [...current, transientMessage("system", result.message ?? "Instruction queued", "status")]);
+    } catch (error) {
+      setMessages((current) => [...current, transientMessage("system", error instanceof Error ? error.message : "Unable to queue instruction.", "warning")]);
+    }
+  }
+
   async function reviseBlueprint(feedback: string) {
     const clean = feedback.trim();
     if (!activeSession || !activeTaskId || !approval || !planApproval || !clean || blueprintRevisionBusy) return;
@@ -1716,9 +1735,10 @@ export function BorgWorkspaceV2() {
               <Button size="sm" disabled={sliceBusy} onClick={() => void startBackendPhase()} className="mt-3 bg-[#a7ff4f] text-[#071007]">{sliceBusy ? "Starting…" : "Start backend phase"}</Button>
             </>}
           </div>}
-          <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); if (taskBusy) return; const value = request; setRequest(""); void runTask(value); }}>
-            <Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={taskBusy || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={activeSession?.workflowRole === "page" ? `Describe a change to page ${activeSession.focusId ?? ""}…` : activeSession?.workflowRole === "component" ? `Describe a change to component ${activeSession.focusId ?? ""}…` : activeSession?.workflowRole === "styles" ? "Describe a global styling change…" : isWebsite ? "Describe a change to this website…" : `Ask BORG in ${activeMode.toUpperCase()} mode…`} />
-            <Button type={canStop || canRetry ? "button" : "submit"} disabled={taskBusy && !canStop && !canRetry} onClick={() => { if (canStop) { abortRef.current?.abort(); setStreaming(false); setRuntimeActive(false); setTaskState("CANCELLED"); } else if (canRetry) retryTask(); }} className={`h-11 gap-2 px-5 ${canRetry ? "bg-amber-300 text-[#171005]" : taskBusy ? "bg-white/8 text-slate-200" : "bg-[#a7ff4f] text-[#071007]"}`}>{canStop ? <CircleStop className="size-4" /> : canRetry ? <RotateCcw className="size-4" /> : <Play className="size-4" />}{actionLabel}</Button>
+          <form className="mx-auto flex max-w-3xl items-center gap-3" onSubmit={(event) => { event.preventDefault(); const value = request; if (runtimeActive) { void queueInstruction(value); return; } if (taskBusy) return; setRequest(""); void runTask(value); }}>
+            <Input value={request} onChange={(event) => setRequest(event.target.value)} disabled={(taskBusy && !runtimeActive) || !activeSession} className="h-11 border-white/10 bg-white/4 text-base text-white placeholder:text-slate-600" placeholder={runtimeActive ? "Send an instruction for the next safe boundary…" : activeSession?.workflowRole === "page" ? `Describe a change to page ${activeSession.focusId ?? ""}…` : activeSession?.workflowRole === "component" ? `Describe a change to component ${activeSession.focusId ?? ""}…` : activeSession?.workflowRole === "styles" ? "Describe a global styling change…" : isWebsite ? "Describe a change to this website…" : `Ask BORG in ${activeMode.toUpperCase()} mode…`} />
+            <Button type={canRetry ? "button" : "submit"} disabled={taskBusy && !runtimeActive && !canRetry} onClick={() => { if (canRetry) retryTask(); }} className={`h-11 gap-2 px-5 ${canRetry ? "bg-amber-300 text-[#171005]" : taskBusy ? "bg-white/8 text-slate-200" : "bg-[#a7ff4f] text-[#071007]"}`}>{canRetry ? <RotateCcw className="size-4" /> : <Play className="size-4" />}{runtimeActive ? "Queue" : actionLabel}</Button>
+            {canStop && <Button type="button" onClick={() => { abortRef.current?.abort(); setStreaming(false); setRuntimeActive(false); setTaskState("CANCELLED"); }} className="h-11 gap-2 bg-red-400/15 px-4 text-red-200 hover:bg-red-400/25"><CircleStop className="size-4" />Stop</Button>}
           </form>
         </div>
       </section>

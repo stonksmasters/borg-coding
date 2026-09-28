@@ -1,0 +1,40 @@
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+
+export function Field({ label, name, type = "text", required = false }: { label: string; name: string; type?: string; required?: boolean }) {
+  const id = useId();
+  return <label className="borg-field" htmlFor={id}><span>{label}</span><input id={id} name={name} type={type} required={required} /></label>;
+}
+
+export function Modal({ open, onClose, title, children, drawer = false }: { open: boolean; onClose(): void; title: string; children: ReactNode; drawer?: boolean }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const id = useId();
+  useEffect(() => {
+    const dialog = ref.current;
+    const previous = document.activeElement as HTMLElement | null;
+    if (open && dialog && !dialog.open) dialog.showModal();
+    if (!open && dialog?.open) dialog.close();
+    return () => { if (dialog?.open) dialog.close(); if (open) previous?.focus(); };
+  }, [open]);
+  return <dialog ref={ref} aria-labelledby={id} className={`borg-modal ${drawer ? "borg-drawer" : ""}`} onCancel={onClose}>
+    <header><h2 id={id}>{title}</h2><button type="button" onClick={onClose} aria-label={`Close ${title}`}>×</button></header>{children}
+  </dialog>;
+}
+
+export function Tabs({ items }: { items: { id: string; label: string; content: ReactNode }[] }) {
+  const [selected, setSelected] = useState(items[0]?.id);
+  const base = useId();
+  return <div><div role="tablist" aria-label="Views" className="borg-tabs">{items.map((item, index) => <button type="button" role="tab" id={`${base}-${item.id}`} key={item.id} aria-selected={selected === item.id} aria-controls={`${base}-${item.id}-panel`} tabIndex={selected === item.id ? 0 : -1} onClick={() => setSelected(item.id)} onKeyDown={(event) => {
+    const offset = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (!offset && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + offset + items.length) % items.length;
+    setSelected(items[next].id); document.getElementById(`${base}-${items[next].id}`)?.focus();
+  }}>{item.label}</button>)}</div>{items.map((item) => <div role="tabpanel" id={`${base}-${item.id}-panel`} aria-labelledby={`${base}-${item.id}`} key={item.id} hidden={selected !== item.id} tabIndex={0}>{item.content}</div>)}</div>;
+}
+
+export function Notice({ children, error = false }: { children: ReactNode; error?: boolean }) { return <p className="borg-notice" role={error ? "alert" : "status"}>{children}</p>; }
+export function Disclosure({ title, children }: { title: string; children: ReactNode }) { return <details className="borg-disclosure"><summary>{title}</summary>{children}</details>; }
+export function Navigation({ brand, links }: { brand: string; links: { href: string; label: string }[] }) {
+  const [open, setOpen] = useState(false); const id = useId();
+  return <header className="borg-navigation"><a className="borg-brand" href="/">{brand}</a><button className="borg-menu-toggle" type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>Menu</button><nav id={id} aria-label="Main" data-open={open} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>{links.map((link) => <a key={link.href} href={link.href} onClick={() => setOpen(false)}>{link.label}</a>)}</nav></header>;
+}

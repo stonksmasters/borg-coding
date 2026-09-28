@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { compileFocusedFrontendContext, compileFrontendContext, compileStyleFrontendContext } from "../packages/web-builder/src/context-compiler.ts";
+import { compileFocusedFrontendContext, compileFrontendContext, compileQuickEditContext, compileStyleFrontendContext } from "../packages/web-builder/src/context-compiler.ts";
 import { readProjectModel, updateVerifiedProjectModel, writeProjectModel } from "../packages/web-builder/src/project-model.ts";
 import { approveProjectPlan, fallbackProjectPlan, persistProposedProjectPlan, persistDesignBrief } from "../packages/web-builder/src/slice-docs.ts";
 import { SqliteTaskRepository } from "../packages/persistence/src/sqlite-task-repository.ts";
@@ -198,6 +198,33 @@ test("styles context uses canonical style authority without dragging unrelated c
     assert.match(pack.text, /rebeccapurple/);
     assert.doesNotMatch(pack.text, /Hero internals/);
     assert.ok(pack.manifest.some((item) => item.path === "@borg/style-system" && item.kind === "authority"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("quick edit context is bounded to the matched project entity and has a smaller budget", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-quick-edit-context-"));
+  try {
+    mkdirSync(join(root, "src", "components"), { recursive: true });
+    writeFileSync(join(root, "src", "components", "Hero.tsx"), "export function Hero() { return <section><button>Start</button></section>; }");
+    writeFileSync(join(root, "src", "components", "PricingTable.tsx"), "export function PricingTable() { return <section>Prices</section>; }");
+    const plan = fallbackProjectPlan("Build a polished marketing homepage", "saas-landing");
+    plan.sitemap = [{ id: "home", name: "Home", route: "/", purpose: "Marketing homepage.", sections: ["Hero"], componentIds: ["hero"], acceptanceCriteria: [] }];
+    plan.pages = ["Home"];
+    plan.components = [{ id: "hero", name: "Hero", kind: "section", purpose: "Hero call to action.", usedBy: ["home"], variants: [], acceptanceCriteria: [] }];
+    persistProposedProjectPlan(root, "Build a polished marketing homepage", plan, "plan-task");
+    approveProjectPlan(root, "plan-task");
+    const approvedPlan = { ...plan, status: "approved" as const, approvedAt: new Date().toISOString() };
+    const model = readProjectModel(root);
+    model.components[0].files = ["src/components/Hero.tsx"];
+    writeProjectModel(root, model);
+
+    const pack = compileQuickEditContext({ root, request: "Make the hero CTA smaller.", authority: { plan: approvedPlan, workflowVersion: 14 } });
+    assert.equal(pack.profile.kind, "quick_edit");
+    assert.equal(pack.sliceId, "quick_edit:request");
+    assert.equal(pack.budgetCharacters, 24_000);
+    assert.match(pack.text, /Hero\.tsx/);
+    assert.doesNotMatch(pack.text, /PricingTable/);
+    assert.ok(pack.manifest.some((item) => item.path === "src/components/Hero.tsx" && item.kind === "source"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -2,11 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { contractForWorkspace, prepareWorkspaceContract, viteReactWorkspaceDirectories, type WorkspaceKind } from "./workspace-contract.ts";
+import { frontendFoundationFiles } from "./frontend-foundation.ts";
 
 const execFileAsync = promisify(execFile);
 const marker = ".borg-website.json";
@@ -15,6 +16,7 @@ export const websiteTemplates = ["saas-landing", "portfolio", "ecommerce", "dash
 export type WebsiteTemplate = typeof websiteTemplates[number];
 export type WebsiteProjectStatus = "new" | "generating" | "ready" | "needs_attention" | "archived";
 export type WebsiteProjectOptions = {
+  frontendCapabilityVersion?: 1;
   template?: WebsiteTemplate;
   originalBrief?: string;
 };
@@ -214,7 +216,15 @@ img, svg { display: block; max-width: 100%; }
 `,
     [marker]: JSON.stringify({ id: randomUUID(), name: title, slug, framework: "vite-react", template, starterVersion: 3, designPipeline: "premium-v1", status: "new", originalBrief: options.originalBrief?.trim() || null, createdAt, lastOpenedAt: createdAt }, null, 2) + "\n",
   };
-  for (const [relativePath, contents] of Object.entries(files)) writeFileSync(join(projectPath, relativePath), contents, "utf8");
+  if (options.frontendCapabilityVersion === 1) {
+    Object.assign(files, frontendFoundationFiles(template));
+    const manifest = JSON.parse(files[marker]);
+    files[marker] = JSON.stringify({ ...manifest, frontendCapabilityVersion: 1 }, null, 2) + "\n";
+  }
+  for (const [relativePath, contents] of Object.entries(files)) {
+    mkdirSync(dirname(join(projectPath, relativePath)), { recursive: true });
+    writeFileSync(join(projectPath, relativePath), contents, "utf8");
+  }
   await run("git", ["init", "-b", "main"], projectPath);
   try {
     if (install) await install(projectPath);
@@ -239,6 +249,7 @@ export function websiteInfo(projectPath: string) {
   try {
     const data = JSON.parse(readFileSync(manifestPath, "utf8")) as {
       name?: string;
+      frontendCapabilityVersion?: number;
       slug?: string;
       framework?: string;
       template?: WebsiteTemplate;
@@ -249,6 +260,7 @@ export function websiteInfo(projectPath: string) {
     };
     return data.framework === "vite-react" && typeof data.slug === "string" ? {
       path: canonical,
+      frontendCapabilityVersion: data.frontendCapabilityVersion === 1 ? 1 as const : undefined,
       name: data.name ?? data.slug,
       slug: data.slug,
       template: websiteTemplates.includes(data.template as WebsiteTemplate) ? data.template as WebsiteTemplate : "saas-landing",

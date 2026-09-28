@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "one-page-v1",
+  "name": "Single page completion and interaction baseline",
+  "kind": "frontend-autonomy",
+  "promptPath": "prompt.md",
+  "expected": {
+    "frontendOnly": true,
+    "requiredRoutes": ["/"],
+    "minimumPages": 1,
+    "requireBrowserVerification": true,
+    "requireResponsiveVerification": true,
+    "requireAccessibilityVerification": true,
+    "requireFrontendComplete": true
+  },
+  "limits": {
+    "maxProjectPlanRevisions": 1,
+    "maxRepairAttemptsPerSlice": 3,
+    "maxContextCharacters": 24000
+  }
+}

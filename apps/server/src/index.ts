@@ -11,6 +11,7 @@ import {
   createTask,
   createTaskCheckpoint,
   createTaskContinuation,
+  createWorkflowInstruction,
   type EngineeringDiscipline,
   type EngineeringRole,
   type Finding,
@@ -1509,7 +1510,7 @@ const server = createServer((request, response) => {
         if (!coverage.valid) return send(response, 409, { error: "The revised project plan no longer passes semantic coverage.", coverage });
 
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString() };
-        const decided = workflow.decideApproval(task, approved, "project_plan_revision");
+        const decided = workflow.decideApproval(task, approved, "project_plan_revision", { mode: workflow.get(task.projectId)?.frontendBuildPolicy?.mode ?? recordedMode(task.id) });
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
         const approvedPlan = projectPlanFromWorkflow(decided.workflow, null);
@@ -1548,7 +1549,7 @@ const server = createServer((request, response) => {
         const coverage = validateProjectPlanCoverage(authoritativePlan, planningBrief);
         if (!coverage.valid) return send(response, 409, { error: "The project plan no longer passes semantic coverage and cannot be approved.", coverage });
         const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString(), worktreePath: null, baseCommit: null };
-        const decided = workflow.decideApproval(task, approved, "project_plan");
+        const decided = workflow.decideApproval(task, approved, "project_plan", { mode: recordedMode(task.id) });
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
         const approvedPlan = projectPlanFromWorkflow(decided.workflow, null);
@@ -1764,6 +1765,38 @@ const server = createServer((request, response) => {
   if (request.method === "POST" && request.url === "/api/tools") {
     void readJson(request).then((input) => send(response, 200, { tools: tools.configure(input) }))
       .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid tool settings" }));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/api/instructions") {
+    void readJson(request).then((input) => {
+      const projectId = String(input.projectId ?? "").trim();
+      const sessionId = String(input.sessionId ?? "").trim();
+      const text = String(input.text ?? "").trim();
+      if (!projectId || !sessionId || !text) return send(response, 400, { error: "projectId, sessionId, and instruction text are required." });
+      const requestedTaskId = typeof input.taskId === "string" && input.taskId.trim() ? input.taskId.trim() : null;
+      const taskId = requestedTaskId ?? tasks.findWorkflow(projectId)?.taskId ?? null;
+      if (taskId && !tasks.findTask(taskId)) return send(response, 404, { error: "Instruction task was not found." });
+      const instruction = createWorkflowInstruction({ id: randomUUID(), projectId, sessionId, taskId, text });
+      tasks.saveInstruction(instruction);
+      if (taskId) appendTaskEvent(taskId, "WORKFLOW_INSTRUCTION_RECEIVED", { instruction });
+      return send(response, 202, { instruction, message: "Instruction queued" });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Invalid instruction" }));
+    return;
+  }
+  const instructionListRoute = request.url?.match(/^\/api\/instructions\?projectId=([^&]+)$/);
+  if (request.method === "GET" && instructionListRoute) {
+    const projectId = decodeURIComponent(instructionListRoute[1]);
+    return send(response, 200, { instructions: tasks.listInstructions({ projectId }) });
+  }
+  const instructionStatusRoute = request.url?.match(/^\/api\/instructions\/([^/]+)\/status$/);
+  if (request.method === "POST" && instructionStatusRoute) {
+    void readJson(request).then((input) => {
+      const status = String(input.status ?? "");
+      if (!(["acknowledged", "applied", "superseded"] as const).includes(status as "acknowledged" | "applied" | "superseded")) return send(response, 400, { error: "Invalid instruction status." });
+      const instruction = tasks.updateInstructionStatus(decodeURIComponent(instructionStatusRoute[1]), status as "acknowledged" | "applied" | "superseded");
+      if (instruction.taskId) appendTaskEvent(instruction.taskId, "WORKFLOW_INSTRUCTION_STATUS_CHANGED", { instruction });
+      return send(response, 200, { instruction });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to update instruction." }));
     return;
   }
   if (request.method === "POST" && request.url === "/api/chat") {

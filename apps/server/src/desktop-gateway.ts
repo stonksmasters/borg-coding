@@ -474,7 +474,7 @@ async function launchFrontendWorkflowSession(
 
   const session = action === "backend" && root.activeMode !== "plan"
     ? chats.updateSession(root.id, { activeMode: "plan" }) ?? root
-    : action !== "backend" && root.activeMode !== "edit"
+    : action !== "backend" && root.activeMode !== "edit" && root.activeMode !== "agent"
       ? chats.updateSession(root.id, { activeMode: "edit" }) ?? root
       : root;
 
@@ -504,6 +504,24 @@ async function launchFrontendWorkflowSession(
 async function driveWorkflow(session: ChatSession, state: CoreWorkflowState | null | undefined, waitForCompletion = false) {
   const pending = state?.pendingCommand;
   if (!pending) return null;
+  const policy = (state as CoreWorkflowState & { frontendBuildPolicy?: { planRevision: number; continuation: string } })?.frontendBuildPolicy;
+  if (pending.action === "advance_slice" && policy?.continuation === "checkpoint") return null;
+  if (pending.action === "advance_slice") {
+    const root = rootWorkflowSession(session);
+    const response = await fetch(`${coreUrl}/api/instructions?projectId=${encodeURIComponent(root.workspaceId)}`, { signal: AbortSignal.timeout(5_000) }).catch(() => null);
+    const body = response?.ok ? await response.json().catch(() => ({})) as { instructions?: Array<{ id: string; text: string; status: string }> } : {};
+    const stop = body.instructions?.find((instruction) => instruction.status === "applied" && /\bstop\s+after\s+(?:this|the current)\s+slice\b/i.test(instruction.text));
+    if (stop) {
+      await fetch(`${coreUrl}/api/instructions/${encodeURIComponent(stop.id)}/status`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status: "superseded" }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      appendMessage({ sessionId: root.id, taskId: state?.taskId ?? null, role: "system", kind: "status", text: "Stopped after the completed slice as instructed. Use Continue when you are ready for the next slice." });
+      return null;
+    }
+  }
   if (pending.action === "start_slice") return launchFrontendWorkflowSession(session, "initial", "", pending.id, waitForCompletion);
   if (pending.action === "advance_slice") return launchFrontendWorkflowSession(session, "advance", "", pending.id, waitForCompletion);
   return null;
@@ -685,9 +703,9 @@ const server = createServer(async (request, response) => {
           ? requestedTemplate as WebsiteTemplate
           : inferWebsiteTemplate(brief);
       if (!name) return send(response, 400, { error: "Website name is required." });
-      const project = await createWebsiteProject(name, undefined, undefined, { template, originalBrief: brief });
+      const project = await createWebsiteProject(name, undefined, undefined, { template, originalBrief: brief, frontendCapabilityVersion: input.frontendCapabilityVersion === 1 ? 1 : undefined });
       const savedAccess = access.save({ repositoryPath: project.path, documents: [] });
-      const session = createChatSession({ id: randomUUID(), title: project.name, activeMode: "plan", repositoryPath: savedAccess.repositoryPath, workspaceId: project.slug, provider: "ollama", model: process.env.BORG_MODEL ?? "qwen3-coder:30b", parentSessionId: null, workflowRole: "primary" });
+      const session = createChatSession({ id: randomUUID(), title: project.name, activeMode: input.activeMode === "agent" ? "agent" : "plan", repositoryPath: savedAccess.repositoryPath, workspaceId: project.slug, provider: "ollama", model: process.env.BORG_MODEL ?? "qwen3-coder:30b", parentSessionId: null, workflowRole: "primary" });
       chats.saveSession(session);
       const preview = await previews.ensure(project.path);
       return send(response, 201, { session, project, preview, access: access.describe(savedAccess) });
@@ -950,6 +968,28 @@ const server = createServer(async (request, response) => {
       }
       return send(response, 202, { session, workflowStarted: true });
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to continue frontend workflow." }));
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/instructions") {
+    void readJson(request).then(async (input) => {
+      const session = chats.findSession(String(input.sessionId ?? ""));
+      if (!session) return send(response, 404, { error: "A valid chat session is required." });
+      const text = String(input.text ?? "").trim();
+      if (!text) return send(response, 400, { error: "Instruction cannot be empty." });
+      const taskId = chats.latestTaskId(session.id);
+      const root = rootWorkflowSession(session);
+      const upstream = await fetch(`${coreUrl}/api/instructions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId: root.workspaceId, sessionId: session.id, taskId, text }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = await upstream.json().catch(() => ({})) as Record<string, unknown>;
+      if (!upstream.ok) return send(response, upstream.status, body);
+      appendMessage({ sessionId: session.id, taskId, role: "user", kind: "status", text });
+      return send(response, 202, body);
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to queue instruction." }));
     return;
   }
 

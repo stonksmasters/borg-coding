@@ -37,6 +37,28 @@ test("generated benchmark website names stay within BORG's 60-character project 
   assert.ok(name.length <= 60);
 });
 
+test("benchmark client reads the production workflow status envelope", async () => {
+  const status = { taskState: "VERIFYING", nextAction: "verify", source: "sqlite" };
+  const client = new BorgBenchmarkClient("http://127.0.0.1:4312", async () => new Response(JSON.stringify({ status })));
+  assert.deepEqual(await client.workflowStatus("task"), status);
+});
+
+test("benchmark deadline also bounds a stalled planning stream", async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/x-ndjson" });
+    response.write(JSON.stringify({ type: "task.created", task: { id: "stalled" } }) + "\n");
+  });
+  try {
+    const port = await listen(server);
+    const client = new BorgBenchmarkClient(`http://127.0.0.1:${port}`);
+    client.setDeadline(Date.now() + 100);
+    await assert.rejects(client.submitPrompt("session", "build"), /abort|timeout/i);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
 const benchmark = parseFrontendAutonomyBenchmark({
   version: 1,
   id: "runner-test",
@@ -97,6 +119,14 @@ test("runner follows gateway authority from planning approval through two autono
           runtimeAvailable: true,
           runtimeActive: !approvalRequested && task === "slice-1",
         });
+      }
+      if (request.method === "GET" && url === "/api/control/tasks/plan-task/snapshot") {
+        return json(response, 200, { snapshot: {
+          version: 1, generatedAt: new Date().toISOString(), readOnly: true,
+          task: { id: "plan-task", state: "AWAITING_APPROVAL" }, workflow: null,
+          approval: { status: "REQUESTED" }, events: [], contextPacks: [], checkpoints: [],
+          git: { worktreePath: null, worktreeExists: null },
+        } });
       }
       if (request.method === "POST" && url === "/api/tasks/plan-task/approval") {
         const body = await readJson(request);
@@ -210,7 +240,7 @@ test("runner follows gateway authority from planning approval through two autono
     assert.equal(outcome.approvals.projectPlan, 1);
     assert.equal(outcome.approvals.projectPlanRevision, 0);
     assert.deepEqual(outcome.taskIds, ["plan-task", "slice-1", "slice-2"]);
-    assert.equal(outcome.snapshots.length, 2);
+    assert.equal(outcome.snapshots.length, 3);
     assert.equal(continueCalls, 0, "runner must not call the manual frontend continuation endpoint");
     assert.ok(outcome.observations.some((item) => item.sliceTitle === "Home" && item.nextAction === "advance_slice"));
     assert.ok(outcome.observations.some((item) => item.sliceTitle === "Work" && item.nextAction === "request_feedback"));

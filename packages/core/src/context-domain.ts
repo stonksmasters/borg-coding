@@ -4,11 +4,12 @@ export const ContextScopeSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("page"), id: z.string().min(1) }),
   z.object({ type: z.literal("component"), id: z.string().min(1) }),
   z.object({ type: z.literal("styles"), id: z.literal("global") }),
+  z.object({ type: z.literal("quick_edit"), id: z.literal("request") }),
 ]);
 
 export const ContextProfileSchema = z.object({
   version: z.literal(1),
-  kind: z.enum(["slice", "page", "component", "styles"]),
+  kind: z.enum(["slice", "page", "component", "styles", "quick_edit"]),
   stage: z.enum(["planning", "execution", "repair"]),
   id: z.string().min(1),
   phase: z.literal("frontend"),

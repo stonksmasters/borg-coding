@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { captureBenchmarkEnvironment } from "../packages/benchmark/src/environment.ts";
 import { resolve } from "node:path";
 import {
   BorgBenchmarkClient,
@@ -20,6 +21,7 @@ const baseUrl = process.env.BORG_GATEWAY_URL || "http://127.0.0.1:4312";
 
 console.log(`BORG frontend autonomy benchmark: ${benchmark.name}`);
 console.log(`Gateway: ${baseUrl}`);
+const environment = await captureBenchmarkEnvironment(process.env.OLLAMA_URL);
 
 const outcome = await runFrontendBenchmark({
   client: new BorgBenchmarkClient(baseUrl),
@@ -38,6 +40,7 @@ const outcome = await runFrontendBenchmark({
 
 const artifacts = collectBenchmarkTelemetry(benchmark, outcome);
 const written = await writeBenchmarkArtifacts(artifacts);
+await writeFile(resolve(written.directory, "environment.json"), JSON.stringify(environment, null, 2) + "\n");
 
 console.log("\n" + formatBenchmarkReport(artifacts));
 console.log(`\nArtifacts: ${written.directory}`);

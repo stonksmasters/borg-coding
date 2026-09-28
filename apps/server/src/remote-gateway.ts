@@ -52,10 +52,13 @@ function sendStatic(response: ServerResponse, pathname: string) {
   if (!asset) return false;
   try {
     const content = readFileSync(new URL(`../../remote/${asset.file}`, import.meta.url));
+    const cacheControl = asset.file === "icon.svg"
+      ? "public, max-age=3600"
+      : "no-store";
     response.writeHead(200, {
       ...securityHeaders(),
       "content-type": asset.contentType,
-      "cache-control": asset.file === "sw.js" ? "no-cache" : "public, max-age=300",
+      "cache-control": cacheControl,
       ...(asset.file === "sw.js" ? { "service-worker-allowed": "/" } : {}),
     });
     response.end(content);
@@ -221,6 +224,10 @@ const server = createServer((request, response) => {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", `http://localhost:${remotePort}`);
   const pathname = url.pathname;
+  const startedAt = Date.now();
+  response.once("finish", () => {
+    console.log(`[request] ${requestIp(request)} ${method} ${pathname} ${response.statusCode} ${Date.now() - startedAt}ms`);
+  });
 
   if (method === "GET" && pathname === "/health") {
     return sendJson(response, 200, {
@@ -305,6 +312,13 @@ const server = createServer((request, response) => {
     void readBody(request)
       .then((body) => proxyStream(request, response, "/api/chat", body))
       .catch((error) => sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid chat request." }));
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/remote/instructions") {
+    void readBody(request)
+      .then((body) => proxyJson(response, "/api/instructions", { method: "POST", headers: { "content-type": "application/json" }, body }))
+      .catch((error) => sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid instruction." }));
     return;
   }
 

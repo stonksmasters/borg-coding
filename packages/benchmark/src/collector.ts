@@ -1,6 +1,7 @@
 import type { FrontendAutonomyBenchmark } from "./contracts.ts";
 import type { FrontendBenchmarkRunnerOutcome } from "./runner.ts";
 import { benchmarkViolationCodes } from "./violations.ts";
+import { benchmarkPerformance } from "./performance.ts";
 
 export interface BenchmarkTimelineEntry {
   at: string;
@@ -71,6 +72,7 @@ export interface BenchmarkVerificationTelemetry {
 }
 
 export interface BenchmarkTelemetrySummary {
+  performance: ReturnType<typeof benchmarkPerformance>;
   version: 1;
   benchmarkId: string;
   benchmarkName: string;
@@ -377,6 +379,7 @@ export function collectBenchmarkTelemetry(
 
   return {
     summary: {
+      performance: benchmarkPerformance(outcome),
       version: 1,
       benchmarkId: benchmark.id,
       benchmarkName: benchmark.name,

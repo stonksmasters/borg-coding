@@ -3,6 +3,7 @@ import type { WebsiteTemplate } from "./project-bootstrap.ts";
 export type WebsiteWorkflowKind = "initial_generation" | "iterative_edit";
 
 export type WebsiteGenerationProject = {
+  frontendCapabilityVersion?: 1;
   name: string;
   template: WebsiteTemplate;
   originalBrief: string | null;
@@ -50,6 +51,12 @@ export function websiteGenerationContext(project: WebsiteGenerationProject, work
     `Template starting point: ${project.template}`,
     project.originalBrief ? `Original website brief: ${project.originalBrief}` : "Original website brief: not recorded",
     `Workflow: ${workflow}`,
+    ...(project.frontendCapabilityVersion === 1 ? [
+      "This project includes a local UI foundation in src/borg. Inspect and adapt the selected patterns to the actual brief; starter examples are demonstrations, not approved project content.",
+      "The canonical machine-readable theme is .localcode/build/theme.json. Keep src/borg/theme.css consistent with its values. Reuse the existing semantic --borg-* CSS variables and interaction primitives.",
+      "Deliver the complete representative page with navigation, all approved sections, and working frontend interactions in the first slice. Do not deliver only a hero or token sheet.",
+      "Frontend-only behavior uses deterministic local demo data. Clearly label demo submissions and checkout. Never claim that email was sent, payment was taken, or a real account was created.",
+    ] : []),
     "",
     "Constrained MVP stack: React + Vite + TypeScript + Tailwind/CSS, npm, the bundled local API middleware, and SQLite when persistence is required. Do not replace the framework, package manager, database, or local preview architecture unless the user explicitly asks.",
     "Supported full-stack primitives include static pages, forms, local API endpoints, SQLite-backed CRUD, seed data, basic dashboards, and local-only auth placeholders. Prefer these proven local patterns over introducing a new server framework.",

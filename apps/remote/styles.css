@@ -163,6 +163,12 @@ textarea { resize: vertical; min-height: 78px; padding: 12px; line-height: 1.45;
 .activity { display: grid; gap: 8px; margin-top: 12px; }
 .activity-item { padding: 9px 10px; border-left: 2px solid rgba(167,255,79,.3); color: #9ca7b5; background: rgba(255,255,255,.025); font-size: .78rem; line-height: 1.42; }
 .activity-item.error { border-left-color: #ff735f; color: #ffada2; }
+.command-status { display: flex; align-items: center; gap: 9px; min-height: 38px; margin: 0 0 12px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; color: #9ca7b5; background: rgba(255,255,255,.025); font-size: .78rem; }
+.command-state { flex: 0 0 auto; padding: 3px 7px; border-radius: 999px; color: #c6ced8; background: rgba(255,255,255,.07); font-size: .67rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.command-status[data-state="sending"] { border-color: rgba(99,179,255,.32); color: #b9d9ff; }
+.command-status[data-state="accepted"] { border-color: rgba(167,255,79,.3); color: #c9ff91; }
+.command-status[data-state="failed"] { border-color: rgba(255,115,95,.4); color: #ffada2; }
+.command-status[data-state="failed"] .command-state { color: #ffada2; background: rgba(255,115,95,.12); }
 footer { display: flex; justify-content: center; padding: 6px 0 2px; }
 .link-button { border: 0; color: #748091; background: transparent; font-size: .78rem; }
 @media (min-width: 700px) {

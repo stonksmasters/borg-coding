@@ -104,6 +104,11 @@ function detailFor(event: TaskEvent) {
     return `Prepared ${profile?.kind ?? "scoped"} context pack.`;
   }
   if (event.type === "MODEL_CONTEXT_RECORDED") return `Saved ${String(payload.role ?? "model")} model input.`;
+  if (event.type === "REQUEST_INTENT_ROUTED") {
+    const scope = payload.scope as { type?: string; id?: string } | null | undefined;
+    const target = scope?.type && scope?.id ? ` for ${scope.type} ${scope.id}` : "";
+    return `Routed as ${String(payload.intent ?? "unknown")} (${String(payload.impact ?? "unknown")} impact)${target}.`;
+  }
   if (event.type.startsWith("TOOL_")) return `${String(payload.tool ?? "tool")}`;
   if (event.type === "AGENT_ACTIVITY") {
     const activity = payload.activity as { title?: string; detail?: string } | undefined;

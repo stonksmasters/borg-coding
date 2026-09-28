@@ -36,6 +36,7 @@ import { websiteGenerationContext } from "../../../packages/web-builder/src/gene
 import {
   compileFocusedFrontendContext,
   compileFrontendContext,
+  compileQuickEditContext,
   compileStyleFrontendContext,
   type CompiledContext,
   type ContextItem,
@@ -58,7 +59,7 @@ import {
   type DesignBrief,
 } from "../../../packages/design-intelligence/src/index.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
-import { resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
+import { evaluateQuickEditScope, resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, classifyObservedToolFailures, compactRecoveryEvidence } from "./recovery-policy.ts";
 import { findingsFromVerification, VerificationService } from "./verification-service.ts";
 import { QualityGateService } from "./quality-gate-service.ts";
@@ -235,6 +236,7 @@ export class ExecutionOrchestrator {
       priorDeliveredWebsiteTask,
     });
     const styleWorkspace = executionScope.styleWorkspace;
+    const quickEdit = executionScope.quickEdit;
     const websiteWorkflow = executionScope.websiteWorkflow;
     const websiteContext = websiteProject ? websiteGenerationContext({
       name: websiteProject.name,
@@ -323,7 +325,16 @@ export class ExecutionOrchestrator {
         stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
         authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
       }) : null;
-      const compiledExecutionContext = compiledFocus ?? compiledStyle ?? compiledSlice;
+      const compiledQuickEdit = quickEdit && projectPlan ? compileQuickEditContext({
+        root: approvedWorktreePath,
+        request: task.request,
+        productContract: websiteContext,
+        projectBrief: websiteProject?.originalBrief ?? undefined,
+        sourceHints: contextSourceHints(contextHintRoot, task.request),
+        stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
+        authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
+      }) : null;
+      const compiledExecutionContext = compiledFocus ?? compiledStyle ?? compiledQuickEdit ?? compiledSlice;
       if (compiledExecutionContext) recordContextPack(taskId, authorityProjectId, compiledExecutionContext);
       const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
       const focusedExecutionPrompt = compiledFocus
@@ -332,6 +343,9 @@ export class ExecutionOrchestrator {
       const styleExecutionPrompt = compiledStyle
         ? `${styleExecutionContext}\n\n${compiledStyle.text}`
         : styleExecutionContext;
+      const quickEditExecutionPrompt = compiledQuickEdit
+        ? `QUICK EDIT WORKSPACE. Make the smallest change that satisfies the request. You may modify only source files present in this ContextPack. Preserve the approved plan, current slice index, global styles, and unrelated behavior. If another file or broader authority is required, stop and report SCOPE_EXCEEDED instead of editing it.\n\n${compiledQuickEdit.text}`
+        : "";
       const repairAuthorityContext = projectPlan
         ? JSON.stringify({
             slice: selectedSlice ? {
@@ -370,7 +384,7 @@ export class ExecutionOrchestrator {
           ? repairAuthorityContext
             ? `REPAIR AUTHORITY. Preserve this approved slice/page/style contract while fixing only the evidenced failure:\n${repairAuthorityContext}\n\n`
             : ""
-          : `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}`;
+          : `${activeSlicePrompt ? activeSlicePrompt + "\n\n" : ""}${focusedExecutionPrompt ? focusedExecutionPrompt + "\n\n" : ""}${styleExecutionPrompt ? styleExecutionPrompt + "\n\n" : ""}${quickEditExecutionPrompt ? quickEditExecutionPrompt + "\n\n" : ""}${backendHandoff ? backendHandoff + "\n\n" : ""}`;
         const scopedDesignContext = attemptStartedInRepair
           ? ""
           : `${designContext ? "\n\n" + designContext : ""}${websiteContext && !compiledExecutionContext ? "\n\n" + websiteContext : ""}`;
@@ -396,7 +410,7 @@ export class ExecutionOrchestrator {
             });
           } else implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
-          limits: sliceState || focusedExecutionScope || styleWorkspace
+          limits: sliceState || focusedExecutionScope || styleWorkspace || quickEdit
             ? attemptStartedInRepair
               ? { toolRounds: 12, toolCalls: 28 }
               : { toolRounds: 12, toolCalls: 28 }
@@ -464,7 +478,7 @@ export class ExecutionOrchestrator {
         }
         const { answer, usedTools, budgetExhausted, toolFailures: directToolFailures = [] } = implementationResult;
         implementationBudgetExhausted = Boolean(budgetExhausted);
-        if (sliceState || focusedExecutionScope || styleWorkspace) {
+        if (sliceState || focusedExecutionScope || styleWorkspace || quickEdit) {
           const progressStatus = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", taskContext, "implementer", activeDisciplines) as { stdout?: string };
           const postAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
           const initialSourceProgress = (progressStatus.stdout ?? "").split(/\r?\n/).filter(Boolean).some((line) => !line.includes(".localcode/build/"));
@@ -538,7 +552,28 @@ export class ExecutionOrchestrator {
             continue;
           }
         }
-        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted && budgetContinuations.claim(task.attempts, taskContext.attemptPhase)) {
+        const pendingInstructions = tasks.listInstructions({ taskId, statuses: ["pending"] });
+        if (pendingInstructions.length) {
+          const operatorFeedback: string[] = [];
+          for (const pending of pendingInstructions) {
+            const acknowledged = tasks.updateInstructionStatus(pending.id, "acknowledged");
+            appendTaskEvent(taskId, "WORKFLOW_INSTRUCTION_ACKNOWLEDGED", { instruction: acknowledged, boundary: "implementation_completed" });
+            emit({ type: "instruction.acknowledged", instruction: acknowledged, boundary: "implementation_completed", message: "Operator instruction acknowledged at the implementation boundary." });
+            const stopAfterSlice = /\bstop\s+after\s+(?:this|the current)\s+slice\b/i.test(pending.text);
+            if (!stopAfterSlice) operatorFeedback.push(pending.text);
+            const applied = tasks.updateInstructionStatus(pending.id, "applied");
+            appendTaskEvent(taskId, "WORKFLOW_INSTRUCTION_APPLIED", { instruction: applied, boundary: "implementation_completed", action: stopAfterSlice ? "stop_after_slice" : "implementation_followup" });
+            emit({ type: "instruction.applied", instruction: applied, action: stopAfterSlice ? "stop_after_slice" : "implementation_followup" });
+          }
+          if (operatorFeedback.length) {
+            if (activeRoleAssignment) finishRole(activeRoleAssignment, "completed", emit);
+            activeRoleAssignment = null;
+            repairEvidence = `OPERATOR INSTRUCTIONS RECEIVED DURING EXECUTION. Apply these within the existing approved scope before verification. Do not broaden the worktree mutation:\n- ${operatorFeedback.join("\n- ")}`;
+            emit({ type: "runtime.notice", message: "BORG is applying queued operator feedback before verification." });
+            continue;
+          }
+        }
+        if ((sliceState || focusedExecutionScope || styleWorkspace || quickEdit) && budgetExhausted && budgetContinuations.claim(task.attempts, taskContext.attemptPhase)) {
           implementationBudgetContinuations += 1;
           appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_CONTINUATION", {
             continuation: implementationBudgetContinuations,
@@ -552,6 +587,8 @@ export class ExecutionOrchestrator {
             ? `The bounded implementation tool budget ended before the focused ${focusedExecutionScope.type} edit demonstrated completion. Continue the SAME focused scope [${focusedExecutionScope.id}] from the current worktree state. Do not re-plan or inspect unrelated pages/components.`
             : styleWorkspace
               ? "The bounded implementation tool budget ended before the global style edit demonstrated completion. Continue the SAME style task from the current worktree state without changing site structure."
+              : quickEdit
+                ? "The bounded implementation tool budget ended before the quick edit demonstrated completion. Continue the SAME source-bounded edit without inspecting or changing files outside its ContextPack."
               : "The bounded implementation tool budget ended before the slice could explicitly demonstrate completion. Continue the SAME approved slice from the current worktree state. Do not re-plan or rediscover the project. Inspect only the changed/relevant files, finish any remaining acceptance criteria, and leave evidence for verification.";
           repairEvidence = attemptStartedInRepair && repairEvidence
             ? `${continuationScope}\n\nThe repair is still bounded to this original verification failure; do not switch back to general slice work:\n${repairEvidence}`
@@ -559,8 +596,19 @@ export class ExecutionOrchestrator {
           emit({ type: "runtime.notice", message: "Implementation reached its bounded tool budget. Continuing the same scoped task once with compact context instead of treating partial progress as complete." });
           continue;
         }
-        if ((sliceState || focusedExecutionScope || styleWorkspace) && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
+        if ((sliceState || focusedExecutionScope || styleWorkspace || quickEdit) && budgetExhausted) appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_EXHAUSTED", { continuations: implementationBudgetContinuations });
         appendTaskEvent(taskId, task.attempts > 0 ? "REPAIR_RESPONSE_COMPLETED" : "IMPLEMENTATION_RESPONSE_COMPLETED", { runtime: "ollama", model: implementerModel, role: "implementer", answer, usedTools, budgetExhausted: Boolean(budgetExhausted), attempt: task.attempts });
+        if (quickEdit && compiledQuickEdit) {
+          const scopeEvaluation = evaluateQuickEditScope(
+            compiledQuickEdit.manifest.filter((item) => item.kind === "source").map((item) => item.path),
+            sourceMutationSnapshot(approvedWorktreePath).paths,
+          );
+          if (scopeEvaluation.exceeded) {
+            appendTaskEvent(taskId, "SCOPE_EXCEEDED", { from: "quick_edit", ...scopeEvaluation });
+            emit({ type: "scope.exceeded", from: "quick_edit", required: scopeEvaluation.required, outsideScope: scopeEvaluation.outsideScope, message: `Quick Edit exceeded its approved source boundary. Continue in the ${scopeEvaluation.required === "global_styles" ? "Styles" : "Page or Component"} workspace.` });
+            throw new Error(`SCOPE_EXCEEDED: Quick Edit changed files outside its approved scope: ${scopeEvaluation.outsideScope.join(", ")}`);
+          }
+        }
         if (websiteProject && projectPlan) {
           const implementedPaths = sourceMutationSnapshot(approvedWorktreePath).paths;
           updateProjectModelFromChanges(

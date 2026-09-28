@@ -10,6 +10,7 @@ export type PlanningTaskKind =
   | "focused_page"
   | "focused_component"
   | "global_styles"
+  | "quick_edit"
   | "backend"
   | "general";
 
@@ -26,6 +27,7 @@ export type PlanningTaskScope = {
   slicedApplication: boolean;
   miniLoop: boolean;
   styleFocus: boolean;
+  quickEdit: boolean;
   focus: FocusedScope | null;
   expectedCommandAction: "start_slice" | "advance_slice" | null;
   workflowCommandId: string | null;
@@ -50,6 +52,17 @@ function normalizeId(value: string | null | undefined) {
   return String(value ?? "").trim();
 }
 
+export function evaluateQuickEditScope(allowedFiles: readonly string[], changedPaths: readonly string[]) {
+  const normalize = (value: string) => value.trim().replaceAll("\\", "/");
+  const allowed = new Set(allowedFiles.map(normalize).filter(Boolean));
+  const changed = changedPaths.map(normalize).filter(Boolean);
+  const outsideScope = changed.filter((path) => !allowed.has(path));
+  const required = outsideScope.some((path) => /(?:^|\/)(?:styles?|theme|tokens?|globals?)(?:[./_-]|$)|\.(?:css|scss|sass|less)$/i.test(path))
+    ? "global_styles" as const
+    : "focused_page_or_component" as const;
+  return { allowedFiles: [...allowed], changedPaths: changed, outsideScope, required, exceeded: outsideScope.length > 0 };
+}
+
 export function resolvePlanningTaskScope(input: PlanningTaskScopeInput): PlanningTaskScope {
   const rawSliceAction = input.rawSliceAction;
   if (rawSliceAction === "retry") {
@@ -71,6 +84,7 @@ export function resolvePlanningTaskScope(input: PlanningTaskScopeInput): Plannin
   }
 
   const styleFocus = input.mode !== "ask" && rawSliceAction === "style" && focusedPlanReady;
+  const quickEdit = input.mode !== "ask" && rawSliceAction === "quick_edit" && focusedPlanReady;
   const focusType = rawSliceAction === "page" || rawSliceAction === "component"
     ? rawSliceAction as FocusedScope["type"]
     : null;
@@ -81,12 +95,12 @@ export function resolvePlanningTaskScope(input: PlanningTaskScopeInput): Plannin
     : null;
 
   const slicedApplication = input.mode !== "ask"
-    && !["backend", "style", "page", "component"].includes(rawSliceAction)
+    && ["initial", "advance", "revise"].includes(rawSliceAction)
     && input.hasWebsite
     && input.projectPlanStatus === "approved"
     && input.hasPreviousSlice;
 
-  const miniLoop = slicedApplication || styleFocus || Boolean(focus);
+  const miniLoop = slicedApplication || styleFocus || quickEdit || Boolean(focus);
   const sliceAction: SliceAction = rawSliceAction === "advance" || rawSliceAction === "revise"
     ? rawSliceAction
     : "initial";
@@ -114,6 +128,8 @@ export function resolvePlanningTaskScope(input: PlanningTaskScopeInput): Plannin
           ? "focused_component"
           : styleFocus
             ? "global_styles"
+            : quickEdit
+              ? "quick_edit"
             : rawSliceAction === "backend"
               ? "backend"
               : projectPlanning
@@ -134,6 +150,8 @@ export function resolvePlanningTaskScope(input: PlanningTaskScopeInput): Plannin
       ? `Planning a focused ${focus.type} edit without changing the main frontend slice workflow.`
       : styleFocus
         ? "Planning a global style edit without changing the main frontend slice workflow."
+        : quickEdit
+          ? "Planning a bounded quick edit without changing the project plan or frontend slice index."
         : "Planning the requested project work.";
 
   return {
@@ -144,6 +162,7 @@ export function resolvePlanningTaskScope(input: PlanningTaskScopeInput): Plannin
     slicedApplication,
     miniLoop,
     styleFocus,
+    quickEdit,
     focus,
     expectedCommandAction,
     workflowCommandId,
@@ -162,6 +181,7 @@ export type ExecutionScopeMarkers = {
   styleWorkspace: boolean;
   frontendSliceSelected: boolean;
   backendPhase: boolean;
+  quickEdit: boolean;
 };
 
 export function resolveExecutionScopeMarkers(events: readonly TaskEventLike[], hasWebsite: boolean): ExecutionScopeMarkers {
@@ -179,15 +199,17 @@ export function resolveExecutionScopeMarkers(events: readonly TaskEventLike[], h
     styleWorkspace: hasWebsite && events.some((event) => event.type === "STYLE_WORKSPACE_SELECTED"),
     frontendSliceSelected: hasWebsite && events.some((event) => event.type === "FRONTEND_SLICE_SELECTED"),
     backendPhase: hasWebsite && events.some((event) => event.type === "BACKEND_PHASE_SELECTED"),
+    quickEdit: hasWebsite && events.some((event) => event.type === "QUICK_EDIT_SELECTED"),
   };
 }
 
 export type ExecutionTaskScope = {
-  kind: "frontend_slice" | "focused_page" | "focused_component" | "global_styles" | "backend" | "general";
+  kind: "frontend_slice" | "focused_page" | "focused_component" | "global_styles" | "quick_edit" | "backend" | "general";
   focus: FocusedScope | null;
   styleWorkspace: boolean;
   frontendSlice: boolean;
   backendPhase: boolean;
+  quickEdit: boolean;
   websiteWorkflow: WebsiteWorkflowKind;
 };
 
@@ -203,6 +225,7 @@ export function resolveExecutionTaskScope(input: {
   const styleWorkspace = markers.styleWorkspace;
   const frontendSlice = markers.frontendSliceSelected && input.hasProjectPlan && input.hasSliceState;
   const backendPhase = markers.backendPhase;
+  const quickEdit = markers.quickEdit;
 
   const websiteWorkflow: WebsiteWorkflowKind = styleWorkspace || focus
     ? "iterative_edit"
@@ -218,6 +241,8 @@ export function resolveExecutionTaskScope(input: {
       ? "focused_component" as const
       : styleWorkspace
         ? "global_styles" as const
+        : quickEdit
+          ? "quick_edit" as const
         : frontendSlice
           ? "frontend_slice" as const
           : backendPhase
@@ -230,6 +255,7 @@ export function resolveExecutionTaskScope(input: {
     styleWorkspace,
     frontendSlice,
     backendPhase,
+    quickEdit,
     websiteWorkflow,
   };
 }

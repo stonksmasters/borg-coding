@@ -13,6 +13,7 @@ import {
   TaskEventSchema,
   TaskSchema,
   WorkflowStateSchema,
+  WorkflowInstructionSchema,
   type Approval,
   type Finding,
   type Handoff,
@@ -26,6 +27,7 @@ import {
   type TaskContinuation,
   type TaskEvent,
   type WorkflowState,
+  type WorkflowInstruction,
 } from "../../core/src/contracts.ts";
 import { ContextPackRecordSchema, type ContextPackRecord } from "../../core/src/context-domain.ts";
 
@@ -53,6 +55,14 @@ export class SqliteTaskRepository {
         phase TEXT NOT NULL, status TEXT NOT NULL, next_action TEXT NOT NULL,
         version INTEGER NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS workflow_instructions (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        project_id TEXT NOT NULL, session_id TEXT NOT NULL,
+        task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+        status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_workflow_instructions_project_sequence ON workflow_instructions(project_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_workflow_instructions_task_status ON workflow_instructions(task_id, status, sequence);
       CREATE TABLE IF NOT EXISTS model_contexts (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         role TEXT NOT NULL, model TEXT NOT NULL, slice_id TEXT,
@@ -203,6 +213,43 @@ export class SqliteTaskRepository {
   listEvents(taskId: string): TaskEvent[] {
     const rows = this.database.prepare("SELECT id, task_id, type, payload, occurred_at FROM task_events WHERE task_id = ? ORDER BY sequence").all(taskId) as { id: string; task_id: string; type: string; payload: string; occurred_at: string }[];
     return rows.map((row) => TaskEventSchema.parse({ id: row.id, taskId: row.task_id, type: row.type, payload: JSON.parse(row.payload), occurredAt: row.occurred_at }));
+  }
+
+  saveInstruction(instruction: WorkflowInstruction): void {
+    const value = WorkflowInstructionSchema.parse(instruction);
+    this.database.prepare(`
+      INSERT INTO workflow_instructions (id, project_id, session_id, task_id, status, created_at, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, status=excluded.status, data=excluded.data
+    `).run(value.id, value.projectId, value.sessionId, value.taskId, value.status, value.createdAt, JSON.stringify(value));
+  }
+
+  findInstruction(id: string): WorkflowInstruction | null {
+    const row = this.database.prepare("SELECT data FROM workflow_instructions WHERE id = ?").get(id) as { data: string } | undefined;
+    return row ? WorkflowInstructionSchema.parse(JSON.parse(row.data)) : null;
+  }
+
+  listInstructions(input: { projectId?: string; taskId?: string; statuses?: WorkflowInstruction["status"][] }): WorkflowInstruction[] {
+    const rows = input.taskId
+      ? this.database.prepare("SELECT data FROM workflow_instructions WHERE task_id = ? ORDER BY sequence").all(input.taskId)
+      : this.database.prepare("SELECT data FROM workflow_instructions WHERE project_id = ? ORDER BY sequence").all(input.projectId ?? "") as { data: string }[];
+    const statuses = new Set(input.statuses ?? []);
+    return (rows as { data: string }[]).map((row) => WorkflowInstructionSchema.parse(JSON.parse(row.data)))
+      .filter((item) => !statuses.size || statuses.has(item.status));
+  }
+
+  updateInstructionStatus(id: string, status: WorkflowInstruction["status"]): WorkflowInstruction {
+    const current = this.findInstruction(id);
+    if (!current) throw new Error(`Workflow instruction not found: ${id}`);
+    const now = new Date().toISOString();
+    const next = WorkflowInstructionSchema.parse({
+      ...current,
+      status,
+      acknowledgedAt: status === "acknowledged" || status === "applied" ? current.acknowledgedAt ?? now : current.acknowledgedAt,
+      appliedAt: status === "applied" ? now : current.appliedAt,
+    });
+    this.saveInstruction(next);
+    return next;
   }
 
   saveModelContext(input: { id: string; taskId: string; role: string; model: string; sliceId: string | null; inputText: string; manifest: unknown[]; inputSha256: string; createdAt: string }): void {

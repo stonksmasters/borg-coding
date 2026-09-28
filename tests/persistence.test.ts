@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createApproval, createHandoff, createRoleAssignment, createTask } from "../packages/core/src/contracts.ts";
+import { createApproval, createHandoff, createRoleAssignment, createTask, createWorkflowInstruction } from "../packages/core/src/contracts.ts";
 import { SqliteTaskRepository } from "../packages/persistence/src/sqlite-task-repository.ts";
 
 test("tasks round-trip through SQLite", () => {
@@ -9,6 +9,22 @@ test("tasks round-trip through SQLite", () => {
   repository.saveTask(task);
   assert.deepEqual(repository.findTask(task.id), task);
   assert.deepEqual(repository.listTasks(task.projectId), [task]);
+  repository.close();
+});
+
+test("workflow instructions persist and advance through acknowledged and applied states", () => {
+  const repository = new SqliteTaskRepository(":memory:");
+  const task = createTask({ id: "task-instruction", projectId: "project-1", request: "Build the hero" });
+  repository.saveTask(task);
+  const instruction = createWorkflowInstruction({ id: "instruction-1", projectId: task.projectId, sessionId: "session-1", taskId: task.id, text: "Make this less rounded before continuing." });
+  repository.saveInstruction(instruction);
+  assert.deepEqual(repository.listInstructions({ taskId: task.id, statuses: ["pending"] }), [instruction]);
+  const acknowledged = repository.updateInstructionStatus(instruction.id, "acknowledged");
+  assert.ok(acknowledged.acknowledgedAt);
+  assert.equal(acknowledged.appliedAt, null);
+  const applied = repository.updateInstructionStatus(instruction.id, "applied");
+  assert.ok(applied.appliedAt);
+  assert.deepEqual(repository.listInstructions({ projectId: task.projectId }), [applied]);
   repository.close();
 });
 

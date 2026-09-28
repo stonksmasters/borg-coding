@@ -96,6 +96,7 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
   const started = now();
   const startedAt = started.toISOString();
   const deadline = Date.now() + timeoutMs;
+  client.setDeadline(deadline);
   const observations: BenchmarkObservation[] = [];
   const taskIds: string[] = [];
   const approvals = { projectPlan: 0, projectPlanRevision: 0 };
@@ -141,8 +142,31 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
     });
     sessionId = website.session.id;
 
-    const planning = await client.submitPrompt(sessionId, prompt);
+    let planningTaskId: string | null = null;
+    let planningState: string | null = "PLANNING";
+    const planning = await client.submitPrompt(sessionId, prompt, (event) => {
+      if (event.type === "task.created") {
+        const task = event.task as { id?: string; state?: string } | undefined;
+        planningTaskId = task?.id ?? planningTaskId;
+        planningState = task?.state ?? planningState;
+        if (planningTaskId && !taskIds.includes(planningTaskId)) taskIds.push(planningTaskId);
+      }
+      if (event.type === "task.state" && typeof event.state === "string") planningState = event.state;
+      if (!["task.created", "task.state", "stage.updated"].includes(String(event.type))) return;
+      const observation: BenchmarkObservation = {
+        at: now().toISOString(), taskId: planningTaskId, taskState: planningState,
+        runtimeActive: true, approvalGate: null, workflowSource: null,
+        stage: typeof event.stage === "string" ? event.stage : "planning",
+        nextAction: "plan", sliceIndex: null, sliceTotal: null, sliceTitle: null,
+      };
+      observations.push(observation);
+      onObservation?.(observation);
+    });
     if (planning.taskId && !taskIds.includes(planning.taskId)) taskIds.push(planning.taskId);
+    if (planning.taskId) {
+      const snapshot = await client.debugSnapshot(planning.taskId).catch(() => null);
+      if (snapshot) snapshotByTask.set(planning.taskId, snapshot);
+    }
 
     while (Date.now() < deadline) {
       const runtime = await client.getSession(sessionId);
@@ -250,7 +274,7 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
     }
     return finish("INVALID_RUN", [
       failure(
-        "BENCHMARK_RUNNER_ERROR",
+        Date.now() >= deadline ? "BENCHMARK_TIMEOUT" : "BENCHMARK_RUNNER_ERROR",
         "workflow",
         error instanceof Error ? error.message : String(error),
         error instanceof BenchmarkChatStreamError ? error.taskId : taskIds.at(-1) ?? null,

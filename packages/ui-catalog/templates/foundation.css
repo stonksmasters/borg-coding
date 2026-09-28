@@ -1,0 +1,49 @@
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; color: var(--borg-text); background: var(--borg-background); font: var(--borg-font-size)/1.65 var(--borg-font-body); }
+button, input, select, textarea { font: inherit; }
+button, select, summary { cursor: pointer; }
+button, input, select, textarea { max-width: 100%; color: inherit; }
+button, select { background: var(--borg-surface); border: 1px solid var(--borg-border); border-radius: var(--borg-radius); padding: .6rem .9rem; }
+a { color: inherit; text-underline-offset: .25em; }
+:focus-visible { outline: 3px solid var(--borg-accent); outline-offset: 4px; }
+h1, h2, h3 { font-family: var(--borg-font-display); line-height: 1.08; font-weight: 500; letter-spacing: -.035em; }
+h1 { font-size: clamp(2.7rem, 6vw, 6rem); margin: 1rem 0 1.5rem; }
+h2 { font-size: clamp(2rem, 4vw, 3.5rem); } h3 { font-size: 1.65rem; }
+p { max-width: 62ch; } em { font-weight: 400; }
+.borg-page { max-width: var(--borg-width); margin: auto; padding: 0 clamp(1.25rem, 4vw, 3rem); }
+.borg-navigation, .borg-footer, .borg-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; flex-wrap: wrap; }
+.borg-navigation { padding: 1.5rem 0; border-bottom: 1px solid var(--borg-border); }
+.borg-brand { font-size: 1.35rem; font-weight: 700; text-decoration: none; letter-spacing: -.04em; }
+.borg-navigation nav { display: flex; gap: 2rem; } .borg-menu-toggle { display: none; }
+.borg-hero { display: grid; grid-template-columns: 1.15fr 1fr; align-items: center; gap: 3rem; padding: calc(var(--borg-space) * 5) 0; }
+.borg-eyebrow { text-transform: uppercase; font-size: .75rem; letter-spacing: .15em; font-weight: 700; color: var(--borg-muted); }
+.borg-button { display: inline-flex; align-items: center; gap: 1rem; padding: .9rem 1.35rem; color: var(--borg-on-accent); background: var(--borg-accent); border: 1px solid var(--borg-accent); border-radius: var(--borg-radius); text-decoration: none; }
+.borg-section { padding: calc(var(--borg-space) * 4) 0; border-top: 1px solid var(--borg-border); scroll-margin-top: 2rem; }
+.borg-section-heading h2 { margin: 0 0 1rem; }
+.borg-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; margin-top: 2rem; }
+.borg-art { min-height: 420px; background: var(--borg-accent); overflow: hidden; position: relative; border-radius: 48% 48% var(--borg-radius) var(--borg-radius); }
+.borg-art span { position: absolute; width: 85%; height: 65%; border: 2px solid var(--borg-background); border-radius: 50% 50% 0 0; left: 22%; top: 25%; transform: rotate(-25deg); }
+.borg-art span:nth-child(2) { left: 0; top: 40%; } .borg-art span:nth-child(3) { left: -25%; top: 55%; }
+.borg-swatch { aspect-ratio: 4 / 3; background: var(--borg-accent); border-radius: var(--borg-radius); }
+.borg-swatch-1 { opacity: .72; } .borg-swatch-2 { opacity: .48; }
+.borg-split { display: grid; grid-template-columns: 1fr 1fr; gap: 4rem; } .borg-split h2 { margin-top: 0; }
+.borg-field { display: grid; gap: .35rem; margin: 0 0 1.25rem; font-weight: 500; }
+.borg-field input, .borg-field textarea { width: 100%; border: 1px solid var(--borg-border); background: var(--borg-surface); padding: .8rem; border-radius: var(--borg-radius); } .borg-field textarea { min-height: 8rem; resize: vertical; }
+.borg-footer { padding: 2rem 0; border-top: 1px solid var(--borg-border); }
+.borg-modal { width: min(90vw, 580px); max-height: 85dvh; overflow: auto; padding: 2rem; color: var(--borg-text); background: var(--borg-surface); border: 1px solid var(--borg-border); border-radius: var(--borg-radius); box-shadow: var(--borg-shadow); }
+.borg-modal::backdrop { background: #14221ccc; } .borg-modal header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; } .borg-modal h2 { font-size: 2rem; }
+.borg-drawer { margin-right: 0; height: 100dvh; max-height: 100dvh; }
+.borg-tabs { display: flex; gap: .5rem; flex-wrap: wrap; } .borg-tabs [aria-selected=true] { background: var(--borg-accent); color: var(--borg-on-accent); }
+.borg-notice { padding: 1rem; border-inline-start: 3px solid var(--borg-accent); background: var(--borg-surface); }
+.borg-disclosure { padding: 1rem 0; border-bottom: 1px solid var(--borg-border); }
+.borg-cart-row { display: grid; gap: .75rem; padding: 1rem 0; border-bottom: 1px solid var(--borg-border); }
+.borg-cart-row input { width: 5rem; margin-left: .5rem; }
+.borg-workspace { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 100dvh; }
+.borg-workspace aside { padding: 2rem 1.5rem; border-right: 1px solid var(--borg-border); background: var(--borg-surface); } .borg-workspace nav { display: grid; gap: 1rem; margin: 3rem 0; }
+.borg-workspace main { padding: clamp(1.25rem, 4vw, 3rem); min-width: 0; } .borg-workspace h1 { font-size: 3rem; }
+.borg-table-wrap { overflow-x: auto; background: var(--borg-surface); border: 1px solid var(--borg-border); border-radius: var(--borg-radius); }
+table { border-collapse: collapse; width: 100%; text-align: left; } caption { text-align: left; padding: 1rem; color: var(--borg-muted); } th, td { padding: 1rem; border-bottom: 1px solid var(--borg-border); } th { font-weight: 600; }
+@media (max-width: 900px) { .borg-hero { gap: 2rem; } .borg-art { min-height: 330px; } .borg-workspace { grid-template-columns: 180px minmax(0, 1fr); } .borg-grid { gap: 1rem; } }
+@media (max-width: 600px) { .borg-hero, .borg-split, .borg-grid, .borg-workspace { grid-template-columns: 1fr; } .borg-hero { padding: 3rem 0; } .borg-split { gap: 1.5rem; } .borg-art { min-height: 280px; } .borg-menu-toggle { display: block; } .borg-navigation nav { display: none; width: 100%; flex-direction: column; gap: 1rem; } .borg-navigation nav[data-open=true] { display: flex; } .borg-workspace aside { border-right: 0; border-bottom: 1px solid var(--borg-border); padding: 1rem; } .borg-workspace nav { display: flex; flex-wrap: wrap; margin: 1rem 0 0; } .borg-workspace aside p { display: none; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

@@ -46,8 +46,14 @@ export type StyleContextInput = ContextBaseInput & {
   authority?: { plan: ProjectPlan; workflowVersion?: number | null };
 };
 
+export type QuickEditContextInput = ContextBaseInput & {
+  request: string;
+  authority?: { plan: ProjectPlan; workflowVersion?: number | null };
+};
+
 type InternalInput = ContextBaseInput & {
-  profileKind: "slice" | "page" | "component" | "styles";
+  profileKind: "slice" | "page" | "component" | "styles" | "quick_edit";
+  request?: string;
   sliceIndex?: number | null;
   scope?: ContextScope | null;
   authority?: ContextAuthority;
@@ -150,6 +156,25 @@ function relatedRegistry(input: InternalInput, plan: ProjectPlan) {
       ...model.components.flatMap((item) => item.files),
     ])].filter((path) => /(?:^|\/)(?:app|layout|theme|styles?|tokens?|globals?)(?:[./_-]|$)|\.(?:css|scss|sass|less)$/i.test(path));
     return { model, pages, components, explicitFiles: files };
+  }
+
+  if (scope?.type === "quick_edit") {
+    const relevant = wordSet(input.request ?? "");
+    const pages = model.pages.filter((item) => overlaps(relevant, wordSet([item.id, item.name, item.purpose, ...item.sections].join(" "))));
+    const components = model.components.filter((item) =>
+      pages.some((page) => item.usedBy.includes(page.id) || page.components.includes(item.id))
+      || overlaps(relevant, wordSet([item.id, item.name, item.purpose, ...item.variants].join(" "))),
+    );
+    const dependencyIds = new Set(components.flatMap((item) => item.dependencies));
+    for (const candidate of model.components) {
+      if (dependencyIds.has(candidate.id) && !components.some((item) => item.id === candidate.id)) components.push(candidate);
+    }
+    return {
+      model,
+      pages,
+      components,
+      explicitFiles: [...new Set([...pages.flatMap((item) => item.files), ...components.flatMap((item) => item.files)])],
+    };
   }
 
   if (page) {
@@ -298,6 +323,13 @@ function compileContextPack(input: InternalInput): CompiledContext {
       null,
       2,
     ), 6_000), true);
+  } else if (scope?.type === "quick_edit") {
+    add("authority", "@borg/current-work", "Bounded quick edit scope", bounded(JSON.stringify({
+      request: input.request,
+      allowed: "Only source files included in this ContextPack and their direct registered dependencies.",
+      preserve: ["project slice index", "project plan", "sitemap", "global style system", "unrelated pages", "unrelated components"],
+      escalation: "Return SCOPE_EXCEEDED when the requested result requires files or authority outside this pack.",
+    }, null, 2), 4_000), true);
   } else {
     add("authority", "@borg/current-work", "Global style workspace boundary", bounded(JSON.stringify({
       scope: "global styles",
@@ -386,5 +418,16 @@ export function compileStyleFrontendContext(input: StyleContextInput): CompiledC
     profileKind: "styles",
     sliceIndex: null,
     scope: { type: "styles", id: "global" },
+  });
+}
+
+export function compileQuickEditContext(input: QuickEditContextInput): CompiledContext {
+  return compileContextPack({
+    ...input,
+    profileKind: "quick_edit",
+    request: input.request,
+    sliceIndex: null,
+    scope: { type: "quick_edit", id: "request" },
+    budgetCharacters: input.budgetCharacters ?? 24_000,
   });
 }

@@ -133,6 +133,9 @@ export const ApprovalSchema = z.object({
 export type Approval = z.infer<typeof ApprovalSchema>;
 
 export const FindingSchema = z.object({
+  disposition: z.enum(["blocking", "advisory"]).optional(),
+  acceptanceCriterion: z.string().nullable().optional(),
+  evidenceRevision: z.string().optional(),
   id: z.string().min(1), taskId: z.string().min(1), discipline: z.string().min(1), severity: z.enum(severityLevels),
   category: z.string().min(1), title: z.string().min(1), description: z.string().min(1),
   file: z.string().optional(), line: z.number().int().positive().optional(), evidence: z.string().optional(), remediation: z.string().optional(),
@@ -175,7 +178,35 @@ export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
 export const TaskEventSchema = z.object({ id: z.string().min(1), taskId: z.string().min(1), type: z.string().min(1), payload: z.record(z.string(), z.unknown()), occurredAt: z.string().datetime() });
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
 
+export const workflowInstructionStatuses = ["pending", "acknowledged", "applied", "superseded"] as const;
+export const WorkflowInstructionSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  sessionId: z.string().min(1),
+  taskId: z.string().min(1).nullable(),
+  text: z.string().trim().min(1).max(4000),
+  createdAt: z.string().datetime(),
+  status: z.enum(workflowInstructionStatuses),
+  acknowledgedAt: z.string().datetime().nullable().default(null),
+  appliedAt: z.string().datetime().nullable().default(null),
+});
+export type WorkflowInstruction = z.infer<typeof WorkflowInstructionSchema>;
+
+export function createWorkflowInstruction(input: Pick<WorkflowInstruction, "id" | "projectId" | "sessionId" | "taskId" | "text">): WorkflowInstruction {
+  return WorkflowInstructionSchema.parse({ ...input, status: "pending", createdAt: new Date().toISOString(), acknowledgedAt: null, appliedAt: null });
+}
+
+export const FrontendBuildPolicySchema = z.object({
+  planRevision: z.number().int().positive(),
+  approvalId: z.string().min(1),
+  mode: z.enum(["edit", "agent"]),
+  continuation: z.enum(["automatic", "checkpoint"]),
+  maximumRepairAttempts: z.literal(3),
+}).strict();
+export type FrontendBuildPolicy = z.infer<typeof FrontendBuildPolicySchema>;
+
 export const WorkflowStateSchema = z.object({
+  frontendBuildPolicy: FrontendBuildPolicySchema.nullable().optional(),
   projectId: z.string().min(1), taskId: z.string().min(1).nullable(),
   loop: z.enum(workflowLoops).default("general"),
   phase: z.enum(workflowPhases), status: z.enum(workflowStatuses), nextAction: z.enum(workflowActions),

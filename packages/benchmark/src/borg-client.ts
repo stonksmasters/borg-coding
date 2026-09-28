@@ -178,6 +178,13 @@ async function responseError(response: Response) {
 export class BorgBenchmarkClient {
   readonly baseUrl: string;
   private readonly fetchImpl: BenchmarkFetch;
+  private deadline: number | null = null;
+
+  setDeadline(deadline: number) { this.deadline = deadline; }
+
+  private signal(defaultTimeout: number) {
+    return AbortSignal.timeout(Math.max(1, Math.min(defaultTimeout, this.deadline === null ? defaultTimeout : this.deadline - Date.now())));
+  }
 
   constructor(baseUrl = "http://127.0.0.1:4312", fetchImpl: BenchmarkFetch = fetch) {
     this.baseUrl = cleanBaseUrl(baseUrl);
@@ -185,7 +192,7 @@ export class BorgBenchmarkClient {
   }
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, init);
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, signal: init?.signal ?? this.signal(120_000) });
     if (!response.ok) throw new Error(await responseError(response));
     return response.json() as Promise<T>;
   }
@@ -202,6 +209,7 @@ export class BorgBenchmarkClient {
         name: input.name,
         brief: input.brief,
         template: input.template ?? "auto",
+        activeMode: "agent",
       }),
     });
   }
@@ -219,7 +227,12 @@ export class BorgBenchmarkClient {
   }
 
   async workflowStatus(taskId: string) {
-    return this.json<BenchmarkWorkflowStatus>(`/api/tasks/${encodeURIComponent(taskId)}/workflow-status`);
+    const body = await this.json<BenchmarkWorkflowStatus | { status: BenchmarkWorkflowStatus }>(`/api/tasks/${encodeURIComponent(taskId)}/workflow-status`);
+    const status = typeof body.status === "object" && body.status !== null ? body.status : body as BenchmarkWorkflowStatus;
+    if (typeof status.taskState !== "string" || typeof status.nextAction !== "string") {
+      throw new Error("Core returned an invalid workflow status response.");
+    }
+    return status;
   }
 
   async debugSnapshot(taskId: string) {
@@ -227,11 +240,12 @@ export class BorgBenchmarkClient {
     return body.snapshot;
   }
 
-  async submitPrompt(sessionId: string, request: string): Promise<ChatStreamResult> {
+  async submitPrompt(sessionId: string, request: string, onEvent?: (event: Record<string, unknown>) => void): Promise<ChatStreamResult> {
     const response = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sessionId, request }),
+      signal: this.signal(30 * 60_000),
     });
     if (!response.ok || !response.body) throw new Error(await responseError(response));
 
@@ -245,6 +259,7 @@ export class BorgBenchmarkClient {
       if (!line.trim()) return;
       const event = JSON.parse(line) as Record<string, unknown>;
       events.push(event);
+      onEvent?.(event);
       if (event.type === "task.created") {
         const task = event.task as { id?: string } | undefined;
         taskId = task?.id ?? taskId;

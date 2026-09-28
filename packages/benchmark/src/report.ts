@@ -28,6 +28,14 @@ export function formatBenchmarkReport(artifacts: BenchmarkTelemetryArtifacts) {
   lines.push(`Result: ${statusMark(summary.status)}`);
   lines.push(`Run: ${summary.runId}`);
   lines.push(`Duration: ${duration(summary.durationMs)}`);
+  lines.push(`First rendered preview: ${duration(summary.performance.firstRenderedPreviewMs)}`);
+  lines.push(`Recorded model requests: ${summary.performance.recordedModelRequests ?? "unknown"}`);
+  lines.push(`Recorded tool calls: ${summary.performance.recordedToolCalls ?? "unknown"}`);
+  lines.push(`Terminal stage: ${summary.performance.terminalStage ?? "unknown"}`);
+  for (const [stage, elapsed] of Object.entries(summary.performance.stageMs)) {
+    lines.push(`  ${stage}: ${duration(elapsed)} (sampled)`);
+  }
+  lines.push(`Unobserved time: ${duration(summary.performance.unobservedMs)}`);
   lines.push(`Tasks observed: ${summary.taskCount}`);
   lines.push(`Slices observed: ${summary.observedSliceCount}`);
   lines.push(`Plan approvals: ${summary.approvals.projectPlan} · revisions: ${summary.approvals.projectPlanRevision}`);

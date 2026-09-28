@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -414,8 +415,49 @@ internal sealed class BorgHost : IAsyncDisposable
             LogLifecycle($"Service {name} was already healthy and is not adopted as an owned child.");
             return;
         }
+        if (name == "web") RecoverStaleVinextLock();
         StartOwnedProcess(name, executable, arguments);
         await WaitForAsync(healthUrl, timeout, throwOnTimeout: true);
+    }
+
+    private void RecoverStaleVinextLock()
+    {
+        var lockPath = Path.Combine(repositoryRoot, ".vinext", "dev", "lock.json");
+        if (!File.Exists(lockPath)) return;
+
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(lockPath));
+            var root = document.RootElement;
+            var pid = root.TryGetProperty("pid", out var pidElement) && pidElement.TryGetInt32(out var parsedPid)
+                ? parsedPid
+                : 0;
+            var startedAt = root.TryGetProperty("startedAt", out var startedAtElement) && startedAtElement.TryGetInt64(out var parsedStartedAt)
+                ? DateTimeOffset.FromUnixTimeMilliseconds(parsedStartedAt)
+                : (DateTimeOffset?)null;
+
+            Process? recordedProcess = null;
+            try { if (pid > 0) recordedProcess = Process.GetProcessById(pid); }
+            catch (ArgumentException) { }
+
+            var belongsToRecordedVinextRun = recordedProcess is not null
+                && recordedProcess.ProcessName.Equals("node", StringComparison.OrdinalIgnoreCase)
+                && startedAt is not null
+                && Math.Abs((recordedProcess.StartTime.ToUniversalTime() - startedAt.Value.UtcDateTime).TotalSeconds) < 10;
+            recordedProcess?.Dispose();
+            if (belongsToRecordedVinextRun)
+            {
+                LogLifecycle($"Preserving Vinext development lock for active node pid={pid}; waiting for its server.");
+                return;
+            }
+
+            File.Delete(lockPath);
+            LogLifecycle($"Removed stale Vinext development lock for pid={pid}; the workspace URL was unavailable and the recorded process no longer matched.");
+        }
+        catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException or ArgumentOutOfRangeException)
+        {
+            LogLifecycle($"Could not validate the Vinext development lock: {error.Message}");
+        }
     }
 
     private void StartOwnedProcess(string name, string executable, string arguments)

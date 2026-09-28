@@ -47,6 +47,7 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
   const remotePort = await freePort();
   const receivedChat: { value: Record<string, unknown> | null } = { value: null };
   const receivedApproval: { value: Record<string, unknown> | null } = { value: null };
+  const receivedInstruction: { value: Record<string, unknown> | null } = { value: null };
 
   const gateway = createServer((request, response) => {
     const url = request.url ?? "/";
@@ -134,6 +135,14 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
       });
       return;
     }
+    if (request.method === "POST" && url === "/api/instructions") {
+      void readBody(request).then((body) => {
+        receivedInstruction.value = JSON.parse(body) as Record<string, unknown>;
+        response.writeHead(202);
+        response.end(JSON.stringify({ message: "Instruction queued", instruction: { id: "instruction-1", status: "pending" } }));
+      });
+      return;
+    }
 
     response.writeHead(404);
     response.end(JSON.stringify({ error: "fixture route not found" }));
@@ -164,7 +173,12 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
 
   const shell = await fetch(base);
   assert.equal(shell.status, 200);
+  assert.equal(shell.headers.get("cache-control"), "no-store");
   assert.match(await shell.text(), /BORG Remote/);
+
+  const clientScript = await fetch(`${base}/app.js`);
+  assert.equal(clientScript.status, 200);
+  assert.equal(clientScript.headers.get("cache-control"), "no-store");
 
   const localInfo = await fetch(`${base}/api/local-info`);
   assert.equal(localInfo.status, 200);
@@ -229,6 +243,14 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
   assert.equal(chat.status, 200);
   assert.match(await chat.text(), /stream.completed/);
   assert.equal(receivedChat.value?.sessionId, "session-1");
+
+  const instruction = await fetch(`${base}/api/remote/instructions`, {
+    method: "POST",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "session-1", text: "Stop after this slice." }),
+  });
+  assert.equal(instruction.status, 202);
+  assert.equal(receivedInstruction.value?.text, "Stop after this slice.");
 
   const disallowed = await fetch(`${base}/api/remote/access`, { headers: auth });
   assert.equal(disallowed.status, 404);

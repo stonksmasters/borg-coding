@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  evaluateQuickEditScope,
   resolveExecutionTaskScope,
   resolvePlanningTaskScope,
 } from "../apps/server/src/task-scope-resolver.ts";
@@ -265,6 +266,37 @@ test("ASK and general requests do not accidentally enter mutation mini-loops", (
   });
   assert.equal(general.kind, "general");
   assert.equal(general.workflowIntent, "general");
+});
+
+test("router-only quick edits cannot consume start_slice or advance the project slice", () => {
+  const scope = resolvePlanningTaskScope({
+    mode: "edit",
+    rawSliceAction: "quick_edit",
+    hasWebsite: true,
+    projectPlanStatus: "approved",
+    previousSliceStatus: "ready",
+    hasPreviousSlice: true,
+    durableHasProjectPlan: true,
+    pendingCommand: { id: "start-command", action: "start_slice" },
+  });
+  assert.equal(scope.kind, "quick_edit");
+  assert.equal(scope.miniLoop, true);
+  assert.equal(scope.slicedApplication, false);
+  assert.equal(scope.expectedCommandAction, null);
+  assert.equal(scope.workflowCommandId, null);
+});
+
+test("quick edit scope fails upward when source changes exceed its manifest", () => {
+  const local = evaluateQuickEditScope(["src/components/Hero.tsx"], ["src\\components\\Hero.tsx"]);
+  assert.equal(local.exceeded, false);
+
+  const styles = evaluateQuickEditScope(["src/components/Hero.tsx"], ["src/components/Hero.tsx", "src/styles/theme.css"]);
+  assert.equal(styles.exceeded, true);
+  assert.equal(styles.required, "global_styles");
+  assert.deepEqual(styles.outsideScope, ["src/styles/theme.css"]);
+
+  const component = evaluateQuickEditScope(["src/components/Hero.tsx"], ["src/components/Navbar.tsx"]);
+  assert.equal(component.required, "focused_page_or_component");
 });
 
 test("blocked-task retry is rejected from chat so continuation remains the only recovery entry point", () => {

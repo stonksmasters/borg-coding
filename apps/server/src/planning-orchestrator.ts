@@ -30,10 +30,11 @@ import {
 import {
   compileFocusedFrontendContext,
   compileFrontendContext,
+  compileQuickEditContext,
   compileStyleFrontendContext,
   type CompiledContext,
 } from "../../../packages/web-builder/src/context-compiler.ts";
-import { ensureProjectModel } from "../../../packages/web-builder/src/project-model.ts";
+import { ensureProjectModel, readProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import { websiteGenerationContext, type WebsiteWorkflowKind } from "../../../packages/web-builder/src/generation-context.ts";
 import { websiteInfo } from "../../../packages/web-builder/src/project-bootstrap.ts";
 import {
@@ -74,6 +75,7 @@ import {
 import { assertArchitectOutput, architectRepairPrompt, validateArchitectOutput } from "./architect-output.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
 import { resolvePlanningTaskScope } from "./task-scope-resolver.ts";
+import { routeRequestIntent } from "./request-intent-router.ts";
 
 export type PlanningCommand = {
   mode: PermissionMode;
@@ -191,7 +193,7 @@ export class PlanningOrchestrator {
     } = this.deps;
 
     const {
-      mode,
+      mode: requestedMode,
       request: requestText,
       projectId,
       authorityProjectId,
@@ -215,7 +217,7 @@ export class PlanningOrchestrator {
       : null;
 
     if (
-      mode !== "ask"
+      requestedMode !== "ask"
       && selectedWebsite
       && projectPlan
       && projectPlan.status !== "proposed"
@@ -224,10 +226,25 @@ export class PlanningOrchestrator {
       this.deps.commitProjectRegistries(selectedWebsite.path);
     }
 
+    const projectModel = selectedWebsite && projectPlan && projectPlan.status !== "proposed"
+      ? readProjectModel(selectedWebsite.path)
+      : null;
+    const intentDecision = routeRequestIntent({
+      request: requestText,
+      mode: requestedMode,
+      requestedSliceAction: command.sliceAction,
+      requestedScopeId: command.scopeId,
+      explicitWorkflowCommandId: command.workflowCommandId,
+      workflow: durableWorkflow,
+      projectModel,
+      runtimeActive: durableWorkflow ? ["running", "verifying", "reviewing"].includes(durableWorkflow.status) : false,
+    });
+    const mode: PermissionMode = intentDecision.intent === "question" ? "ask" : requestedMode;
+
     const planningScope = resolvePlanningTaskScope({
       mode,
-      rawSliceAction: command.sliceAction,
-      scopeId: command.scopeId,
+      rawSliceAction: intentDecision.routedSliceAction,
+      scopeId: intentDecision.scope?.id ?? command.scopeId,
       hasWebsite: Boolean(selectedWebsite),
       projectPlanStatus: projectPlan?.status ?? null,
       previousSliceStatus: previousSlice?.status ?? null,
@@ -243,6 +260,7 @@ export class PlanningOrchestrator {
       slicedApplication,
       miniLoop,
       styleFocus,
+      quickEdit,
       sliceAction,
       workflowCommandId,
       workflowDetail,
@@ -271,6 +289,13 @@ export class PlanningOrchestrator {
       : workflow.start(task, planningScope.workflowIntent, workflowDetail);
 
     this.deps.syncWorkflowProjection(task, startedWorkflow);
+    appendTaskEvent(task.id, "REQUEST_INTENT_ROUTED", {
+      ...intentDecision,
+      requestedSliceAction: command.sliceAction,
+      workflowStatus: durableWorkflow?.status ?? null,
+      workflowVersion: durableWorkflow?.version ?? null,
+      runtimeActive: durableWorkflow ? ["running", "verifying", "reviewing"].includes(durableWorkflow.status) : false,
+    });
     appendTaskEvent(task.id, "PROJECT_WORKFLOW_AUTHORITY_BOUND", { projectId: authorityProjectId });
     if (selectedPath) appendTaskEvent(task.id, "TASK_REPOSITORY_BOUND", { repositoryPath: selectedPath });
     if (selectedWebsite) appendTaskEvent(task.id, "WEBSITE_REPOSITORY_SELECTED", { repositoryPath: selectedWebsite.path });
@@ -282,6 +307,7 @@ export class PlanningOrchestrator {
       });
     }
     if (styleFocus) appendTaskEvent(task.id, "STYLE_WORKSPACE_SELECTED", { scope: "global", feedback: requestText });
+    if (quickEdit) appendTaskEvent(task.id, "QUICK_EDIT_SELECTED", { request: requestText, impact: intentDecision.impact });
     if (objectFocus && focusType) {
       appendTaskEvent(task.id, "FOCUSED_WORKSPACE_SELECTED", {
         scopeType: focusType,
@@ -343,7 +369,7 @@ export class PlanningOrchestrator {
       : false;
     const websiteWorkflow: WebsiteWorkflowKind = projectPlanning || slicedApplication
       ? "initial_generation"
-      : styleFocus || objectFocus || priorDeliveredWebsiteTask
+      : styleFocus || quickEdit || objectFocus || priorDeliveredWebsiteTask
         ? "iterative_edit"
         : "initial_generation";
     const websiteContext = websiteProject
@@ -375,6 +401,22 @@ export class PlanningOrchestrator {
           .slice(0, 14_000);
         repositoryContext += `\n\nExisting proposed plan to revise explicitly:\n${planningDocs}`;
       }
+    } else if (quickEdit && websiteProject && projectPlan) {
+      compiledArchitectContext = compileQuickEditContext({
+        root: websiteProject.path,
+        request: requestText,
+        productContract: websiteContext,
+        projectBrief: websiteProject.originalBrief ?? undefined,
+        sourceHints: this.deps.contextSourceHints(websiteProject.path, requestText),
+        stage: "planning",
+        authority: { plan: projectPlan, workflowVersion: startedWorkflow.version },
+      });
+      if (!compiledArchitectContext.manifest.some((item) => item.kind === "source")) {
+        appendTaskEvent(task.id, "SCOPE_EXCEEDED", { from: "quick_edit", required: "focused_page_or_component", reason: "No bounded source target could be resolved from the approved project model." });
+        throw new Error("SCOPE_EXCEEDED: Quick Edit could not resolve a bounded source target. Use a focused Page or Component workspace.");
+      }
+      repositoryContext = compiledArchitectContext.text;
+      sliceDirective = "QUICK EDIT WORKSPACE. Produce a minimal implementation plan using only the source files and direct dependencies in this ContextPack. Preserve the approved project plan, slice index, sitemap, global style system, and unrelated behavior. Do not rediscover the repository. If the request needs broader authority, return SCOPE_EXCEEDED with the required Page, Component, Styles, Structural, or Backend workspace.";
     } else if (objectFocus && focusType && websiteProject && projectPlan) {
       const scopedRegistry = focusType === "page"
         ? projectPlan.sitemap.find((page) => page.id === focusId)
@@ -439,6 +481,19 @@ export class PlanningOrchestrator {
     if (compiledArchitectContext) {
       this.deps.recordContextPack(task.id, authorityProjectId, compiledArchitectContext);
     }
+    const deterministicQuickEditPlan = quickEdit && compiledArchitectContext
+      ? (() => {
+          const sourceFiles = compiledArchitectContext.manifest.filter((item) => item.kind === "source").map((item) => item.path);
+          if (sourceFiles.length !== 1) return null;
+          return [
+            "Quick Edit plan:",
+            `1. Inspect and modify only ${sourceFiles[0]} for the requested local change.`,
+            "2. Preserve the approved plan, slice index, shared style authority, and unrelated behavior.",
+            "3. Run deterministic verification and visual review when the changed UI is renderable.",
+            "4. Stop with SCOPE_EXCEEDED if another source file or broader workspace authority is required.",
+          ].join("\n");
+        })()
+      : null;
 
     if (rawSliceAction === "backend" && websiteProject) {
       const docs = readProjectDocs(websiteProject.path);
@@ -917,7 +972,16 @@ export class PlanningOrchestrator {
         } satisfies Parameters<typeof runOllamaAgent>[0];
 
     try {
-      let { answer, usedTools } = await this.deps.runAgent(architectRequest);
+      let { answer, usedTools } = deterministicQuickEditPlan
+        ? { answer: deterministicQuickEditPlan, usedTools: false }
+        : await this.deps.runAgent(architectRequest);
+      if (deterministicQuickEditPlan) {
+        appendTaskEvent(task.id, "QUICK_EDIT_PLAN_DETERMINED", {
+          sourceFiles: compiledArchitectContext?.manifest.filter((item) => item.kind === "source").map((item) => item.path) ?? [],
+          architectTurnSkipped: true,
+        });
+        emit({ type: "quick_edit.plan.determined", message: "The source boundary is deterministic, so BORG prepared the quick edit plan without a separate Architect model turn." });
+      }
 
       if (task.state === "DISCOVERING") task = this.deps.transitionTask(task, "PLANNING", emit);
 
@@ -1172,6 +1236,7 @@ export class PlanningOrchestrator {
           task,
           approval,
           proposedProjectPlan ? "project_plan" : "execution",
+          mode,
         );
         task = requested.task;
         this.deps.syncWorkflowProjection(task, requested.workflow);

@@ -206,6 +206,7 @@ export class WorkflowEngine {
       nextAction: "plan",
       planApprovalId: intent === "security" ? null : existing?.planApprovalId ?? null,
       planApproved: intent === "security" ? false : existing?.planApproved ?? false,
+      frontendBuildPolicy: existing?.frontendBuildPolicy,
       projectPlan: intent === "security" ? null : existing?.projectPlan ?? null,
       planRevisionResumeIndex: intent === "security" ? null : existing?.planRevisionResumeIndex ?? null,
       sliceIndex: intent === "frontend_slice" ? sliceSelection!.index : intent === "backend" || intent === "security" || intent === "general" ? null : existing?.sliceIndex ?? null,
@@ -439,7 +440,7 @@ export class WorkflowEngine {
     return { task: updatedTask, workflow, event };
   }
 
-  requestApproval(task: Task, approval: Approval, kind: "project_plan" | "project_plan_revision" | "execution"): { task: Task; workflow: WorkflowState } {
+  requestApproval(task: Task, approval: Approval, kind: "project_plan" | "project_plan_revision" | "execution", mode?: "ask" | "plan" | "edit" | "agent"): { task: Task; workflow: WorkflowState } {
     assertTransition(task.state, "AWAITING_APPROVAL");
     const current = this.requireTask(task);
     const now = new Date().toISOString();
@@ -465,14 +466,14 @@ export class WorkflowEngine {
       approval,
       state: workflow,
       events: [
-        taskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, kind, workflowVersion: workflow.version, consumedCommandId: claimedCommand?.id ?? null }, now),
+        taskEvent(task.id, "APPROVAL_REQUESTED", { approvalId: approval.id, kind, mode, workflowVersion: workflow.version, consumedCommandId: claimedCommand?.id ?? null }, now),
         taskEvent(task.id, "TASK_STATE_CHANGED", { from: task.state, to: "AWAITING_APPROVAL", workflowVersion: workflow.version }, now),
       ],
     });
     return { task: updatedTask, workflow };
   }
 
-  decideApproval(task: Task, approval: Approval, kind: "project_plan" | "project_plan_revision" | "execution"): { task: Task; workflow: WorkflowState } {
+  decideApproval(task: Task, approval: Approval, kind: "project_plan" | "project_plan_revision" | "execution", options: { mode?: "ask" | "plan" | "edit" | "agent" } = {}): { task: Task; workflow: WorkflowState } {
     if (approval.status === "REQUESTED") throw new Error("Approval decision must be APPROVED or REJECTED.");
     const planRevision = kind === "project_plan_revision";
     const projectPlanDecision = kind === "project_plan" || planRevision;
@@ -500,6 +501,9 @@ export class WorkflowEngine {
       loop: planRevisionApproved ? "slice" : current.loop,
       planApproved: projectPlanDecision && approval.status === "APPROVED" ? true : current.planApproved,
       projectPlan: approvedPlan,
+      frontendBuildPolicy: projectPlanDecision && approval.status === "APPROVED" && approvedPlan
+        ? { planRevision: approvedPlan.revision, approvalId: approval.id, mode: options.mode === "agent" ? "agent" : "edit", continuation: options.mode === "agent" ? "automatic" : "checkpoint", maximumRepairAttempts: 3 }
+        : approval.status === "REJECTED" ? null : current.frontendBuildPolicy,
       planRevisionResumeIndex: planRevisionApproved ? null : current.planRevisionResumeIndex,
       phase: projectPlanApproved || planRevisionApproved ? "frontend" : current.phase,
       sliceIndex: projectPlanApproved || planRevisionApproved ? resumeIndex : current.sliceIndex,

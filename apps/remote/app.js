@@ -6,6 +6,9 @@ const els = {
   pairForm: document.querySelector("#pairForm"),
   pairCode: document.querySelector("#pairCode"),
   pairError: document.querySelector("#pairError"),
+  commandStatus: document.querySelector("#commandStatus"),
+  commandState: document.querySelector("#commandState"),
+  commandMessage: document.querySelector("#commandMessage"),
   app: document.querySelector("#app"),
   activeSessionTitle: document.querySelector("#activeSessionTitle"),
   refreshButton: document.querySelector("#refreshButton"),
@@ -46,7 +49,19 @@ const state = {
   runtimeActive: false,
   refreshing: false,
   streamBusy: false,
+  actions: {},
 };
+
+function setCommandState(action, phase, message) {
+  state.actions[action] = phase;
+  els.commandStatus.dataset.state = phase;
+  els.commandState.textContent = human(phase);
+  els.commandMessage.textContent = message;
+}
+
+function actionPending(action) {
+  return state.actions[action] === "sending";
+}
 
 function setConnection(kind, text) {
   els.connectionDot.classList.remove("live", "error");
@@ -160,6 +175,7 @@ function renderSessions() {
     button.addEventListener("click", () => {
       state.activeSessionId = session.id;
       localStorage.setItem("borg.remote.session", session.id);
+      setCommandState("session", "accepted", `Selected ${session.title || "session"}.`);
       renderSessions();
       void refreshActive();
     });
@@ -216,9 +232,10 @@ function renderState(runtime) {
   els.taskState.textContent = human(state.task?.state, state.runtimeActive ? "Running" : "Idle");
   els.taskId.textContent = shortId(state.taskId);
   els.runtimeState.textContent = state.runtimeActive ? "Runtime active" : "Runtime idle";
-  els.stopButton.disabled = !state.runtimeActive || state.streamBusy;
-  els.sendButton.disabled = !session || state.runtimeActive || state.streamBusy;
-  els.messageInput.disabled = !session || state.runtimeActive || state.streamBusy;
+  els.stopButton.disabled = !state.runtimeActive || actionPending("stop");
+  els.sendButton.disabled = !session || actionPending("instruction");
+  els.messageInput.disabled = !session;
+  els.sendButton.textContent = state.runtimeActive || state.streamBusy ? "Queue instruction" : "Send";
   renderMessages(runtime?.messages || []);
 
   const approval = runtime?.approval;
@@ -239,6 +256,9 @@ function renderState(runtime) {
 
   const retryable = ["BLOCKED", "FAILED", "RECOVERY_REQUIRED"].includes(state.task?.state || "");
   els.retryButton.classList.toggle("hidden", !retryable);
+  els.retryButton.disabled = !retryable || actionPending("retry");
+  els.approveButton.disabled = !pending || actionPending("approval");
+  els.rejectButton.disabled = !pending || actionPending("approval");
 }
 
 function renderWorkflow(payload) {
@@ -319,6 +339,7 @@ async function consumeNdjson(response) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let failure = null;
   while (true) {
     const { value, done } = await reader.read();
     buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
@@ -329,6 +350,7 @@ async function consumeNdjson(response) {
       try {
         const event = JSON.parse(line);
         addTransientActivity(activityText(event), event.type === "runtime.failed" || event.type === "tool.failed");
+        if (["runtime.failed", "stream.failed", "tool.failed"].includes(event.type)) failure = event.message || "BORG rejected the command.";
       } catch {
         addTransientActivity(line);
       }
@@ -336,10 +358,12 @@ async function consumeNdjson(response) {
     if (done) break;
   }
   if (buffer.trim()) addTransientActivity(buffer.trim());
+  if (failure) throw new Error(failure);
 }
 
 async function decideApproval(decision) {
   if (!state.taskId) return;
+  setCommandState("approval", "sending", decision === "approve" ? "Sending approval…" : "Sending rejection…");
   els.approveButton.disabled = true;
   els.rejectButton.disabled = true;
   try {
@@ -350,9 +374,12 @@ async function decideApproval(decision) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || `Approval failed (${response.status})`);
     addTransientActivity(decision === "approve" ? "Approval granted." : "Approval rejected.");
+    setCommandState("approval", "accepted", decision === "approve" ? "Approval accepted." : "Rejection accepted.");
     await refreshActive();
   } catch (error) {
-    addTransientActivity(error instanceof Error ? error.message : "Approval failed", true);
+    const message = error instanceof Error ? error.message : "Approval failed";
+    setCommandState("approval", "failed", message);
+    addTransientActivity(message, true);
   } finally {
     els.approveButton.disabled = false;
     els.rejectButton.disabled = false;
@@ -361,21 +388,28 @@ async function decideApproval(decision) {
 
 async function stopSession() {
   if (!state.activeSessionId || !state.runtimeActive) return;
+  setCommandState("stop", "sending", "Sending stop request…");
   els.stopButton.disabled = true;
   try {
     const response = await api(`/api/remote/sessions/${encodeURIComponent(state.activeSessionId)}/stop`, { method: "POST" });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || `Stop failed (${response.status})`);
     addTransientActivity(body.stopped ? "Stop requested for the active runtime." : "No active runtime was found.");
+    setCommandState("stop", "accepted", body.stopped ? "Stop accepted." : "Runtime was already idle.");
     await refreshActive();
   } catch (error) {
-    addTransientActivity(error instanceof Error ? error.message : "Stop failed", true);
+    const message = error instanceof Error ? error.message : "Stop failed";
+    setCommandState("stop", "failed", message);
+    addTransientActivity(message, true);
+  } finally {
+    els.stopButton.disabled = !state.runtimeActive;
   }
 }
 
 async function retryTask() {
   if (!state.taskId || state.streamBusy) return;
   state.streamBusy = true;
+  setCommandState("retry", "sending", "Retrying the blocked task…");
   renderState({ session: state.activeSession, latestTaskId: state.taskId, task: state.task, runtimeActive: true, messages: [] });
   try {
     const response = await api(`/api/remote/tasks/${encodeURIComponent(state.taskId)}/retry`, { method: "POST" });
@@ -384,8 +418,11 @@ async function retryTask() {
       throw new Error(body.error || `Retry failed (${response.status})`);
     }
     await consumeNdjson(response);
+    setCommandState("retry", "accepted", "Retry accepted.");
   } catch (error) {
-    addTransientActivity(error instanceof Error ? error.message : "Retry failed", true);
+    const message = error instanceof Error ? error.message : "Retry failed";
+    setCommandState("retry", "failed", message);
+    addTransientActivity(message, true);
   } finally {
     state.streamBusy = false;
     await refreshActive();
@@ -396,6 +433,7 @@ els.pairForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   els.pairError.textContent = "";
   const code = els.pairCode.value.trim();
+  setCommandState("pair", "sending", "Pairing with BORG…");
   try {
     const response = await fetch("/api/pair", {
       method: "POST",
@@ -405,21 +443,45 @@ els.pairForm.addEventListener("submit", async (event) => {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || "Unable to pair this device.");
     els.pairCode.value = "";
+    setCommandState("pair", "accepted", "Device paired.");
     if (await refreshSessions()) await refreshActive();
   } catch (error) {
-    els.pairError.textContent = error instanceof Error ? error.message : "Unable to pair this device.";
+    const message = error instanceof Error ? error.message : "Unable to pair this device.";
+    els.pairError.textContent = message;
+    setCommandState("pair", "failed", message);
   }
 });
 
 els.messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!state.activeSessionId || state.streamBusy) return;
+  if (!state.activeSessionId) return;
   const request = els.messageInput.value.trim();
   if (!request) return;
+  if (state.runtimeActive || state.streamBusy) {
+    setCommandState("instruction", "sending", "Queueing instruction…");
+    els.sendButton.disabled = true;
+    try {
+      const response = await api("/api/remote/instructions", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: state.activeSessionId, text: request }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Instruction failed (${response.status})`);
+      els.messageInput.value = "";
+      addTransientActivity(body.message || "Instruction queued.");
+      setCommandState("instruction", "accepted", body.message || "Instruction queued.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Instruction failed";
+      setCommandState("instruction", "failed", message);
+      addTransientActivity(message, true);
+    } finally {
+      els.sendButton.disabled = false;
+    }
+    return;
+  }
   state.streamBusy = true;
-  els.sendButton.disabled = true;
+  setCommandState("chat", "sending", "Message sent. Waiting for BORG…");
   els.stopButton.disabled = false;
-  els.messageInput.disabled = true;
   addTransientActivity("Message sent to BORG.");
   try {
     const response = await api("/api/remote/chat", {
@@ -432,8 +494,11 @@ els.messageForm.addEventListener("submit", async (event) => {
     }
     els.messageInput.value = "";
     await consumeNdjson(response);
+    setCommandState("chat", "accepted", "Response received.");
   } catch (error) {
-    addTransientActivity(error instanceof Error ? error.message : "Chat failed", true);
+    const message = error instanceof Error ? error.message : "Chat failed";
+    setCommandState("chat", "failed", message);
+    addTransientActivity(message, true);
   } finally {
     state.streamBusy = false;
     await refreshActive();
@@ -445,15 +510,24 @@ els.rejectButton.addEventListener("click", () => void decideApproval("reject"));
 els.stopButton.addEventListener("click", () => void stopSession());
 els.retryButton.addEventListener("click", () => void retryTask());
 els.refreshButton.addEventListener("click", async () => {
-  if (await refreshSessions()) await refreshActive();
+  setCommandState("refresh", "sending", "Refreshing remote state…");
+  try {
+    if (!await refreshSessions()) throw new Error("Desktop gateway unavailable.");
+    await refreshActive();
+    setCommandState("refresh", "accepted", "Remote state refreshed.");
+  } catch (error) {
+    setCommandState("refresh", "failed", error instanceof Error ? error.message : "Refresh failed.");
+  }
 });
 els.logoutButton.addEventListener("click", async () => {
+  setCommandState("logout", "sending", "Unpairing this device…");
   await fetch("/api/logout", { method: "POST" }).catch(() => undefined);
   state.sessions = [];
   state.activeSessionId = null;
   localStorage.removeItem("borg.remote.session");
   showPaired(false);
   setConnection("", "Unpaired");
+  setCommandState("logout", "accepted", "Device unpaired.");
 });
 
 void loadLocalSetup();
