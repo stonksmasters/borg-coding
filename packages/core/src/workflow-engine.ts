@@ -167,7 +167,7 @@ export class WorkflowEngine {
     const existing = this.store.findWorkflow(task.projectId);
     if (intent === "security") {
       if (!options.securityAssessmentId?.trim()) throw new Error("Security workflows require a durable assessment id.");
-      if (existing?.taskId && existing.taskId !== task.id && !["complete", "cancelled", "failed"].includes(existing.status)) {
+      if (existing?.taskId && existing.taskId !== task.id && !["complete", "cancelled", "failed", "blocked"].includes(existing.status)) {
         throw new Error(`Security project ${task.projectId} already has active workflow task ${existing.taskId}.`);
       }
     }
