@@ -28,7 +28,7 @@ export interface WorkflowStore {
   commitWorkflowMutation(input: WorkflowMutation): void;
 }
 
-export type WorkflowIntent = "project_plan" | "frontend_slice" | "backend" | "general";
+export type WorkflowIntent = "project_plan" | "frontend_slice" | "backend" | "security" | "general";
 export type FrontendSliceAction = "initial" | "advance" | "revise";
 export type VerificationRecordInput = {
   passed: boolean;
@@ -45,7 +45,8 @@ function loopForIntent(intent: WorkflowIntent): WorkflowState["loop"] {
   return intent === "project_plan" ? "project"
     : intent === "frontend_slice" ? "slice"
       : intent === "backend" ? "backend"
-        : "general";
+        : intent === "security" ? "security"
+          : "general";
 }
 
 function selectFrontendSlice(
@@ -156,9 +157,20 @@ export class WorkflowEngine {
     task: Task,
     intent: WorkflowIntent,
     detail = "Workflow created.",
-    options: { commandId?: string | null; feedback?: string; sliceAction?: FrontendSliceAction } = {},
+    options: {
+      commandId?: string | null;
+      feedback?: string;
+      sliceAction?: FrontendSliceAction;
+      securityAssessmentId?: string | null;
+    } = {},
   ): WorkflowState {
     const existing = this.store.findWorkflow(task.projectId);
+    if (intent === "security") {
+      if (!options.securityAssessmentId?.trim()) throw new Error("Security workflows require a durable assessment id.");
+      if (existing?.taskId && existing.taskId !== task.id && !["complete", "cancelled", "failed", "blocked"].includes(existing.status)) {
+        throw new Error(`Security project ${task.projectId} already has active workflow task ${existing.taskId}.`);
+      }
+    }
     if (intent === "project_plan" && existing?.projectPlan && existing.projectPlan.status !== "proposed") {
       throw new Error("An approved project plan is frozen; use the active project workflow instead of silently replanning it.");
     }
@@ -189,18 +201,22 @@ export class WorkflowEngine {
       projectId: task.projectId,
       taskId: task.id,
       loop: loopForIntent(intent),
-      phase: intent === "backend" ? "backend" : intent === "project_plan" ? "planning" : intent === "frontend_slice" ? "frontend" : existing?.phase ?? "planning",
+      phase: intent === "backend" ? "backend" : intent === "project_plan" ? "planning" : intent === "frontend_slice" ? "frontend" : intent === "security" ? "planning" : existing?.phase ?? "planning",
       status: "planning",
       nextAction: "plan",
-      planApprovalId: existing?.planApprovalId ?? null,
-      planApproved: existing?.planApproved ?? false,
-      projectPlan: existing?.projectPlan ?? null,
-      planRevisionResumeIndex: existing?.planRevisionResumeIndex ?? null,
-      sliceIndex: intent === "frontend_slice" ? sliceSelection!.index : intent === "backend" || intent === "general" ? null : existing?.sliceIndex ?? null,
-      sliceTotal: intent === "frontend_slice" ? sliceSelection!.total : intent === "backend" || intent === "general" ? null : existing?.sliceTotal ?? null,
-      sliceTitle: intent === "frontend_slice" ? sliceSelection!.title : intent === "backend" || intent === "general" ? null : existing?.sliceTitle ?? null,
-      feedback: options.feedback?.trim() ? [...(existing?.feedback ?? []), options.feedback.trim().slice(0, 4000)] : existing?.feedback ?? [],
-      handoff: existing?.handoff ?? null,
+      planApprovalId: intent === "security" ? null : existing?.planApprovalId ?? null,
+      planApproved: intent === "security" ? false : existing?.planApproved ?? false,
+      projectPlan: intent === "security" ? null : existing?.projectPlan ?? null,
+      planRevisionResumeIndex: intent === "security" ? null : existing?.planRevisionResumeIndex ?? null,
+      sliceIndex: intent === "frontend_slice" ? sliceSelection!.index : intent === "backend" || intent === "security" || intent === "general" ? null : existing?.sliceIndex ?? null,
+      sliceTotal: intent === "frontend_slice" ? sliceSelection!.total : intent === "backend" || intent === "security" || intent === "general" ? null : existing?.sliceTotal ?? null,
+      sliceTitle: intent === "frontend_slice" ? sliceSelection!.title : intent === "backend" || intent === "security" || intent === "general" ? null : existing?.sliceTitle ?? null,
+      feedback: intent === "security"
+        ? []
+        : options.feedback?.trim()
+          ? [...(existing?.feedback ?? []), options.feedback.trim().slice(0, 4000)]
+          : existing?.feedback ?? [],
+      handoff: intent === "security" ? null : existing?.handoff ?? null,
       pendingCommand: sliceSelection?.command
         ? { ...sliceSelection.command, claimedByTaskId: task.id, claimedAt: now }
         : intent === "frontend_slice"
@@ -208,9 +224,18 @@ export class WorkflowEngine {
           : options.commandId && existing?.pendingCommand
             ? { ...existing.pendingCommand, claimedByTaskId: task.id, claimedAt: now }
             : null,
-      lastConsumedCommandId: sliceSelection?.supersededCommandId ?? existing?.lastConsumedCommandId ?? null,
+      lastConsumedCommandId: intent === "security"
+        ? null
+        : sliceSelection?.supersededCommandId ?? existing?.lastConsumedCommandId ?? null,
       verification: pendingVerification(0),
       recovery: inactiveWorkflowRecovery,
+      security: intent === "security"
+        ? {
+            assessmentId: options.securityAssessmentId!.trim(),
+            operationId: null,
+            executionId: null,
+          }
+        : null,
       attemptPhase: null,
       designRefinementAttempt: 0,
       repairAttempt: 0,
@@ -227,6 +252,7 @@ export class WorkflowEngine {
         state: task.state,
         workflowVersion: state.version,
         loop: state.loop,
+        securityAssessmentId: state.security?.assessmentId ?? null,
         sliceAction: options.sliceAction ?? null,
         sliceIndex: state.sliceIndex,
         claimedCommandId: sliceSelection?.command?.id ?? options.commandId ?? null,
@@ -243,6 +269,46 @@ export class WorkflowEngine {
     options: { commandId?: string | null; feedback?: string } = {},
   ): WorkflowState {
     return this.start(task, "frontend_slice", detail, { ...options, sliceAction: action });
+  }
+
+  startSecurityAssessment(
+    task: Task,
+    assessmentId: string,
+    detail = "Security assessment workflow created.",
+  ): WorkflowState {
+    return this.start(task, "security", detail, { securityAssessmentId: assessmentId });
+  }
+
+  bindSecurityOperation(
+    task: Task,
+    operationId: string,
+    executionId: string,
+    detail = "Security operation planned and bound to durable execution state.",
+  ): WorkflowState {
+    const current = this.requireTask(task);
+    if (current.loop !== "security" || !current.security) {
+      throw new Error("Security operations require an active security workflow.");
+    }
+    if (task.state !== "PLANNING") {
+      throw new Error("Security operations may be planned only while the task is PLANNING.");
+    }
+    const cleanOperationId = operationId.trim();
+    const cleanExecutionId = executionId.trim();
+    if (!cleanOperationId || !cleanExecutionId) {
+      throw new Error("Security operation and execution ids are required.");
+    }
+    return this.update(task, current, {
+      security: {
+        ...current.security,
+        operationId: cleanOperationId,
+        executionId: cleanExecutionId,
+      },
+      detail: detail.trim().slice(0, 4_000),
+    }, "SECURITY_OPERATION_PLANNED", {
+      assessmentId: current.security.assessmentId,
+      operationId: cleanOperationId,
+      executionId: cleanExecutionId,
+    });
   }
 
   beginPlanRevision(task: Task, reason: string): { task: Task; workflow: WorkflowState } {
@@ -453,7 +519,9 @@ export class WorkflowEngine {
           ? "Project plan approved; Core durably scheduled the first slice."
           : planRevisionApproved
             ? `Project plan revision approved; resuming slice ${resumeIndex + 1} in the existing worktree.`
-            : "Execution approved in the isolated worktree.",
+            : current.loop === "security"
+              ? "Security execution approved."
+              : "Execution approved in the isolated worktree.",
       version: nextVersion,
       updatedAt: now,
     });

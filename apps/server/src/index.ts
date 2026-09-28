@@ -30,6 +30,7 @@ import { taskRepositoryPath } from "../../../packages/core/src/task-repository-b
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
 import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
+import { SecurityService } from "./security-service.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { projectPlanWithVerifiedModel } from "../../../packages/web-builder/src/project-model.ts";
 import { RepositoryMemory, type MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
@@ -75,6 +76,7 @@ const databasePath = resolve(process.env.BORG_DATABASE_PATH ?? ".borg/borg.db");
 mkdirSync(dirname(databasePath), { recursive: true });
 const tasks = new SqliteTaskRepository(databasePath);
 const workflow = new WorkflowEngine(tasks);
+const security = new SecurityService(databasePath);
 const access = new AccessController(resolve(".borg/access.json"));
 const memory = new RepositoryMemory(resolve(".borg/repository-memory.db"));
 const projectEnvironment = new ProjectEnvironmentStore(resolve(".borg/project-environment.json"), new DesktopCredentialStore());
@@ -1411,6 +1413,10 @@ const server = createServer((request, response) => {
       task,
       workflow: workflow.get(task.projectId)?.taskId === task.id ? workflow.get(task.projectId) : null,
       approval: currentApproval,
+      securityApproval: workflow.get(task.projectId)?.taskId === task.id && workflow.get(task.projectId)?.loop === "security",
+      securityExecution: workflow.get(task.projectId)?.taskId === task.id && workflow.get(task.projectId)?.security?.executionId
+        ? security.getExecution(workflow.get(task.projectId)!.security!.executionId!)
+        : null,
       projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && taskEvents.some((event) => event.type === "PROJECT_PLAN_PROPOSED" || event.type === "PROJECT_PLAN_REVISION_PROPOSED"),
       projectPlanRevisionApproval: pendingRevisionApproval,
       planRevision: pendingRevisionApproval ? {
@@ -1445,6 +1451,10 @@ const server = createServer((request, response) => {
         const decided = workflow.decideApproval(task, rejected, approvalKind);
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
+        if (decided.workflow.loop === "security" && decided.workflow.security?.executionId) {
+          security.setExecutionStatus(decided.workflow.security.executionId, "cancelled", { cancelled: true });
+          security.setAssessmentStatus(decided.workflow.security.assessmentId, "paused");
+        }
         const repositoryPath = taskProjectRepository(task.id);
         if (repositoryPath) recordMemoryNote(repositoryPath, {
           id: `approval:${approval.id}`,
@@ -1468,6 +1478,23 @@ const server = createServer((request, response) => {
         });
       }
       if (decision !== "approve") return send(response, 400, { error: "Decision must be approve or reject." });
+      const ownedWorkflow = workflow.get(task.projectId);
+      if (ownedWorkflow?.taskId === task.id && ownedWorkflow.loop === "security" && ownedWorkflow.security?.executionId) {
+        const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString() };
+        const decided = workflow.decideApproval(task, approved, "execution");
+        task = decided.task;
+        syncWorkflowProjection(task, decided.workflow);
+        const execution = security.setExecutionStatus(ownedWorkflow.security.executionId, "approved");
+        const assessment = security.setAssessmentStatus(ownedWorkflow.security.assessmentId, "running");
+        return send(response, 200, {
+          task,
+          approval: approved,
+          workflow: decided.workflow,
+          securityApproval: true,
+          execution,
+          assessment,
+        });
+      }
       const repositoryPath = taskProjectRepository(task.id);
       if (!repositoryPath) return send(response, 409, { error: "This task has no durable repository binding." });
       if (isProjectPlanRevisionApproval) {
@@ -1594,6 +1621,145 @@ const server = createServer((request, response) => {
       return send(response, 409, { error: error instanceof Error ? error.message : "Language intelligence is unavailable" });
     }
   }
+  const securityNodeRefreshRoute = request.url?.match(/^\/api\/security\/nodes\/([^/?]+)\/refresh$/);
+  if (request.method === "POST" && securityNodeRefreshRoute) {
+    const nodeId = decodeURIComponent(securityNodeRefreshRoute[1]);
+    void security.refreshNode(nodeId)
+      .then((node) => send(response, 200, { node }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to refresh execution node." }));
+    return;
+  }
+  if (request.method === "GET" && request.url === "/api/security/nodes") {
+    return send(response, 200, { nodes: security.listNodes() });
+  }
+  if (request.method === "POST" && request.url === "/api/security/nodes") {
+    void readJson(request)
+      .then((input) => send(response, 201, { node: security.registerNode(input) }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to register execution node." }));
+    return;
+  }
+
+  const securityWorkflowRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/workflow$/);
+  if (request.method === "POST" && securityWorkflowRoute) {
+    const assessmentId = decodeURIComponent(securityWorkflowRoute[1]);
+    void readJson(request).then((input) => {
+      const described = security.describeAssessment(assessmentId);
+      if (!described) return send(response, 404, { error: "Security assessment not found." });
+      const riskLevel = described.assessment.mode === "authorized_assessment"
+        ? "R3" as const
+        : described.assessment.mode === "active_recon"
+          ? "R2" as const
+          : "R1" as const;
+      let task = createTask({
+        id: randomUUID(),
+        projectId: described.assessment.projectId,
+        request: String(input.request ?? `Run security assessment: ${described.assessment.name}`),
+        riskLevel,
+      });
+      let state = workflow.startSecurityAssessment(task, assessmentId, "Security assessment entered the authoritative workflow.");
+      let transition = workflow.transition(task, "CLASSIFYING");
+      task = transition.task;
+      state = transition.workflow;
+      transition = workflow.transition(task, "DISCOVERING");
+      task = transition.task;
+      state = transition.workflow;
+      transition = workflow.transition(task, "PLANNING");
+      task = transition.task;
+      state = transition.workflow;
+      const assessment = security.setAssessmentStatus(assessmentId, "planning");
+      return send(response, 201, { task, workflow: state, assessment });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to start security workflow." }));
+    return;
+  }
+
+  const securityOperationRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/operations$/);
+  if (request.method === "POST" && securityOperationRoute) {
+    const assessmentId = decodeURIComponent(securityOperationRoute[1]);
+    void readJson(request).then((input) => {
+      const described = security.describeAssessment(assessmentId);
+      if (!described) return send(response, 404, { error: "Security assessment not found." });
+      const current = workflow.get(described.assessment.projectId);
+      if (!current || current.loop !== "security" || current.security?.assessmentId !== assessmentId || !current.taskId) {
+        return send(response, 409, { error: "This assessment has no active authoritative security workflow." });
+      }
+      let task = tasks.findTask(current.taskId);
+      if (!task) return send(response, 409, { error: "The security workflow task is missing." });
+      if (task.state !== "PLANNING") return send(response, 409, { error: "Security operations may be planned only while the workflow is PLANNING." });
+
+      const planned = security.planExecution({
+        assessmentId,
+        taskId: task.id,
+        workflowVersion: current.version + 1,
+        operation: input.operation,
+        classification: input.classification,
+        targets: input.targets,
+      });
+      let workflowBound = false;
+      try {
+        workflow.bindSecurityOperation(
+          task,
+          planned.execution.operationId,
+          planned.execution.id,
+          `Security operation ${planned.execution.operation} passed scope policy and is awaiting approval.`,
+        );
+        workflowBound = true;
+        const approval = createApproval({ id: randomUUID(), taskId: task.id });
+        const approvalState = workflow.requestApproval(task, approval, "execution");
+        task = approvalState.task;
+        security.setAssessmentStatus(assessmentId, "planning");
+        return send(response, 201, {
+          task,
+          workflow: approvalState.workflow,
+          approval,
+          execution: planned.execution,
+          policy: planned.decision,
+        });
+      } catch (error) {
+        if (!workflowBound) {
+          security.deleteExecution(planned.execution.id);
+        } else {
+          security.setExecutionStatus(planned.execution.id, "blocked", {
+            error: error instanceof Error ? error.message : "Unable to request approval for the bound security operation.",
+          });
+        }
+        throw error;
+      }
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to plan security operation." }));
+    return;
+  }
+
+  const securityExecutionsRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/executions$/);
+  if (request.method === "GET" && securityExecutionsRoute) {
+    const assessmentId = decodeURIComponent(securityExecutionsRoute[1]);
+    return send(response, 200, { executions: security.listExecutions(assessmentId) });
+  }
+
+  const securityEvidenceRoute = request.url?.match(/^\/api\/security\/executions\/([^/?]+)\/evidence$/);
+  if (request.method === "GET" && securityEvidenceRoute) {
+    const executionId = decodeURIComponent(securityEvidenceRoute[1]);
+    if (!security.getExecution(executionId)) return send(response, 404, { error: "Security execution not found." });
+    return send(response, 200, { evidence: security.listEvidence(executionId) });
+  }
+
+  const securityAssessmentRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)$/);
+  if (request.method === "GET" && securityAssessmentRoute) {
+    const assessmentId = decodeURIComponent(securityAssessmentRoute[1]);
+    const assessment = security.describeAssessment(assessmentId);
+    return assessment
+      ? send(response, 200, assessment)
+      : send(response, 404, { error: "Security assessment not found." });
+  }
+  if (request.method === "GET" && request.url?.startsWith("/api/security/assessments")) {
+    const projectId = new URL(request.url, `http://localhost:${port}`).searchParams.get("projectId") ?? "local";
+    return send(response, 200, { assessments: security.listAssessments(projectId) });
+  }
+  if (request.method === "POST" && request.url === "/api/security/assessments") {
+    void readJson(request)
+      .then((input) => send(response, 201, security.createAssessment(input)))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create security assessment." }));
+    return;
+  }
+
   if (request.method === "GET" && request.url === "/api/tools") return send(response, 200, { tools: tools.status() });
   if (request.method === "POST" && request.url === "/api/tools") {
     void readJson(request).then((input) => send(response, 200, { tools: tools.configure(input) }))
@@ -1662,6 +1828,7 @@ void recoverInterruptedTasks()
 async function shutdown(signal: string) {
   console.log(`[lifecycle] core shutdown requested: ${signal}`);
   await processRuntime.stopAll();
+  security.close();
   tasks.close();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   process.exit(0);
