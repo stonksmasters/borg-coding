@@ -1,12 +1,10 @@
 import {
   AssessmentScopeSchema,
   type AssessmentScope,
+  type SecurityTarget,
 } from "./security-domain.ts";
 
-export type SecurityTarget =
-  | { kind: "domain"; value: string }
-  | { kind: "host"; value: string }
-  | { kind: "cidr"; value: string };
+export type { SecurityTarget } from "./security-domain.ts";
 
 export type ScopeDecision = {
   allowed: boolean;
