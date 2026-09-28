@@ -3,9 +3,13 @@ import {
   AssessmentScopeSchema,
   ExecutionNodeSchema,
   SecurityAssessmentSchema,
+  SecurityEvidenceRecordSchema,
+  SecurityExecutionRecordSchema,
   type AssessmentScope,
   type ExecutionNode,
   type SecurityAssessment,
+  type SecurityEvidenceRecord,
+  type SecurityExecutionRecord,
 } from "../../core/src/security-domain.ts";
 import type { SecurityStore } from "../../core/src/security-store.ts";
 
@@ -54,12 +58,45 @@ export class SqliteSecurityRepository implements SecurityStore {
         data TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS security_executions (
+        id TEXT PRIMARY KEY,
+        assessment_id TEXT NOT NULL REFERENCES security_assessments(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL,
+        node_id TEXT NOT NULL REFERENCES execution_nodes(id) ON DELETE RESTRICT,
+        operation_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        classification TEXT NOT NULL,
+        status TEXT NOT NULL,
+        workflow_version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        data TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS security_evidence (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        assessment_id TEXT NOT NULL REFERENCES security_assessments(id) ON DELETE CASCADE,
+        execution_id TEXT NOT NULL REFERENCES security_executions(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        data TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_security_assessments_project_updated
         ON security_assessments(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_security_assessments_node
         ON security_assessments(execution_node_id);
       CREATE INDEX IF NOT EXISTS idx_execution_nodes_updated
         ON execution_nodes(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_security_executions_assessment_updated
+        ON security_executions(assessment_id, updated_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_security_executions_operation
+        ON security_executions(assessment_id, operation_id);
+      CREATE INDEX IF NOT EXISTS idx_security_evidence_execution_sequence
+        ON security_evidence(execution_id, sequence);
 
       PRAGMA optimize;
     `);
@@ -225,6 +262,85 @@ export class SqliteSecurityRepository implements SecurityStore {
       this.database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  saveSecurityExecution(execution: SecurityExecutionRecord): SecurityExecutionRecord {
+    const value = SecurityExecutionRecordSchema.parse(execution);
+    this.database.prepare(`
+      INSERT INTO security_executions (
+        id, assessment_id, task_id, node_id, operation_id, operation,
+        classification, status, workflow_version, created_at, updated_at, data
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status=excluded.status,
+        workflow_version=excluded.workflow_version,
+        updated_at=excluded.updated_at,
+        data=excluded.data
+    `).run(
+      value.id,
+      value.assessmentId,
+      value.taskId,
+      value.nodeId,
+      value.operationId,
+      value.operation,
+      value.classification,
+      value.status,
+      value.workflowVersion,
+      value.createdAt,
+      value.updatedAt,
+      JSON.stringify(value),
+    );
+    return value;
+  }
+
+  findSecurityExecution(id: string): SecurityExecutionRecord | null {
+    const row = this.database.prepare(
+      "SELECT data FROM security_executions WHERE id = ?",
+    ).get(id) as { data: string } | undefined;
+    return row ? SecurityExecutionRecordSchema.parse(JSON.parse(row.data)) : null;
+  }
+
+  listSecurityExecutions(assessmentId: string): SecurityExecutionRecord[] {
+    const rows = this.database.prepare(
+      "SELECT data FROM security_executions WHERE assessment_id = ? ORDER BY updated_at DESC",
+    ).all(assessmentId) as { data: string }[];
+    return rows.map((row) => SecurityExecutionRecordSchema.parse(JSON.parse(row.data)));
+  }
+
+  deleteSecurityExecution(id: string): boolean {
+    const result = this.database.prepare("DELETE FROM security_executions WHERE id = ?").run(id);
+    return Number(result.changes) > 0;
+  }
+
+  saveSecurityEvidence(evidence: SecurityEvidenceRecord): SecurityEvidenceRecord {
+    const value = SecurityEvidenceRecordSchema.parse(evidence);
+    const execution = this.findSecurityExecution(value.executionId);
+    if (!execution) throw new Error(`Security execution ${value.executionId} was not found.`);
+    if (execution.assessmentId !== value.assessmentId || execution.taskId !== value.taskId) {
+      throw new Error("Security evidence must reference the same assessment and task as its execution.");
+    }
+    this.database.prepare(`
+      INSERT INTO security_evidence (
+        id, assessment_id, execution_id, task_id, kind, sha256, created_at, data
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      value.id,
+      value.assessmentId,
+      value.executionId,
+      value.taskId,
+      value.kind,
+      value.sha256,
+      value.createdAt,
+      JSON.stringify(value),
+    );
+    return value;
+  }
+
+  listSecurityEvidence(executionId: string): SecurityEvidenceRecord[] {
+    const rows = this.database.prepare(
+      "SELECT data FROM security_evidence WHERE execution_id = ? ORDER BY sequence",
+    ).all(executionId) as { data: string }[];
+    return rows.map((row) => SecurityEvidenceRecordSchema.parse(JSON.parse(row.data)));
   }
 
   close(): void {
