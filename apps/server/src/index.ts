@@ -1694,6 +1694,7 @@ const server = createServer((request, response) => {
         classification: input.classification,
         targets: input.targets,
       });
+      let workflowBound = false;
       try {
         workflow.bindSecurityOperation(
           task,
@@ -1701,6 +1702,7 @@ const server = createServer((request, response) => {
           planned.execution.id,
           `Security operation ${planned.execution.operation} passed scope policy and is awaiting approval.`,
         );
+        workflowBound = true;
         const approval = createApproval({ id: randomUUID(), taskId: task.id });
         const approvalState = workflow.requestApproval(task, approval, "execution");
         task = approvalState.task;
@@ -1713,9 +1715,13 @@ const server = createServer((request, response) => {
           policy: planned.decision,
         });
       } catch (error) {
-        security.setExecutionStatus(planned.execution.id, "blocked", {
-          error: error instanceof Error ? error.message : "Unable to bind security operation to workflow.",
-        });
+        if (!workflowBound) {
+          security.deleteExecution(planned.execution.id);
+        } else {
+          security.setExecutionStatus(planned.execution.id, "blocked", {
+            error: error instanceof Error ? error.message : "Unable to request approval for the bound security operation.",
+          });
+        }
         throw error;
       }
     }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to plan security operation." }));
