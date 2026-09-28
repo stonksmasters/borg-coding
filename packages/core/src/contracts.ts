@@ -193,7 +193,10 @@ export const WorkflowStateSchema = z.object({
   repairAttempt: z.number().int().nonnegative(), recoveryCategory: z.string().nullable(), detail: z.string(),
   version: z.number().int().positive(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
 });
-export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
+type ParsedWorkflowState = z.infer<typeof WorkflowStateSchema>;
+export type WorkflowState = Omit<ParsedWorkflowState, "security"> & {
+  security?: WorkflowSecurityContext | null;
+};
 
 
 export type EngineeringRole = (typeof engineeringRoles)[number];
