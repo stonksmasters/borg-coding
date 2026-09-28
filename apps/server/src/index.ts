@@ -30,6 +30,7 @@ import { taskRepositoryPath } from "../../../packages/core/src/task-repository-b
 import { evaluateContinuation } from "../../../packages/core/src/continuation-policy.ts";
 import { applyReviewDecision, blockingReviewFindings, reconcileReviewRun, stateForDecision } from "../../../packages/core/src/review-history.ts";
 import { SqliteTaskRepository } from "../../../packages/persistence/src/sqlite-task-repository.ts";
+import { SecurityService } from "./security-service.ts";
 import { AccessController } from "../../../packages/repository/src/access-controller.ts";
 import { projectPlanWithVerifiedModel } from "../../../packages/web-builder/src/project-model.ts";
 import { RepositoryMemory, type MemoryNote } from "../../../packages/repository/src/repository-memory.ts";
@@ -75,6 +76,7 @@ const databasePath = resolve(process.env.BORG_DATABASE_PATH ?? ".borg/borg.db");
 mkdirSync(dirname(databasePath), { recursive: true });
 const tasks = new SqliteTaskRepository(databasePath);
 const workflow = new WorkflowEngine(tasks);
+const security = new SecurityService(databasePath);
 const access = new AccessController(resolve(".borg/access.json"));
 const memory = new RepositoryMemory(resolve(".borg/repository-memory.db"));
 const projectEnvironment = new ProjectEnvironmentStore(resolve(".borg/project-environment.json"), new DesktopCredentialStore());
@@ -1594,6 +1596,43 @@ const server = createServer((request, response) => {
       return send(response, 409, { error: error instanceof Error ? error.message : "Language intelligence is unavailable" });
     }
   }
+  const securityNodeRefreshRoute = request.url?.match(/^\/api\/security\/nodes\/([^/?]+)\/refresh$/);
+  if (request.method === "POST" && securityNodeRefreshRoute) {
+    const nodeId = decodeURIComponent(securityNodeRefreshRoute[1]);
+    void security.refreshNode(nodeId)
+      .then((node) => send(response, 200, { node }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to refresh execution node." }));
+    return;
+  }
+  if (request.method === "GET" && request.url === "/api/security/nodes") {
+    return send(response, 200, { nodes: security.listNodes() });
+  }
+  if (request.method === "POST" && request.url === "/api/security/nodes") {
+    void readJson(request)
+      .then((input) => send(response, 201, { node: security.registerNode(input) }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to register execution node." }));
+    return;
+  }
+
+  const securityAssessmentRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)$/);
+  if (request.method === "GET" && securityAssessmentRoute) {
+    const assessmentId = decodeURIComponent(securityAssessmentRoute[1]);
+    const assessment = security.describeAssessment(assessmentId);
+    return assessment
+      ? send(response, 200, assessment)
+      : send(response, 404, { error: "Security assessment not found." });
+  }
+  if (request.method === "GET" && request.url?.startsWith("/api/security/assessments")) {
+    const projectId = new URL(request.url, `http://localhost:${port}`).searchParams.get("projectId") ?? "local";
+    return send(response, 200, { assessments: security.listAssessments(projectId) });
+  }
+  if (request.method === "POST" && request.url === "/api/security/assessments") {
+    void readJson(request)
+      .then((input) => send(response, 201, security.createAssessment(input)))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create security assessment." }));
+    return;
+  }
+
   if (request.method === "GET" && request.url === "/api/tools") return send(response, 200, { tools: tools.status() });
   if (request.method === "POST" && request.url === "/api/tools") {
     void readJson(request).then((input) => send(response, 200, { tools: tools.configure(input) }))
@@ -1662,6 +1701,7 @@ void recoverInterruptedTasks()
 async function shutdown(signal: string) {
   console.log(`[lifecycle] core shutdown requested: ${signal}`);
   await processRuntime.stopAll();
+  security.close();
   tasks.close();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   process.exit(0);
