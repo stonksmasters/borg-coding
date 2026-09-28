@@ -2,6 +2,8 @@ import type {
   AssessmentScope,
   ExecutionNode,
   SecurityAssessment,
+  SecurityEvidenceRecord,
+  SecurityExecutionRecord,
 } from "./security-domain.ts";
 
 export interface SecurityStore {
@@ -17,6 +19,14 @@ export interface SecurityStore {
   findExecutionNode(id: string): ExecutionNode | null;
   listExecutionNodes(): ExecutionNode[];
   deleteExecutionNode(id: string): boolean;
+
+  saveSecurityExecution(execution: SecurityExecutionRecord): SecurityExecutionRecord;
+  findSecurityExecution(id: string): SecurityExecutionRecord | null;
+  listSecurityExecutions(assessmentId: string): SecurityExecutionRecord[];
+  deleteSecurityExecution(id: string): boolean;
+
+  saveSecurityEvidence(evidence: SecurityEvidenceRecord): SecurityEvidenceRecord;
+  listSecurityEvidence(executionId: string): SecurityEvidenceRecord[];
 
   close(): void;
 }
