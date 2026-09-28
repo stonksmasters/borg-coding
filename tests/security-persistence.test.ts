@@ -133,11 +133,9 @@ test("deleting an execution node preserves the assessment and clears the foreign
     repository.saveSecurityAssessmentBundle({ assessment, scope });
     assert.equal(repository.deleteExecutionNode(node.id), true);
 
-    // SQLite clears the relational column, but the JSON snapshot is intentionally
-    // not rewritten behind the caller's back. The next repository save is the
-    // authoritative domain update; this assertion protects against cascading
-    // deletion of the assessment itself.
-    assert.equal(repository.findSecurityAssessment(assessment.id)?.id, assessment.id);
+    const restored = repository.findSecurityAssessment(assessment.id);
+    assert.equal(restored?.id, assessment.id);
+    assert.equal(restored?.executionNodeId, null);
   } finally {
     repository.close();
   }
