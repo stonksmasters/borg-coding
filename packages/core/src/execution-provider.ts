@@ -163,8 +163,8 @@ export class SshExecutionProvider implements ExecutionProvider {
     sshArgs.push(`${node.username}@${node.host}`, remoteCommand);
 
     const startedAt = new Date();
-    let stdout = Buffer.alloc(0);
-    let stderr = Buffer.alloc(0);
+    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let timedOut = false;
