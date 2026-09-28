@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 export const securityAssessmentModes = [
@@ -20,6 +21,17 @@ export const executionNodeProviders = ["local", "ssh"] as const;
 export const executionNodeStatuses = ["unknown", "online", "offline", "error"] as const;
 export const capabilityStatuses = ["available", "missing", "error"] as const;
 export const capabilityCategories = ["dns", "network", "web", "osint", "utility"] as const;
+
+export const securityOperationClasses = ["passive", "active_recon", "manual"] as const;
+export const securityExecutionStatuses = ["planned", "approved", "running", "succeeded", "failed", "cancelled", "blocked"] as const;
+export const securityEvidenceKinds = ["stdout", "stderr", "normalized", "artifact", "note"] as const;
+
+export const SecurityTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("domain"), value: z.string().trim().min(1) }),
+  z.object({ kind: z.literal("host"), value: z.string().trim().min(1) }),
+  z.object({ kind: z.literal("cidr"), value: z.string().trim().min(1) }),
+]);
+export type SecurityTarget = z.infer<typeof SecurityTargetSchema>;
 
 const nonEmptyValue = z.string().trim().min(1);
 
@@ -105,6 +117,45 @@ export const SecurityAssessmentSchema = z.object({
 });
 export type SecurityAssessment = z.infer<typeof SecurityAssessmentSchema>;
 
+export const SecurityExecutionRecordSchema = z.object({
+  id: z.string().min(1),
+  assessmentId: z.string().min(1),
+  taskId: z.string().min(1),
+  workflowVersion: z.number().int().positive(),
+  nodeId: z.string().min(1),
+  operationId: z.string().min(1),
+  operation: z.string().trim().min(1).max(200),
+  classification: z.enum(securityOperationClasses),
+  targets: z.array(SecurityTargetSchema).min(1),
+  provider: z.enum(executionNodeProviders),
+  status: z.enum(securityExecutionStatuses),
+  startedAt: z.string().datetime().nullable().default(null),
+  completedAt: z.string().datetime().nullable().default(null),
+  exitCode: z.number().int().nullable().default(null),
+  timedOut: z.boolean().default(false),
+  cancelled: z.boolean().default(false),
+  error: z.string().nullable().default(null),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type SecurityExecutionRecord = z.infer<typeof SecurityExecutionRecordSchema>;
+
+export const SecurityEvidenceRecordSchema = z.object({
+  id: z.string().min(1),
+  assessmentId: z.string().min(1),
+  executionId: z.string().min(1),
+  taskId: z.string().min(1),
+  kind: z.enum(securityEvidenceKinds),
+  contentType: z.string().trim().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  byteLength: z.number().int().nonnegative(),
+  truncated: z.boolean().default(false),
+  storageUri: z.string().trim().min(1).nullable().default(null),
+  inlineText: z.string().nullable().default(null),
+  createdAt: z.string().datetime(),
+});
+export type SecurityEvidenceRecord = z.infer<typeof SecurityEvidenceRecordSchema>;
+
 function unique(values: readonly string[], lowercase = false): string[] {
   const normalized = values
     .map((value) => value.trim())
@@ -155,6 +206,61 @@ export function createSecurityAssessment(input: {
     status: "draft",
     createdAt: now,
     updatedAt: now,
+  });
+}
+
+export function createSecurityExecutionRecord(input: {
+  id: string;
+  assessmentId: string;
+  taskId: string;
+  workflowVersion: number;
+  nodeId: string;
+  operationId: string;
+  operation: string;
+  classification: SecurityExecutionRecord["classification"];
+  targets: SecurityTarget[];
+  provider: SecurityExecutionRecord["provider"];
+}): SecurityExecutionRecord {
+  const now = new Date().toISOString();
+  return SecurityExecutionRecordSchema.parse({
+    ...input,
+    status: "planned",
+    startedAt: null,
+    completedAt: null,
+    exitCode: null,
+    timedOut: false,
+    cancelled: false,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+export function createSecurityEvidenceRecord(input: {
+  id: string;
+  assessmentId: string;
+  executionId: string;
+  taskId: string;
+  kind: SecurityEvidenceRecord["kind"];
+  contentType?: string;
+  text: string;
+  truncated?: boolean;
+  storageUri?: string | null;
+}): SecurityEvidenceRecord {
+  const bytes = Buffer.from(input.text, "utf8");
+  return SecurityEvidenceRecordSchema.parse({
+    id: input.id,
+    assessmentId: input.assessmentId,
+    executionId: input.executionId,
+    taskId: input.taskId,
+    kind: input.kind,
+    contentType: input.contentType ?? "text/plain; charset=utf-8",
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    byteLength: bytes.byteLength,
+    truncated: input.truncated ?? false,
+    storageUri: input.storageUri ?? null,
+    inlineText: input.text,
+    createdAt: new Date().toISOString(),
   });
 }
 
