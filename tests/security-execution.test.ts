@@ -22,11 +22,13 @@ import {
 
 class FakeExecutionProvider implements ExecutionProvider {
   readonly kind = "ssh" as const;
+  private readonly available: Record<string, string>;
+  private readonly healthError: Error | null;
 
-  constructor(
-    private readonly available: Record<string, string>,
-    private readonly healthError: Error | null = null,
-  ) {}
+  constructor(available: Record<string, string>, healthError: Error | null = null) {
+    this.available = available;
+    this.healthError = healthError;
+  }
 
   async healthCheck(_node: ExecutionNode, _options?: ExecutionOptions): Promise<NodeHealth> {
     if (this.healthError) throw this.healthError;
