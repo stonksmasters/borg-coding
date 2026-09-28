@@ -204,7 +204,7 @@ test("security evidence preserves hash, provenance and restart durability", () =
       text: "example.com. 300 IN A 192.0.2.10\n",
     });
 
-    assert.equal(evidence.byteLength, 35);
+    assert.equal(evidence.byteLength, 33);
     assert.match(evidence.sha256, /^[a-f0-9]{64}$/);
     assert.equal(evidence.assessmentId, "assessment-evidence");
     assert.equal(evidence.taskId, "task-evidence");
