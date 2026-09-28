@@ -30,7 +30,7 @@ export const reviewDecisionActions = ["accept", "mark_fixed", "waive", "false_po
 export const reviewDecisionActors = ["operator", "reviewer", "system"] as const;
 export const reviewRunStatuses = ["running", "completed", "failed"] as const;
 export const workflowPhases = projectPhases;
-export const workflowLoops = ["project", "slice", "backend", "general"] as const;
+export const workflowLoops = ["project", "slice", "backend", "security", "general"] as const;
 export const workflowStatuses = ["idle", "planning", "awaiting_approval", "running", "verifying", "reviewing", "awaiting_feedback", "recovery_required", "complete", "blocked", "failed", "cancelled"] as const;
 export const workflowActions = ["plan", "await_approval", "start_slice", "implement", "verify", "repair", "quality_review", "review", "checkpoint", "advance_slice", "request_feedback", "plan_backend", "deliver", "recover", "none"] as const;
 export const verificationStatuses = ["pending", "passed", "failed"] as const;
@@ -108,6 +108,13 @@ export const WorkflowCommandSchema = z.object({
 });
 export type WorkflowCommand = z.infer<typeof WorkflowCommandSchema>;
 
+export const WorkflowSecurityContextSchema = z.object({
+  assessmentId: z.string().min(1),
+  operationId: z.string().min(1).nullable().default(null),
+  executionId: z.string().min(1).nullable().default(null),
+});
+export type WorkflowSecurityContext = z.infer<typeof WorkflowSecurityContextSchema>;
+
 export const TaskSchema = z.object({
   id: z.string().min(1), projectId: z.string().min(1), request: z.string().min(1),
   state: z.enum(taskStates), riskLevel: z.enum(riskLevels),
@@ -180,6 +187,7 @@ export const WorkflowStateSchema = z.object({
   pendingCommand: WorkflowCommandSchema.nullable().default(null), lastConsumedCommandId: z.string().nullable().default(null),
   verification: VerificationGateSchema.default(inactiveVerificationGate),
   recovery: WorkflowRecoverySchema.default(inactiveWorkflowRecovery),
+  security: WorkflowSecurityContextSchema.nullable().default(null),
   attemptPhase: z.enum(attemptPhases).nullable().default(null),
   designRefinementAttempt: z.number().int().nonnegative().default(0),
   repairAttempt: z.number().int().nonnegative(), recoveryCategory: z.string().nullable(), detail: z.string(),
