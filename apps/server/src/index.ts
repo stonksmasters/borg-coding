@@ -1413,6 +1413,10 @@ const server = createServer((request, response) => {
       task,
       workflow: workflow.get(task.projectId)?.taskId === task.id ? workflow.get(task.projectId) : null,
       approval: currentApproval,
+      securityApproval: workflow.get(task.projectId)?.taskId === task.id && workflow.get(task.projectId)?.loop === "security",
+      securityExecution: workflow.get(task.projectId)?.taskId === task.id && workflow.get(task.projectId)?.security?.executionId
+        ? security.getExecution(workflow.get(task.projectId)!.security!.executionId!)
+        : null,
       projectPlanApproval: task.state === "AWAITING_APPROVAL" && currentApproval?.status === "REQUESTED" && taskEvents.some((event) => event.type === "PROJECT_PLAN_PROPOSED" || event.type === "PROJECT_PLAN_REVISION_PROPOSED"),
       projectPlanRevisionApproval: pendingRevisionApproval,
       planRevision: pendingRevisionApproval ? {
@@ -1447,6 +1451,10 @@ const server = createServer((request, response) => {
         const decided = workflow.decideApproval(task, rejected, approvalKind);
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
+        if (decided.workflow.loop === "security" && decided.workflow.security?.executionId) {
+          security.setExecutionStatus(decided.workflow.security.executionId, "cancelled", { cancelled: true });
+          security.setAssessmentStatus(decided.workflow.security.assessmentId, "paused");
+        }
         const repositoryPath = taskProjectRepository(task.id);
         if (repositoryPath) recordMemoryNote(repositoryPath, {
           id: `approval:${approval.id}`,
@@ -1470,6 +1478,23 @@ const server = createServer((request, response) => {
         });
       }
       if (decision !== "approve") return send(response, 400, { error: "Decision must be approve or reject." });
+      const ownedWorkflow = workflow.get(task.projectId);
+      if (ownedWorkflow?.taskId === task.id && ownedWorkflow.loop === "security" && ownedWorkflow.security?.executionId) {
+        const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString() };
+        const decided = workflow.decideApproval(task, approved, "execution");
+        task = decided.task;
+        syncWorkflowProjection(task, decided.workflow);
+        const execution = security.setExecutionStatus(ownedWorkflow.security.executionId, "approved");
+        const assessment = security.setAssessmentStatus(ownedWorkflow.security.assessmentId, "running");
+        return send(response, 200, {
+          task,
+          approval: approved,
+          workflow: decided.workflow,
+          securityApproval: true,
+          execution,
+          assessment,
+        });
+      }
       const repositoryPath = taskProjectRepository(task.id);
       if (!repositoryPath) return send(response, 409, { error: "This task has no durable repository binding." });
       if (isProjectPlanRevisionApproval) {
@@ -1612,6 +1637,103 @@ const server = createServer((request, response) => {
       .then((input) => send(response, 201, { node: security.registerNode(input) }))
       .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to register execution node." }));
     return;
+  }
+
+  const securityWorkflowRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/workflow$/);
+  if (request.method === "POST" && securityWorkflowRoute) {
+    const assessmentId = decodeURIComponent(securityWorkflowRoute[1]);
+    void readJson(request).then((input) => {
+      const described = security.describeAssessment(assessmentId);
+      if (!described) return send(response, 404, { error: "Security assessment not found." });
+      const riskLevel = described.assessment.mode === "authorized_assessment"
+        ? "R3" as const
+        : described.assessment.mode === "active_recon"
+          ? "R2" as const
+          : "R1" as const;
+      let task = createTask({
+        id: randomUUID(),
+        projectId: described.assessment.projectId,
+        request: String(input.request ?? `Run security assessment: ${described.assessment.name}`),
+        riskLevel,
+      });
+      let state = workflow.startSecurityAssessment(task, assessmentId, "Security assessment entered the authoritative workflow.");
+      let transition = workflow.transition(task, "CLASSIFYING");
+      task = transition.task;
+      state = transition.workflow;
+      transition = workflow.transition(task, "DISCOVERING");
+      task = transition.task;
+      state = transition.workflow;
+      transition = workflow.transition(task, "PLANNING");
+      task = transition.task;
+      state = transition.workflow;
+      const assessment = security.setAssessmentStatus(assessmentId, "planning");
+      return send(response, 201, { task, workflow: state, assessment });
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to start security workflow." }));
+    return;
+  }
+
+  const securityOperationRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/operations$/);
+  if (request.method === "POST" && securityOperationRoute) {
+    const assessmentId = decodeURIComponent(securityOperationRoute[1]);
+    void readJson(request).then((input) => {
+      const described = security.describeAssessment(assessmentId);
+      if (!described) return send(response, 404, { error: "Security assessment not found." });
+      const current = workflow.get(described.assessment.projectId);
+      if (!current || current.loop !== "security" || current.security?.assessmentId !== assessmentId || !current.taskId) {
+        return send(response, 409, { error: "This assessment has no active authoritative security workflow." });
+      }
+      let task = tasks.findTask(current.taskId);
+      if (!task) return send(response, 409, { error: "The security workflow task is missing." });
+      if (task.state !== "PLANNING") return send(response, 409, { error: "Security operations may be planned only while the workflow is PLANNING." });
+
+      const planned = security.planExecution({
+        assessmentId,
+        taskId: task.id,
+        workflowVersion: current.version + 1,
+        operation: input.operation,
+        classification: input.classification,
+        targets: input.targets,
+      });
+      let bound;
+      try {
+        bound = workflow.bindSecurityOperation(
+          task,
+          planned.execution.operationId,
+          planned.execution.id,
+          `Security operation ${planned.execution.operation} passed scope policy and is awaiting approval.`,
+        );
+        const approval = createApproval({ id: randomUUID(), taskId: task.id });
+        const approvalState = workflow.requestApproval(task, approval, "execution");
+        task = approvalState.task;
+        security.setAssessmentStatus(assessmentId, "planning");
+        return send(response, 201, {
+          task,
+          workflow: approvalState.workflow,
+          approval,
+          execution: planned.execution,
+          policy: planned.decision,
+        });
+      } catch (error) {
+        security.setExecutionStatus(planned.execution.id, "blocked", {
+          error: error instanceof Error ? error.message : "Unable to bind security operation to workflow.",
+        });
+        throw error;
+      }
+    }).catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to plan security operation." }));
+    return;
+  }
+
+  const securityExecutionsRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/executions$/);
+  if (request.method === "GET" && securityExecutionsRoute) {
+    const assessmentId = decodeURIComponent(securityExecutionsRoute[1]);
+    return send(response, 200, { executions: security.listExecutions(assessmentId) });
+  }
+
+  const securityEvidenceRoute = request.url?.match(/^\/api\/security\/executions\/([^/?]+)\/evidence$/);
+  if (request.method === "GET" && securityEvidenceRoute) {
+    const executionId = decodeURIComponent(securityEvidenceRoute[1]);
+    if (!security.getExecution(executionId)) return send(response, 404, { error: "Security execution not found." });
+    return send(response, 200, { evidence: security.listEvidence(executionId) });
   }
 
   const securityAssessmentRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)$/);
