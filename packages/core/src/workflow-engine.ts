@@ -204,15 +204,19 @@ export class WorkflowEngine {
       phase: intent === "backend" ? "backend" : intent === "project_plan" ? "planning" : intent === "frontend_slice" ? "frontend" : intent === "security" ? "planning" : existing?.phase ?? "planning",
       status: "planning",
       nextAction: "plan",
-      planApprovalId: existing?.planApprovalId ?? null,
-      planApproved: existing?.planApproved ?? false,
-      projectPlan: existing?.projectPlan ?? null,
-      planRevisionResumeIndex: existing?.planRevisionResumeIndex ?? null,
+      planApprovalId: intent === "security" ? null : existing?.planApprovalId ?? null,
+      planApproved: intent === "security" ? false : existing?.planApproved ?? false,
+      projectPlan: intent === "security" ? null : existing?.projectPlan ?? null,
+      planRevisionResumeIndex: intent === "security" ? null : existing?.planRevisionResumeIndex ?? null,
       sliceIndex: intent === "frontend_slice" ? sliceSelection!.index : intent === "backend" || intent === "security" || intent === "general" ? null : existing?.sliceIndex ?? null,
       sliceTotal: intent === "frontend_slice" ? sliceSelection!.total : intent === "backend" || intent === "security" || intent === "general" ? null : existing?.sliceTotal ?? null,
       sliceTitle: intent === "frontend_slice" ? sliceSelection!.title : intent === "backend" || intent === "security" || intent === "general" ? null : existing?.sliceTitle ?? null,
-      feedback: options.feedback?.trim() ? [...(existing?.feedback ?? []), options.feedback.trim().slice(0, 4000)] : existing?.feedback ?? [],
-      handoff: existing?.handoff ?? null,
+      feedback: intent === "security"
+        ? []
+        : options.feedback?.trim()
+          ? [...(existing?.feedback ?? []), options.feedback.trim().slice(0, 4000)]
+          : existing?.feedback ?? [],
+      handoff: intent === "security" ? null : existing?.handoff ?? null,
       pendingCommand: sliceSelection?.command
         ? { ...sliceSelection.command, claimedByTaskId: task.id, claimedAt: now }
         : intent === "frontend_slice"
@@ -220,7 +224,9 @@ export class WorkflowEngine {
           : options.commandId && existing?.pendingCommand
             ? { ...existing.pendingCommand, claimedByTaskId: task.id, claimedAt: now }
             : null,
-      lastConsumedCommandId: sliceSelection?.supersededCommandId ?? existing?.lastConsumedCommandId ?? null,
+      lastConsumedCommandId: intent === "security"
+        ? null
+        : sliceSelection?.supersededCommandId ?? existing?.lastConsumedCommandId ?? null,
       verification: pendingVerification(0),
       recovery: inactiveWorkflowRecovery,
       security: intent === "security"
