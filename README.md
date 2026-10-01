@@ -1,12 +1,21 @@
 # BORG Code
 
-BORG is a private local AI website builder: describe a website, approve the direction, and let a persistent local development system build, preview, verify, repair, and document the result.
+BORG is a private, local-first AI operating layer for the user's computer, projects, services, and trusted remote machines. General Chat is the main command surface; focused workspaces provide deeper controls for development, security and recon, knowledge, infrastructure, and future automation.
 
-The product goal is not a chat wrapper around a coding model. BORG is being built as a dependable website-development workstation that can carry a complex brief across many implementation slices without repeatedly forgetting the project, rereading the entire repository, or hiding its execution state from the user.
+The product goal is not a chat wrapper around a coding model. BORG surrounds replaceable local models with typed capabilities, explicit permissions and scope, durable jobs, inspectable tool effects, evidence, verification, and persistent local knowledge.
 
 ## Current product model
 
-A website build follows this hierarchy:
+The platform path is:
+
+    General Chat or focused workspace
+      -> Typed capability
+        -> Permission and scope policy
+          -> Provider and execution node
+            -> Explicit operation
+              -> Artifacts, evidence, and verification
+
+The website builder is currently the most mature focused workspace. Its workflow follows this hierarchy:
 
     Project
       -> Phase
@@ -21,29 +30,28 @@ A website build follows this hierarchy:
 
 Every new website begins with a frontend phase. BORG creates a tailored plan from the brief, including pages, features, design direction, ordered slices, and acceptance criteria. Each approved slice runs in its own bounded mini-loop while the website continues to use one primary project session. Backend work is a separate phase only when the finished product requires server behavior, persistence, accounts, integrations, payments, or similar capabilities.
 
-The runtime underneath still provides durable tasks, permission modes, worktrees, checkpoints, role routing, browser verification, repair, review history, and Ollama-powered local agents. Those are implementation infrastructure; the website-building workflow is the product.
+The runtime underneath provides durable tasks, permission modes, worktrees, checkpoints, role routing, browser verification, repair, review history, security execution nodes, evidence, and Ollama-powered local agents. These foundations are being consolidated into a shared capability runtime used by Chat and every focused workspace.
 
 ## Current development frontier
 
-The main priority is reliable one-prompt, multi-slice frontend construction.
+The active direction combines website-builder reliability with the broader platform foundation:
 
-The active sequence is:
-
-1. benchmark and harden the persistent multi-slice frontend workflow on difficult real projects;
-2. harden the implemented Context Compiler and RunView rather than adding parallel context/progress systems;
-3. replace heuristic page/component source relationships with language-intelligence-backed mappings;
-4. add dedicated Page and Component workspaces with entity-scoped context and verification;
-5. build a high-quality local component/page corpus with provenance and evidence;
-6. add retrieval only after that corpus is trustworthy;
-7. extend the same durable workflow into reliable full-stack construction.
+1. preserve and benchmark the persistent multi-slice Development workflow;
+2. make General Chat the durable command surface;
+3. consolidate a typed capability and job runtime shared by all domains;
+4. complete the Kali MCP/SSH provider through the existing scope, approval, and evidence boundary;
+5. deepen identity recon, cases, correlation, confidence, and provenance;
+6. add local Files and Knowledge retrieval;
+7. extend the provider model into infrastructure, computer control, and automation.
 
 ## Canonical documentation
 
 Start here:
 
 - [Vision](docs/VISION.md) - north star, product principles, and success criteria.
-- [Architecture](docs/ARCHITECTURE.md) - relationship between the website-builder product and the coding-agent runtime.
+- [Architecture](docs/ARCHITECTURE.md) - General Chat, shared capabilities, workflow domains, providers, and runtime boundaries.
 - [Website Builder](docs/WEBSITE-BUILDER.md) - canonical project, phase, slice, verification, and backend workflow.
+- [Security](docs/SECURITY.md) - assessments, execution nodes, Kali tooling, policy, evidence, and recon adapters.
 - [Context System](docs/CONTEXT-SYSTEM.md) - durable project memory and the planned Context Compiler.
 - [Pages and Components](docs/PAGES-AND-COMPONENTS.md) - first-class entity model and scoped workspaces.
 - [Design Quality](docs/DESIGN-QUALITY.md) - Design Director, visual verification, and quality gates.

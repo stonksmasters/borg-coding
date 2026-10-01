@@ -107,12 +107,17 @@ const tools = new ToolBroker(resolve(".borg/tools.json"), access, {
     const repositoryPath = taskProjectRepository(taskId);
     return repositoryPath ? projectEnvironment.values(repositoryPath) : {};
   },
-}, memory);
+}, memory, {
+  listAssessments: (projectId) => security.listAssessments(projectId),
+  createInvestigationPlan: (assessmentId, input) => security.createInvestigationPlan(assessmentId, input),
+  readCase: (assessmentId) => security.readCase(assessmentId),
+});
 const worktrees = new GitWorktreeManager(worktreeRoot);
 const delivery = new WorktreeDelivery(worktreeRoot, resolve(".borg/deliveries"));
 const port = Number(process.env.BORG_PORT ?? 4311);
 const ollamaUrl = process.env.BORG_OLLAMA_URL ?? "http://127.0.0.1:11434";
 const model = process.env.BORG_MODEL ?? "qwen3-coder:30b";
+const reasoningModel = process.env.BORG_REASONING_MODEL ?? "devstral-small-2:latest";
 const vision = new VisionReviewService(resolve(".borg/vision.json"), new OllamaVisionProvider(ollamaUrl));
 const designDirector = new DesignDirectorService(ollamaUrl);
 const visualDirector = new VisualDirectorService(ollamaUrl);
@@ -133,6 +138,7 @@ const planningOrchestrator = new PlanningOrchestrator({
   designDirector,
   ollamaUrl,
   model,
+  reasoningModel,
   runAgent: runOllamaAgent,
   appendTaskEvent,
   syncWorkflowProjection,
@@ -791,6 +797,42 @@ function transitionTask(task: Task, state: TaskState, emit?: (event: Record<stri
   return updated;
 }
 
+function finalizeSuccessfulSecurityOperation(task: Task, assessmentId: string, executionId: string) {
+  const execution = security.getExecution(executionId);
+  if (!execution || execution.status !== "succeeded") {
+    throw new Error("A successful security execution is required before assessment completion.");
+  }
+  const evidence = security.listEvidence(executionId);
+  const normalized = evidence.find((item) => item.kind === "normalized") ?? evidence.at(-1) ?? null;
+  let currentTask = task;
+  workflow.recordVerification(currentTask, {
+    passed: true,
+    attempt: currentTask.attempts,
+    profile: "security_operation",
+    summary: `${execution.operation} completed successfully with ${evidence.length} evidence records.`,
+    resultSha256: normalized?.sha256 ?? null,
+    evidence: { executionId, evidenceIds: evidence.map((item) => item.id) },
+  });
+  const quality = workflow.applyQualityOutcome(currentTask, {
+    action: "pass",
+    reason: "Typed operation succeeded and normalized evidence was recorded.",
+    maximumRepairAttempts: 0,
+    maximumDesignRefinements: 0,
+  });
+  currentTask = quality.task;
+  const review = workflow.applyReviewOutcome(currentTask, {
+    action: "pass",
+    reason: "Security evidence and provenance are complete.",
+    maximumRepairAttempts: 0,
+  });
+  currentTask = review.task;
+  const delivering = workflow.transition(currentTask, "DELIVERING");
+  const completed = workflow.completeDelivery(delivering.task, { assessmentId, executionId, evidenceCount: evidence.length });
+  syncWorkflowProjection(completed.task, completed.workflow);
+  const assessment = security.setAssessmentStatus(assessmentId, "completed");
+  return { task: completed.task, workflow: completed.workflow, assessment };
+}
+
 function beginRole(
   task: Task,
   role: EngineeringRole,
@@ -868,8 +910,24 @@ const server = createServer((request, response) => {
     void fetch(`${ollamaUrl}/api/tags`).then(async (runtimeResponse) => {
       const data = await runtimeResponse.json() as { models?: { name: string }[] };
       const models = data.models?.map((item) => item.name) ?? [];
-      send(response, 200, { status: "ok", runtime: "ollama", runtimeConnected: runtimeResponse.ok, model, modelAvailable: models.includes(model) });
-    }).catch(() => send(response, 200, { status: "ok", runtime: "ollama", runtimeConnected: false, model, modelAvailable: false }));
+      send(response, 200, {
+        status: "ok",
+        runtime: "ollama",
+        runtimeConnected: runtimeResponse.ok,
+        model,
+        modelAvailable: models.includes(model),
+        reasoningModel,
+        reasoningModelAvailable: models.includes(reasoningModel),
+      });
+    }).catch(() => send(response, 200, {
+      status: "ok",
+      runtime: "ollama",
+      runtimeConnected: false,
+      model,
+      modelAvailable: false,
+      reasoningModel,
+      reasoningModelAvailable: false,
+    }));
     return;
   }
   const projectRoute = request.url?.match(/^\/api\/tasks\/([^/?]+)\/project(?:\?(.+))?$/);
@@ -1295,7 +1353,7 @@ const server = createServer((request, response) => {
   }
   if (request.method === "POST" && baselineRoute) {
     const taskId = decodeURIComponent(baselineRoute[1]);
-    void readJson(request).then((input) => {
+    void readJson(request).then(async (input) => {
       const task = tasks.findTask(taskId);
       const approval = tasks.findApproval(taskId);
       if (!task || !approval?.worktreePath || approval.status !== "APPROVED") return send(response, 404, { error: "Approved task worktree not found." });
@@ -1485,14 +1543,51 @@ const server = createServer((request, response) => {
         const decided = workflow.decideApproval(task, approved, "execution");
         task = decided.task;
         syncWorkflowProjection(task, decided.workflow);
-        const execution = security.setExecutionStatus(ownedWorkflow.security.executionId, "approved");
-        const assessment = security.setAssessmentStatus(ownedWorkflow.security.assessmentId, "running");
+        security.setExecutionStatus(ownedWorkflow.security.executionId, "approved");
+        let assessment = security.setAssessmentStatus(ownedWorkflow.security.assessmentId, "running");
+        let dispatch;
+        let executionWorkflow = decided.workflow;
+        try {
+          dispatch = await security.executeApprovedOperation(ownedWorkflow.security.executionId);
+          const nextState = dispatch.execution.status === "succeeded" ? "VERIFYING" : "FAILED";
+          const advanced = workflow.transition(task, nextState);
+          task = advanced.task;
+          executionWorkflow = advanced.workflow;
+          if (nextState === "FAILED") {
+            assessment = security.setAssessmentStatus(ownedWorkflow.security.assessmentId, "failed");
+            syncWorkflowProjection(task, executionWorkflow);
+          } else {
+            const completed = finalizeSuccessfulSecurityOperation(task, ownedWorkflow.security.assessmentId, ownedWorkflow.security.executionId);
+            task = completed.task;
+            executionWorkflow = completed.workflow;
+            assessment = completed.assessment;
+          }
+        } catch (error) {
+          const currentExecution = security.getExecution(ownedWorkflow.security.executionId);
+          if (currentExecution?.status === "approved") {
+            security.setExecutionStatus(currentExecution.id, "blocked", {
+              error: error instanceof Error ? error.message : "Security operation dispatch was blocked.",
+            });
+          }
+          const failed = workflow.transition(task, "FAILED");
+          task = failed.task;
+          executionWorkflow = failed.workflow;
+          assessment = security.setAssessmentStatus(ownedWorkflow.security.assessmentId, "failed");
+          syncWorkflowProjection(task, executionWorkflow);
+          dispatch = {
+            execution: security.getExecution(ownedWorkflow.security.executionId),
+            evidence: security.listEvidence(ownedWorkflow.security.executionId),
+            normalized: null,
+          };
+        }
         return send(response, 200, {
           task,
           approval: approved,
-          workflow: decided.workflow,
+          workflow: executionWorkflow,
           securityApproval: true,
-          execution,
+          execution: dispatch.execution,
+          evidence: dispatch.evidence,
+          normalized: dispatch.normalized,
           assessment,
         });
       }
@@ -1630,8 +1725,42 @@ const server = createServer((request, response) => {
       .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to refresh execution node." }));
     return;
   }
+  const securityNodeInstallPlanRoute = request.url?.match(/^\/api\/security\/nodes\/([^/?]+)\/install-plan$/);
+  if (request.method === "POST" && securityNodeInstallPlanRoute) {
+    const nodeId = decodeURIComponent(securityNodeInstallPlanRoute[1]);
+    void readJson(request)
+      .then((input) => send(response, 200, {
+        plan: security.createInstallPlan(nodeId, Array.isArray(input.toolIds) ? input.toolIds.map(String) : []),
+      }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create installation plan." }));
+    return;
+  }
+  const securityNodeInstallRoute = request.url?.match(/^\/api\/security\/nodes\/([^/?]+)\/install$/);
+  if (request.method === "POST" && securityNodeInstallRoute) {
+    const nodeId = decodeURIComponent(securityNodeInstallRoute[1]);
+    void readJson(request)
+      .then((input) => security.executeInstallPlan(nodeId, input))
+      .then((result) => send(response, 200, result))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to install Kali tools." }));
+    return;
+  }
+  const securityNodeRoute = request.url?.match(/^\/api\/security\/nodes\/([^/?]+)$/);
+  if (request.method === "DELETE" && securityNodeRoute) {
+    const nodeId = decodeURIComponent(securityNodeRoute[1]);
+    return security.deleteNode(nodeId)
+      ? send(response, 200, { deleted: true })
+      : send(response, 404, { error: "Execution node not found." });
+  }
   if (request.method === "GET" && request.url === "/api/security/nodes") {
     return send(response, 200, { nodes: security.listNodes() });
+  }
+  if (request.method === "GET" && request.url?.startsWith("/api/security/tools")) {
+    try {
+      const nodeId = new URL(request.url, `http://localhost:${port}`).searchParams.get("nodeId");
+      return send(response, 200, { tools: security.listTools(nodeId) });
+    } catch (error) {
+      return send(response, 404, { error: error instanceof Error ? error.message : "Unable to list security tools." });
+    }
   }
   if (request.method === "POST" && request.url === "/api/security/nodes") {
     void readJson(request)
@@ -1640,7 +1769,100 @@ const server = createServer((request, response) => {
     return;
   }
 
+  const profileIdentifierRoute = request.url?.match(/^\/api\/security\/profiles\/([^/?]+)\/identifiers\/([^/?]+)$/);
+  if (request.method === "PATCH" && profileIdentifierRoute) {
+    const profileId = decodeURIComponent(profileIdentifierRoute[1]);
+    const identifierId = decodeURIComponent(profileIdentifierRoute[2]);
+    void readJson(request)
+      .then((input) => send(response, 200, { identifier: security.setProfileIdentifierStatus(profileId, identifierId, String(input.status) as "confirmed" | "candidate" | "rejected") }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to update identifier." }));
+    return;
+  }
+  const profileIdentifiersRoute = request.url?.match(/^\/api\/security\/profiles\/([^/?]+)\/identifiers$/);
+  if (request.method === "POST" && profileIdentifiersRoute) {
+    const profileId = decodeURIComponent(profileIdentifiersRoute[1]);
+    void readJson(request)
+      .then((input) => send(response, 201, { identifier: security.addProfileIdentifier(profileId, input) }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to add identifier." }));
+    return;
+  }
+  const profileSuiteRoute = request.url?.match(/^\/api\/security\/profiles\/([^/?]+)\/passive-suite$/);
+  if (request.method === "POST" && profileSuiteRoute) {
+    try { return send(response, 202, security.enqueuePassiveSuite(decodeURIComponent(profileSuiteRoute[1]))); }
+    catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "Unable to queue passive suite." }); }
+  }
+  const profileJobsRoute = request.url?.match(/^\/api\/security\/profiles\/([^/?]+)\/jobs$/);
+  if (request.method === "POST" && profileJobsRoute) {
+    const profileId = decodeURIComponent(profileJobsRoute[1]);
+    void readJson(request)
+      .then((input) => send(response, 202, { job: security.enqueueProfileJob(profileId, input) }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to queue security job." }));
+    return;
+  }
+  const profileJobActionRoute = request.url?.match(/^\/api\/security\/jobs\/([^/?]+)\/(approve|cancel)$/);
+  if (request.method === "POST" && profileJobActionRoute) {
+    try {
+      const jobId = decodeURIComponent(profileJobActionRoute[1]);
+      const job = profileJobActionRoute[2] === "approve" ? security.approveProfileJob(jobId) : security.cancelProfileJob(jobId);
+      return send(response, 202, { job });
+    } catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "Unable to update security job." }); }
+  }
+  const profileRoute = request.url?.match(/^\/api\/security\/profiles\/([^/?]+)$/);
+  if (request.method === "GET" && profileRoute) {
+    security.resumeProfileQueue();
+    const profile = security.describeProfile(decodeURIComponent(profileRoute[1]));
+    return profile ? send(response, 200, profile) : send(response, 404, { error: "Identity profile not found." });
+  }
+  if (request.method === "PATCH" && profileRoute) {
+    const profileId = decodeURIComponent(profileRoute[1]);
+    void readJson(request)
+      .then((input) => send(response, 200, security.updateProfile(profileId, input)))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to update identity profile." }));
+    return;
+  }
+  if (request.method === "DELETE" && profileRoute) {
+    try { return send(response, 200, security.archiveProfile(decodeURIComponent(profileRoute[1]), true)); }
+    catch (error) { return send(response, 404, { error: error instanceof Error ? error.message : "Identity profile not found." }); }
+  }
+  if (request.method === "GET" && request.url?.startsWith("/api/security/profiles")) {
+    const url = new URL(request.url, `http://localhost:${port}`);
+    security.resumeProfileQueue();
+    return send(response, 200, { profiles: security.listProfiles(url.searchParams.get("projectId") ?? "local", url.searchParams.get("archived") === "true") });
+  }
+  if (request.method === "POST" && request.url === "/api/security/profiles") {
+    void readJson(request)
+      .then((input) => send(response, 201, security.createProfile(input)))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create identity profile." }));
+    return;
+  }
+  if (request.method === "GET" && request.url?.startsWith("/api/security/cases")) {
+    const projectId = new URL(request.url, `http://localhost:${port}`).searchParams.get("projectId") ?? "local";
+    return send(response, 200, { cases: security.listCases(projectId) });
+  }
+
   const securityWorkflowRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/workflow$/);
+  const securityFinalizeRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/finalize$/);
+  if (request.method === "POST" && securityFinalizeRoute) {
+    const assessmentId = decodeURIComponent(securityFinalizeRoute[1]);
+    const described = security.describeAssessment(assessmentId);
+    if (!described) return send(response, 404, { error: "Security assessment not found." });
+    const current = workflow.get(described.assessment.projectId);
+    if (!current || current.loop !== "security" || current.security?.assessmentId !== assessmentId || !current.taskId || !current.security.executionId) {
+      return send(response, 409, { error: "This assessment has no successful active workflow to finish." });
+    }
+    let task = tasks.findTask(current.taskId);
+    if (task?.state === "RECOVERY_REQUIRED" && current.recovery.previousTaskState === "VERIFYING") {
+      task = workflow.transition(task, "PLANNING").task;
+      task = workflow.transition(task, "IMPLEMENTING").task;
+      task = workflow.transition(task, "VERIFYING").task;
+    }
+    if (!task || task.state !== "VERIFYING") return send(response, 409, { error: "This assessment is not awaiting verification completion." });
+    try {
+      return send(response, 200, finalizeSuccessfulSecurityOperation(task, assessmentId, current.security.executionId));
+    } catch (error) {
+      return send(response, 400, { error: error instanceof Error ? error.message : "Unable to finish security assessment." });
+    }
+  }
   if (request.method === "POST" && securityWorkflowRoute) {
     const assessmentId = decodeURIComponent(securityWorkflowRoute[1]);
     void readJson(request).then((input) => {
@@ -1673,10 +1895,10 @@ const server = createServer((request, response) => {
     return;
   }
 
-  const securityOperationRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/operations$/);
+  const securityOperationRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/(operations|tool-requests)$/);
   if (request.method === "POST" && securityOperationRoute) {
     const assessmentId = decodeURIComponent(securityOperationRoute[1]);
-    void readJson(request).then((input) => {
+    void readJson(request).then(async (input) => {
       const described = security.describeAssessment(assessmentId);
       if (!described) return send(response, 404, { error: "Security assessment not found." });
       const current = workflow.get(described.assessment.projectId);
@@ -1694,6 +1916,10 @@ const server = createServer((request, response) => {
         operation: input.operation,
         classification: input.classification,
         targets: input.targets,
+        toolId: input.toolId,
+        purpose: input.purpose,
+        arguments: input.arguments,
+        expectedEvidence: input.expectedEvidence,
       });
       let workflowBound = false;
       try {
@@ -1701,9 +1927,35 @@ const server = createServer((request, response) => {
           task,
           planned.execution.operationId,
           planned.execution.id,
-          `Security operation ${planned.execution.operation} passed scope policy and is awaiting approval.`,
+          planned.toolDecision.approvalRequirement === "none"
+            ? `Passive security operation ${planned.execution.operation} passed scope policy and is ready to run.`
+            : `Security operation ${planned.execution.operation} passed scope policy and is awaiting approval.`,
         );
         workflowBound = true;
+        if (planned.toolDecision.approvalRequirement === "none") {
+          security.setExecutionStatus(planned.execution.id, "approved");
+          security.setAssessmentStatus(assessmentId, "running");
+          const implementing = workflow.transition(task, "IMPLEMENTING");
+          task = implementing.task;
+          syncWorkflowProjection(task, implementing.workflow);
+          const dispatch = await security.executeApprovedOperation(planned.execution.id);
+          if (dispatch.execution.status !== "succeeded") {
+            const failed = workflow.transition(task, "FAILED");
+            security.setAssessmentStatus(assessmentId, "failed");
+            syncWorkflowProjection(failed.task, failed.workflow);
+            return send(response, 200, {
+              task: failed.task, workflow: failed.workflow, execution: dispatch.execution,
+              evidence: dispatch.evidence, policy: planned.decision, toolPolicy: planned.toolDecision,
+            });
+          }
+          const verifying = workflow.transition(task, "VERIFYING");
+          const completed = finalizeSuccessfulSecurityOperation(verifying.task, assessmentId, planned.execution.id);
+          return send(response, 201, {
+            task: completed.task, workflow: completed.workflow, assessment: completed.assessment,
+            execution: dispatch.execution, evidence: dispatch.evidence, normalized: dispatch.normalized,
+            policy: planned.decision, toolPolicy: planned.toolDecision,
+          });
+        }
         const approval = createApproval({ id: randomUUID(), taskId: task.id });
         const approvalState = workflow.requestApproval(task, approval, "execution");
         task = approvalState.task;
@@ -1714,6 +1966,7 @@ const server = createServer((request, response) => {
           approval,
           execution: planned.execution,
           policy: planned.decision,
+          toolPolicy: planned.toolDecision,
         });
       } catch (error) {
         if (!workflowBound) {
@@ -1735,11 +1988,62 @@ const server = createServer((request, response) => {
     return send(response, 200, { executions: security.listExecutions(assessmentId) });
   }
 
+  const securityPlansRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/investigation-plans$/);
+  if (request.method === "GET" && securityPlansRoute) {
+    try {
+      return send(response, 200, { plans: security.listInvestigationPlans(decodeURIComponent(securityPlansRoute[1])) });
+    } catch (error) {
+      return send(response, 404, { error: error instanceof Error ? error.message : "Unable to list investigation plans." });
+    }
+  }
+  if (request.method === "POST" && securityPlansRoute) {
+    const assessmentId = decodeURIComponent(securityPlansRoute[1]);
+    void readJson(request)
+      .then((input) => send(response, 201, { plan: security.createInvestigationPlan(assessmentId, input) }))
+      .catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to create investigation plan." }));
+    return;
+  }
+
+  const securityPlanRoute = request.url?.match(/^\/api\/security\/investigation-plans\/([^/?]+)$/);
+  if (request.method === "GET" && securityPlanRoute) {
+    const plan = security.getInvestigationPlan(decodeURIComponent(securityPlanRoute[1]));
+    return plan ? send(response, 200, { plan }) : send(response, 404, { error: "Investigation plan not found." });
+  }
+
+  const securityCancelRoute = request.url?.match(/^\/api\/security\/executions\/([^/?]+)\/cancel$/);
+  if (request.method === "POST" && securityCancelRoute) {
+    const executionId = decodeURIComponent(securityCancelRoute[1]);
+    if (!security.getExecution(executionId)) return send(response, 404, { error: "Security execution not found." });
+    return security.cancelExecution(executionId)
+      ? send(response, 202, { executionId, cancellationRequested: true })
+      : send(response, 409, { error: "Security execution is not currently running." });
+  }
+
   const securityEvidenceRoute = request.url?.match(/^\/api\/security\/executions\/([^/?]+)\/evidence$/);
   if (request.method === "GET" && securityEvidenceRoute) {
     const executionId = decodeURIComponent(securityEvidenceRoute[1]);
     if (!security.getExecution(executionId)) return send(response, 404, { error: "Security execution not found." });
     return send(response, 200, { evidence: security.listEvidence(executionId) });
+  }
+
+  const securityAssetDetailRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/assets\/([^/?]+)$/);
+  if (request.method === "GET" && securityAssetDetailRoute) {
+    const assessmentId = decodeURIComponent(securityAssetDetailRoute[1]);
+    const assetId = decodeURIComponent(securityAssetDetailRoute[2]);
+    const result = security.describeAsset(assessmentId, assetId);
+    return result ? send(response, 200, result) : send(response, 404, { error: "Security asset not found." });
+  }
+
+  const securityKnowledgeRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)\/(assets|services|observations|relationships)$/);
+  if (request.method === "GET" && securityKnowledgeRoute) {
+    const assessmentId = decodeURIComponent(securityKnowledgeRoute[1]);
+    if (!security.describeAssessment(assessmentId)) return send(response, 404, { error: "Security assessment not found." });
+    switch (securityKnowledgeRoute[2]) {
+      case "assets": return send(response, 200, { assets: security.listAssets(assessmentId) });
+      case "services": return send(response, 200, { services: security.listServices(assessmentId) });
+      case "observations": return send(response, 200, { observations: security.listObservations(assessmentId) });
+      case "relationships": return send(response, 200, { relationships: security.listRelationships(assessmentId) });
+    }
   }
 
   const securityAssessmentRoute = request.url?.match(/^\/api\/security\/assessments\/([^/?]+)$/);

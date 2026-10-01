@@ -59,6 +59,19 @@ test("CIDR requests must be fully contained and may not overlap exclusions", () 
   assert.equal(evaluateScopeTarget(scope, { kind: "cidr", value: "2001:db8::/64" }).allowed, false);
 });
 
+test("file and software analysis targets require exact saved scope entries", () => {
+  const scope = createAssessmentScope({
+    id: "scope-evidence",
+    allowedFiles: ["/home/kali/evidence/sample.bin"],
+    allowedQueries: ["Apache 2.4"],
+    excludedFiles: ["/home/kali/evidence/private.bin"],
+  });
+  assert.equal(evaluateScopeTarget(scope, { kind: "file", value: "/home/kali/evidence/sample.bin" }).allowed, true);
+  assert.equal(evaluateScopeTarget(scope, { kind: "file", value: "/home/kali/evidence/other.bin" }).allowed, false);
+  assert.equal(evaluateScopeTarget(scope, { kind: "file", value: "/home/kali/evidence/private.bin" }).allowed, false);
+  assert.equal(evaluateScopeTarget(scope, { kind: "query", value: "apache 2.4" }).allowed, true);
+});
+
 test("active recon fails closed until scope authorization is confirmed", () => {
   const scope = createAssessmentScope({
     id: "scope-unconfirmed",

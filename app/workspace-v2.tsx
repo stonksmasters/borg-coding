@@ -15,6 +15,7 @@ import { RunStatusCard, type RunView } from "@/components/workspace/run-status-c
 import { ProjectBrowser, type ProjectEntry } from "@/components/workspace/project-browser";
 import { EnvironmentPanel, type EnvironmentVariable } from "@/components/workspace/environment-panel";
 import { DebugPanel, type DebugSnapshotView } from "@/components/workspace/debug-panel";
+import { SecurityWorkspace } from "@/components/security/security-workspace";
 import { isUnsupportedLanguageTool, toolProgress } from "./agent-progress";
 import { executionIsRunning, taskIsRunning, taskNeedsAttention } from "./task-activity";
 import { previewChangeFingerprint, shouldRefreshPreview } from "./preview-refresh";
@@ -132,6 +133,7 @@ const EMPTY_CHANGE_SET: ChangeSet = { files: [], additions: 0, deletions: 0, dif
 
 export function BorgWorkspaceV2() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [workspaceMode, setWorkspaceMode] = useState<"build" | "security">("build");
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [request, setRequest] = useState("");
@@ -1539,11 +1541,15 @@ export function BorgWorkspaceV2() {
       <SidebarHeader className="border-b border-white/8 px-4 py-4">
         <div className="flex items-center gap-3">
           <div className="grid size-9 place-items-center rounded-lg bg-[#a7ff4f] text-[#071007]"><Bot className="size-5" /></div>
-          <div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG</p><p className="text-xs text-slate-500">LOCAL WEBSITE BUILDER</p></div>
+          <div className="min-w-0"><p className="text-sm font-semibold tracking-wide text-white">BORG</p><p className="text-xs text-slate-500">LOCAL WORKSPACE</p></div>
         </div>
         <Button onClick={() => setWebsiteOpen(true)} className="mt-4 w-full justify-start gap-2 bg-[#a7ff4f] text-[#071007] hover:bg-[#b9ff74]"><Plus className="size-4" />New Website</Button>
       </SidebarHeader>
       <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-slate-500">Workspaces</SidebarGroupLabel>
+          <SidebarGroupContent><SidebarMenu><SidebarMenuItem><SidebarMenuButton isActive={workspaceMode === "security"} onClick={() => setWorkspaceMode("security")} className="text-slate-300 hover:bg-white/7 hover:text-white"><ShieldCheck /><span>Security</span><span className="ml-auto size-1.5 rounded-full bg-[#a7ff4f]" /></SidebarMenuButton></SidebarMenuItem></SidebarMenu></SidebarGroupContent>
+        </SidebarGroup>
         <SidebarGroup>
           <SidebarGroupLabel className="text-slate-500">My Websites</SidebarGroupLabel>
           <SidebarGroupContent>
@@ -1551,7 +1557,7 @@ export function BorgWorkspaceV2() {
               {websiteSessions.map((session) => {
                 const activeRootId = activeSession?.parentSessionId ?? activeSession?.id;
                 return <SidebarMenuItem key={session.id}>
-                  <div className="group flex items-center gap-1"><SidebarMenuButton isActive={activeRootId === session.id} onClick={() => void loadSession(session.id)} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div>
+                  <div className="group flex items-center gap-1"><SidebarMenuButton isActive={workspaceMode === "build" && activeRootId === session.id} onClick={() => { setWorkspaceMode("build"); void loadSession(session.id); }} className="min-w-0 flex-1 text-slate-300 hover:bg-white/7 hover:text-white"><Globe2 /><span className="truncate">{session.title}</span></SidebarMenuButton><button type="button" aria-label={`Rename ${session.title}`} onClick={() => void renameSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-white/8 hover:text-white group-hover:block"><Pencil className="size-3" /></button><button type="button" aria-label={`Delete ${session.title}`} onClick={() => void deleteSession(session)} className="hidden rounded p-1 text-slate-600 hover:bg-red-400/10 hover:text-red-200 group-hover:block"><Trash2 className="size-3" /></button></div>
                 </SidebarMenuItem>;
               })}
             </SidebarMenu>
@@ -1587,6 +1593,8 @@ export function BorgWorkspaceV2() {
     </Sidebar>
 
     <SidebarInset className="h-svh min-h-0 min-w-0 overflow-hidden bg-[#0d1117] text-slate-100">
+      {workspaceMode === "security" && <SecurityWorkspace api={API} />}
+      <div className={workspaceMode === "security" ? "hidden" : "contents"}>
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/8 px-4 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <SidebarTrigger className="text-slate-400" />
@@ -1742,6 +1750,7 @@ export function BorgWorkspaceV2() {
           </form>
         </div>
       </section>
+      </div>
     </SidebarInset>
   </SidebarProvider>;
 }

@@ -133,7 +133,7 @@ export class SshExecutionProvider implements ExecutionProvider {
   constructor(options: SshExecutionProviderOptions = {}) {
     this.sshBinary = options.sshBinary ?? "ssh";
     this.credentialResolver = options.credentialResolver ?? null;
-    this.connectTimeoutSeconds = options.connectTimeoutSeconds ?? 5;
+    this.connectTimeoutSeconds = options.connectTimeoutSeconds ?? 15;
     this.maxCaptureBytes = options.maxCaptureBytes ?? 1024 * 1024;
   }
 
@@ -157,6 +157,10 @@ export class SshExecutionProvider implements ExecutionProvider {
       "-T",
       "-o", "BatchMode=yes",
       "-o", `ConnectTimeout=${this.connectTimeoutSeconds}`,
+      "-o", "ConnectionAttempts=3",
+      "-o", "ServerAliveInterval=15",
+      "-o", "ServerAliveCountMax=3",
+      "-o", "TCPKeepAlive=yes",
       "-p", String(node.port),
     ];
     if (credential.identityFile) sshArgs.push("-i", credential.identityFile);
@@ -259,7 +263,7 @@ export class SshExecutionProvider implements ExecutionProvider {
       nodeId: node.id,
       executable: "uname",
       args: ["-s"],
-      timeoutMs: 5_000,
+      timeoutMs: 20_000,
     }), options);
     if (platform.exitCode !== 0) throw new Error(platform.stderr.trim() || "Unable to read remote platform.");
 
@@ -267,7 +271,7 @@ export class SshExecutionProvider implements ExecutionProvider {
       nodeId: node.id,
       executable: "uname",
       args: ["-m"],
-      timeoutMs: 5_000,
+      timeoutMs: 20_000,
     }), options);
     if (architecture.exitCode !== 0) throw new Error(architecture.stderr.trim() || "Unable to read remote architecture.");
 

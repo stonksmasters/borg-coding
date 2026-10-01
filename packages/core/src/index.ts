@@ -3,3 +3,8 @@ export * from "./state-machine.ts";
 export * from "./workflow-engine.ts";
 export * from "./recovery-service.ts";
 export * from "./execution-state.ts";
+export * from "./security-tool-registry.ts";
+export * from "./security-tool-policy.ts";
+export * from "./security-investigation-planner.ts";
+export * from "./kali-mcp-provider.ts";
+export * from "./security-tool-install.ts";

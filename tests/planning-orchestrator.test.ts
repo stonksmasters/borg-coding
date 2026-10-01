@@ -114,8 +114,9 @@ function harness() {
     },
     ollamaUrl: "http://127.0.0.1:11434",
     model: "test-model",
+    reasoningModel: "reasoning-test-model",
     runAgent: async (input: Parameters<PlanningOrchestratorDependencies["runAgent"]>[0]) => {
-      workflowCalls.push({ name: "runAgent", value: { mode: input.mode, role: input.role } });
+      workflowCalls.push({ name: "runAgent", value: { mode: input.mode, role: input.role, model: input.model } });
       return { answer: "Plan\n1. Inspect the approved scope.\n2. Make the bounded change.\n3. Verify the result.", usedTools: false, budgetExhausted: false };
     },
     appendTaskEvent: (taskId: string, type: string, payload: Record<string, unknown>) => {
@@ -204,7 +205,7 @@ test("PlanningOrchestrator keeps ASK planning read-only and completes without ap
   );
   assert.deepEqual(
     h.workflowCalls.find((call) => call.name === "runAgent")?.value,
-    { mode: "ask", role: "architect" },
+    { mode: "ask", role: "architect", model: "test-model" },
   );
 });
 
@@ -229,4 +230,12 @@ test("PlanningOrchestrator preserves mutation-capable approval boundary through 
     "execution",
   );
   assert.ok(h.taskEvents.some((event) => event.type === "MODEL_RESPONSE_COMPLETED"));
+  assert.deepEqual(
+    h.workflowCalls.find((call) => call.name === "runAgent")?.value,
+    { mode: "edit", role: "architect", model: "reasoning-test-model" },
+  );
+  assert.ok(h.taskEvents.some((event) =>
+    event.type === "MODEL_ROUTING_DECIDED"
+    && event.payload.architectModel === "reasoning-test-model"
+    && event.payload.implementerModel === "test-model"));
 });

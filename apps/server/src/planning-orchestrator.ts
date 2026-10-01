@@ -24,6 +24,7 @@ import {
   selectSpecialistPacks,
   specialistPackRefs,
   specialistSystemInstructions,
+  routeReasoningModel,
   type DisciplineRoute,
   type SpecialistCapabilityPack,
 } from "../../../packages/orchestration/src/index.ts";
@@ -149,6 +150,7 @@ export type PlanningOrchestratorDependencies = {
   designDirector: DesignDirectorService;
   ollamaUrl: string;
   model: string;
+  reasoningModel: string;
   runAgent: typeof runOllamaAgent;
   appendTaskEvent: (taskId: string, type: string, payload: Record<string, unknown>) => void;
   syncWorkflowProjection: (task: Task, state: WorkflowState) => WorkflowState;
@@ -360,7 +362,6 @@ export class PlanningOrchestrator {
       }
     }
 
-    const architectModel = teamPolicies.modelFor(teamPolicy, "architect", this.deps.model, route.primary);
     const websiteProject = approvedRepository ? websiteInfo(approvedRepository) : null;
     const isBorgWebsite = Boolean(websiteProject);
     const priorDeliveredWebsiteTask = websiteProject
@@ -494,6 +495,26 @@ export class PlanningOrchestrator {
           ].join("\n");
         })()
       : null;
+
+    const reasoningDecision = routeReasoningModel({
+      mode,
+      intent: intentDecision.intent,
+      impact: intentDecision.impact,
+      confidence: intentDecision.confidence,
+      requiresPlanRevision: intentDecision.requiresPlanRevision,
+      deterministicPlanAvailable: Boolean(deterministicQuickEditPlan),
+      sourceFileCount: compiledArchitectContext?.manifest.filter((item) => item.kind === "source").length,
+    });
+    const fallbackArchitectModel = reasoningDecision.useReasoningModel ? this.deps.reasoningModel : this.deps.model;
+    const architectModel = teamPolicies.modelFor(teamPolicy, "architect", fallbackArchitectModel, route.primary);
+    const routingPayload = {
+      useReasoningModel: reasoningDecision.useReasoningModel,
+      reason: reasoningDecision.reason,
+      architectModel,
+      implementerModel: this.deps.model,
+    };
+    appendTaskEvent(task.id, "MODEL_ROUTING_DECIDED", routingPayload);
+    emit({ type: "model.routing.decided", ...routingPayload });
 
     if (rawSliceAction === "backend" && websiteProject) {
       const docs = readProjectDocs(websiteProject.path);

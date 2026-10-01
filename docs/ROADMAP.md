@@ -1,8 +1,8 @@
 # BORG Code Roadmap
 
-Last updated: 2026-09-21
+Last updated: 2026-09-29
 
-This roadmap is product-oriented. Historical alpha documents describe implementation milestones; this file describes where BORG is going and what major capabilities are complete, active, or later.
+This roadmap is product-oriented. Historical alpha documents describe implementation milestones; this file describes the transition from BORG's website-builder foundation into a local AI operating layer with General Chat as its primary interface.
 
 ## Status legend
 
@@ -10,6 +10,12 @@ This roadmap is product-oriented. Historical alpha documents describe implementa
 - Active: current development frontier; implementation exists in part but the product capability is not yet reliable end to end.
 - Next: intentionally next after the active frontier.
 - Later: planned, but should not distract from the current reliability goals.
+
+## Platform direction
+
+The website builder remains the most mature focused workspace and the main proof of BORG's autonomous workflow. It is no longer the complete product boundary. BORG is expanding around a shared capability system used by General Chat, Development, Security, Knowledge, Infrastructure, Computer Control, Data, and Automation.
+
+The canonical product direction is defined in [VISION.md](VISION.md). New domains must reuse the existing permission, workflow, persistence, activity, evidence, and verification foundations instead of creating separate agent runtimes.
 
 ## 0. Local coding runtime - Built
 
@@ -25,7 +31,7 @@ Foundation includes:
 - checkpoints and continuations;
 - review and repair infrastructure.
 
-The runtime is no longer the primary product goal. It is the execution substrate for the website builder.
+The runtime is no longer the primary product goal. It is the execution substrate for General Chat and every focused workspace, including the website builder.
 
 ## 1. Persistent coding workstation - Built / hardening
 
@@ -201,16 +207,120 @@ Capabilities include:
 
 Backend should be driven by the approved product contract, not invented prematurely.
 
+## 11. General Chat command surface - Next
+
+Target:
+
+Make persistent Chat the front door to every BORG capability.
+
+Deliverables:
+
+- durable general conversations and attachments;
+- model selection and routing behind provider adapters;
+- per-conversation tool and network permissions;
+- shared activity, approvals, artifacts, and results;
+- capability selection without exposing raw command construction;
+- compact durable memory and bounded context compilation;
+- links into focused workspaces when structured inspection is useful.
+
+## 12. Shared capability and job runtime - Active / next
+
+Target:
+
+Give Chat, workspaces, and future automations one typed execution system.
+
+Deliverables:
+
+- typed capability definitions and schemas;
+- provider and execution-node adapters;
+- explicit target and workspace scope;
+- ASK / PLAN / EDIT / AGENT policy evaluation;
+- durable jobs, steps, streaming, cancellation, and timeout;
+- inspectable side effects and artifacts;
+- normalized evidence and verification records;
+- capability discovery that does not grant execution permission.
+
+Existing development and security code should converge on these shared primitives incrementally.
+
+## 13. Security and Kali provider - Active
+
+Current foundation includes:
+
+- assessment scope and authorization state;
+- generic SSH execution nodes;
+- provider health and capability discovery;
+- typed DNS and service-inventory operations;
+- workflow approvals and durable executions;
+- raw and normalized evidence;
+- assessment assets, services, observations, and relationships;
+- Security workspace UI;
+- Kali tool registry, policy, and investigation planning;
+- typed public username and email footprint adapters.
+- an SSH-stdio Kali MCP provider with health and tool discovery;
+- typed DNSRecon, Maigret, Holehe, PhoneInfoga, WhatWeb, Gobuster, and Nmap MCP adapters;
+- typed Whois, Wafw00f, SSLyze, DNSenum, DNSmap, Fierce, passive Amass, and DMitry adapters;
+- typed sslscan, FFUF, DIRB, Nikto, WPScan, and Wfuzz adapters with bounded request rates and run times;
+- typed arp-scan, fping, Ike-scan, enum4linux, anonymous smbclient, and read-only SMBMap adapters for approved hosts and CIDRs;
+- exact-scope ExifTool, hashdeep, offline TShark, and SearchSploit adapters for remote evidence files and software queries;
+- domain discovery normalization into hostname assets, address observations, email candidates, and evidence-backed subdomain relationships;
+- passive auto-run policy, active approval gates, cancellation, and guided package installation;
+- identity assets, confidence, rationale, and evidence-backed relationships;
+- General Chat tools for investigation planning and case retrieval.
+
+Next milestones:
+
+1. inventory every installed Kali security executable and expose integration
+   state separately from installation state;
+2. complete Wave 1 recon adapters for identity, domain, network, TLS, and web
+   discovery, with fixtures and live Pi verification for each operation;
+3. build profile metadata extraction, account clustering, correlation scores,
+   and conflict handling before identity tools are exposed to General Chat;
+4. add structured progress and partial-result streaming for long-running MCP
+   calls such as full Maigret, SpiderFoot, Amass, and GVM jobs;
+5. complete Wave 2 evidence adapters for packet, file, metadata, TLS, and
+   vulnerability analysis;
+6. add reviewed, pinned installers for useful tools absent from Kali packages;
+7. implement Wave 3 assisted workflows and Wave 4 restricted adapters with
+   explicit authorization and approval boundaries;
+8. expose only verified operations to model planning after deterministic
+   end-to-end evaluation passes.
+
+Kali remains an execution node. Workflow and investigation authority stay in BORG.
+
+## 14. Files and Knowledge - Later / platform priority
+
+Target:
+
+Index and retrieve local files, documents, repository knowledge, decisions, and prior work without placing whole collections in model context.
+
+This domain should reuse the Context Compiler, provenance, entity, evidence, and permission foundations.
+
+## 15. Infrastructure and Computer Control - Later
+
+Target:
+
+Operate trusted local and remote systems through visible, inspectable capabilities: services, containers, logs, health, backups, applications, and GUI-only workflows.
+
+## 16. Automation - Later
+
+Target:
+
+Schedule or trigger proven capabilities using the same policy, scope, job, evidence, and notification system used for interactive work.
+
 ## Immediate development order
 
-The current priority order is:
+The current cross-product priority order is:
 
-1. benchmark and harden the completed multi-slice frontend workflow, Context Compiler, and RunView on difficult real projects;
-2. replace heuristic Page/Component source relationships with language-intelligence-backed mappings;
-3. introduce dedicated Page and Component workspaces using entity-scoped context and verification;
-4. build a high-quality reusable component/page corpus with evidence and provenance;
-5. add retrieval intelligence only after the corpus is trustworthy;
-6. expand the same durable workflow into reliable full-stack implementation.
+1. preserve and benchmark the website builder's multi-slice workflow, Context Compiler, RunView, and verification foundations;
+2. establish General Chat as the persistent command surface;
+3. consolidate a shared typed capability and durable job contract from the existing development and security paths;
+4. complete Kali MCP/SSH provider integration through the existing security scope, policy, approval, and evidence boundary;
+5. deepen identity recon and the security case graph with provenance and confidence;
+6. add Files and Knowledge retrieval using bounded context and citations;
+7. extend the same provider system into infrastructure and visible computer control;
+8. add automation only after the underlying interactive capabilities are reliable.
+
+Within the Development workspace, language-backed Page/Component mappings, scoped workspaces, quality corpus work, and eventual full-stack construction remain the ordered product path.
 
 ## Benchmark principle
 

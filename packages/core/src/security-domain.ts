@@ -25,24 +25,95 @@ export const capabilityCategories = ["dns", "network", "web", "osint", "utility"
 export const securityOperationClasses = ["passive", "active_recon", "manual"] as const;
 export const securityExecutionStatuses = ["planned", "approved", "running", "succeeded", "failed", "cancelled", "blocked"] as const;
 export const securityEvidenceKinds = ["stdout", "stderr", "normalized", "artifact", "note"] as const;
+export const securityAssetKinds = ["domain", "ip_address", "network", "host", "file", "software", "email", "username", "phone", "profile", "url"] as const;
+export const securityRelationshipKinds = ["resolves_to", "aliases_to", "contains_host", "has_subdomain", "contains_path", "has_profile", "uses_domain", "possible_same_identity"] as const;
+export const securityRelationshipConfidence = ["confirmed", "strong", "possible", "unverified", "conflicting"] as const;
+export const securityToolApprovalRequirements = ["none", "execution", "intrusive"] as const;
+export const identityIdentifierKinds = ["email", "username", "phone", "domain", "url"] as const;
+export const identityIdentifierStatuses = ["confirmed", "candidate", "rejected"] as const;
+export const securityJobStatuses = ["queued", "awaiting_approval", "running", "succeeded", "failed", "cancelled"] as const;
 
 export const SecurityTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("email"), value: z.string().trim().email() }),
+  z.object({ kind: z.literal("username"), value: z.string().trim().min(1) }),
+  z.object({ kind: z.literal("phone"), value: z.string().trim().min(3) }),
   z.object({ kind: z.literal("domain"), value: z.string().trim().min(1) }),
+  z.object({ kind: z.literal("url"), value: z.string().trim().url() }),
   z.object({ kind: z.literal("host"), value: z.string().trim().min(1) }),
   z.object({ kind: z.literal("cidr"), value: z.string().trim().min(1) }),
+  z.object({ kind: z.literal("file"), value: z.string().trim().min(1) }),
+  z.object({ kind: z.literal("query"), value: z.string().trim().min(1) }),
 ]);
 export type SecurityTarget = z.infer<typeof SecurityTargetSchema>;
+
+export const SecurityToolRequestSchema = z.object({
+  id: z.string().min(1),
+  assessmentId: z.string().min(1),
+  toolId: z.string().trim().min(1),
+  operationId: z.string().trim().min(1),
+  purpose: z.string().trim().min(1).max(1000),
+  arguments: z.record(z.string(), z.unknown()).default({}),
+  targets: z.array(SecurityTargetSchema).min(1),
+  expectedEvidence: z.array(z.string().trim().min(1)).min(1),
+  risk: z.enum(["passive", "external_passive", "active", "intrusive"]),
+  approvalRequirement: z.enum(securityToolApprovalRequirements),
+  createdAt: z.string().datetime(),
+});
+export type SecurityToolRequest = z.infer<typeof SecurityToolRequestSchema>;
+
+export const SecurityInvestigationSubjectSchema = z.object({
+  kind: z.enum(["email", "username", "phone", "domain", "url", "host", "cidr", "file", "query"]),
+  value: z.string().trim().min(1).max(500),
+});
+export type SecurityInvestigationSubject = z.infer<typeof SecurityInvestigationSubjectSchema>;
+
+export const SecurityInvestigationStepSchema = z.object({
+  id: z.string().min(1),
+  sequence: z.number().int().positive(),
+  title: z.string().trim().min(1),
+  status: z.enum(["proposed", "blocked"]),
+  toolId: z.string().trim().min(1).nullable(),
+  operationId: z.string().trim().min(1).nullable(),
+  subject: SecurityInvestigationSubjectSchema,
+  reason: z.string().trim().min(1),
+  toolRequest: SecurityToolRequestSchema.nullable(),
+});
+export type SecurityInvestigationStep = z.infer<typeof SecurityInvestigationStepSchema>;
+
+export const SecurityInvestigationPlanSchema = z.object({
+  id: z.string().min(1),
+  assessmentId: z.string().min(1),
+  objective: z.string().trim().min(1).max(4000),
+  status: z.enum(["draft", "ready", "blocked"]),
+  subjects: z.array(SecurityInvestigationSubjectSchema).min(1),
+  steps: z.array(SecurityInvestigationStepSchema),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type SecurityInvestigationPlan = z.infer<typeof SecurityInvestigationPlanSchema>;
 
 const nonEmptyValue = z.string().trim().min(1);
 
 export const AssessmentScopeSchema = z.object({
   id: z.string().min(1),
   allowedDomains: z.array(nonEmptyValue).default([]),
+  allowedEmails: z.array(nonEmptyValue).default([]),
+  allowedUsernames: z.array(nonEmptyValue).default([]),
+  allowedPhones: z.array(nonEmptyValue).default([]),
+  allowedUrls: z.array(nonEmptyValue).default([]),
   allowedHosts: z.array(nonEmptyValue).default([]),
   allowedCidrs: z.array(nonEmptyValue).default([]),
+  allowedFiles: z.array(nonEmptyValue).default([]),
+  allowedQueries: z.array(nonEmptyValue).default([]),
   excludedDomains: z.array(nonEmptyValue).default([]),
+  excludedEmails: z.array(nonEmptyValue).default([]),
+  excludedUsernames: z.array(nonEmptyValue).default([]),
+  excludedPhones: z.array(nonEmptyValue).default([]),
+  excludedUrls: z.array(nonEmptyValue).default([]),
   excludedHosts: z.array(nonEmptyValue).default([]),
   excludedCidrs: z.array(nonEmptyValue).default([]),
+  excludedFiles: z.array(nonEmptyValue).default([]),
+  excludedQueries: z.array(nonEmptyValue).default([]),
   authorizationConfirmed: z.boolean().default(false),
   authorizationConfirmedAt: z.string().datetime().nullable().default(null),
   createdAt: z.string().datetime(),
@@ -85,6 +156,10 @@ export const ExecutionNodeSchema = z.object({
   username: z.string().trim().min(1).nullable().default(null),
   credentialRef: z.string().trim().min(1).nullable().default(null),
   workingDirectory: z.string().trim().min(1).nullable().default(null),
+  securityRuntime: z.enum(["ssh_cli", "kali_mcp"]).default("ssh_cli"),
+  mcpServerName: z.string().trim().min(1).nullable().default(null),
+  mcpServerVersion: z.string().trim().min(1).nullable().default(null),
+  mcpTools: z.array(z.string().trim().min(1)).default([]),
   platform: z.string().trim().min(1).nullable().default(null),
   architecture: z.string().trim().min(1).nullable().default(null),
   status: z.enum(executionNodeStatuses).default("unknown"),
@@ -128,6 +203,10 @@ export const SecurityExecutionRecordSchema = z.object({
   classification: z.enum(securityOperationClasses),
   targets: z.array(SecurityTargetSchema).min(1),
   provider: z.enum(executionNodeProviders),
+  transport: z.enum(["ssh_cli", "kali_mcp"]).default("ssh_cli"),
+  mcpTool: z.string().trim().min(1).nullable().default(null),
+  underlyingExecutable: z.string().trim().min(1).nullable().default(null),
+  toolRequest: SecurityToolRequestSchema.nullable().default(null),
   status: z.enum(securityExecutionStatuses),
   startedAt: z.string().datetime().nullable().default(null),
   completedAt: z.string().datetime().nullable().default(null),
@@ -156,6 +235,113 @@ export const SecurityEvidenceRecordSchema = z.object({
 });
 export type SecurityEvidenceRecord = z.infer<typeof SecurityEvidenceRecordSchema>;
 
+export const SecurityAssetSchema = z.object({
+  id: z.string().min(1),
+  assessmentId: z.string().min(1),
+  kind: z.enum(securityAssetKinds),
+  key: z.string().trim().min(1),
+  displayName: z.string().trim().min(1),
+  firstSeenAt: z.string().datetime(),
+  lastSeenAt: z.string().datetime(),
+  lastExecutionId: z.string().min(1),
+  lastEvidenceId: z.string().min(1),
+});
+export type SecurityAsset = z.infer<typeof SecurityAssetSchema>;
+
+export const SecurityNetworkServiceSchema = z.object({
+  id: z.string().min(1),
+  assessmentId: z.string().min(1),
+  assetId: z.string().min(1),
+  port: z.number().int().min(1).max(65535),
+  protocol: z.string().trim().min(1),
+  state: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  product: z.string().trim().min(1).nullable(),
+  version: z.string().trim().min(1).nullable(),
+  firstSeenAt: z.string().datetime(),
+  lastSeenAt: z.string().datetime(),
+  lastExecutionId: z.string().min(1),
+  lastEvidenceId: z.string().min(1),
+});
+export type SecurityNetworkService = z.infer<typeof SecurityNetworkServiceSchema>;
+
+export const SecurityObservationSchema = z.object({
+  id: z.string().min(1),
+  assessmentId: z.string().min(1),
+  assetId: z.string().min(1),
+  serviceId: z.string().min(1).nullable(),
+  executionId: z.string().min(1),
+  evidenceId: z.string().min(1),
+  type: z.string().trim().min(1),
+  data: z.record(z.string(), z.unknown()),
+  observedAt: z.string().datetime(),
+});
+export type SecurityObservation = z.infer<typeof SecurityObservationSchema>;
+
+export const SecurityRelationshipSchema = z.object({
+  id: z.string().min(1),
+  assessmentId: z.string().min(1),
+  sourceAssetId: z.string().min(1),
+  targetAssetId: z.string().min(1),
+  kind: z.enum(securityRelationshipKinds),
+  confidence: z.enum(securityRelationshipConfidence).default("unverified"),
+  rationale: z.string().trim().min(1).default("Observed by a security operation."),
+  evidenceIds: z.array(z.string().min(1)).default([]),
+  firstSeenAt: z.string().datetime(),
+  lastSeenAt: z.string().datetime(),
+  lastExecutionId: z.string().min(1),
+  lastEvidenceId: z.string().min(1),
+});
+export type SecurityRelationship = z.infer<typeof SecurityRelationshipSchema>;
+
+export const IdentityIdentifierSchema = z.object({
+  id: z.string().min(1),
+  profileId: z.string().min(1),
+  kind: z.enum(identityIdentifierKinds),
+  value: z.string().trim().min(1).max(1000),
+  normalizedValue: z.string().trim().min(1).max(1000),
+  status: z.enum(identityIdentifierStatuses),
+  confidence: z.enum(securityRelationshipConfidence).default("unverified"),
+  source: z.enum(["user", "tool"]),
+  evidenceIds: z.array(z.string().min(1)).default([]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type IdentityIdentifier = z.infer<typeof IdentityIdentifierSchema>;
+
+export const IdentityProfileSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  assessmentId: z.string().min(1),
+  displayName: z.string().trim().min(1).max(200),
+  notes: z.string().max(10000).default(""),
+  executionNodeId: z.string().min(1),
+  authorizationConfirmed: z.boolean().default(false),
+  authorizationConfirmedAt: z.string().datetime().nullable().default(null),
+  archivedAt: z.string().datetime().nullable().default(null),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type IdentityProfile = z.infer<typeof IdentityProfileSchema>;
+
+export const SecurityJobSchema = z.object({
+  id: z.string().min(1),
+  profileId: z.string().min(1),
+  assessmentId: z.string().min(1),
+  executionId: z.string().min(1),
+  nodeId: z.string().min(1),
+  operation: z.string().min(1),
+  target: SecurityTargetSchema,
+  status: z.enum(securityJobStatuses),
+  approvalRequired: z.boolean(),
+  error: z.string().nullable().default(null),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  startedAt: z.string().datetime().nullable().default(null),
+  completedAt: z.string().datetime().nullable().default(null),
+});
+export type SecurityJob = z.infer<typeof SecurityJobSchema>;
+
 function unique(values: readonly string[], lowercase = false): string[] {
   const normalized = values
     .map((value) => value.trim())
@@ -167,11 +353,23 @@ function unique(values: readonly string[], lowercase = false): string[] {
 export function createAssessmentScope(input: {
   id: string;
   allowedDomains?: string[];
+  allowedEmails?: string[];
+  allowedUsernames?: string[];
+  allowedPhones?: string[];
+  allowedUrls?: string[];
   allowedHosts?: string[];
   allowedCidrs?: string[];
+  allowedFiles?: string[];
+  allowedQueries?: string[];
   excludedDomains?: string[];
+  excludedEmails?: string[];
+  excludedUsernames?: string[];
+  excludedPhones?: string[];
+  excludedUrls?: string[];
   excludedHosts?: string[];
   excludedCidrs?: string[];
+  excludedFiles?: string[];
+  excludedQueries?: string[];
   authorizationConfirmed?: boolean;
 }): AssessmentScope {
   const now = new Date().toISOString();
@@ -179,11 +377,23 @@ export function createAssessmentScope(input: {
   return AssessmentScopeSchema.parse({
     id: input.id,
     allowedDomains: unique(input.allowedDomains ?? [], true),
+    allowedEmails: unique(input.allowedEmails ?? [], true),
+    allowedUsernames: unique(input.allowedUsernames ?? [], true),
+    allowedPhones: unique(input.allowedPhones ?? []),
+    allowedUrls: unique(input.allowedUrls ?? []),
     allowedHosts: unique(input.allowedHosts ?? [], true),
     allowedCidrs: unique(input.allowedCidrs ?? []),
+    allowedFiles: unique(input.allowedFiles ?? []),
+    allowedQueries: unique(input.allowedQueries ?? [], true),
     excludedDomains: unique(input.excludedDomains ?? [], true),
+    excludedEmails: unique(input.excludedEmails ?? [], true),
+    excludedUsernames: unique(input.excludedUsernames ?? [], true),
+    excludedPhones: unique(input.excludedPhones ?? []),
+    excludedUrls: unique(input.excludedUrls ?? []),
     excludedHosts: unique(input.excludedHosts ?? [], true),
     excludedCidrs: unique(input.excludedCidrs ?? []),
+    excludedFiles: unique(input.excludedFiles ?? []),
+    excludedQueries: unique(input.excludedQueries ?? [], true),
     authorizationConfirmed: confirmed,
     authorizationConfirmedAt: confirmed ? now : null,
     createdAt: now,
@@ -220,10 +430,18 @@ export function createSecurityExecutionRecord(input: {
   classification: SecurityExecutionRecord["classification"];
   targets: SecurityTarget[];
   provider: SecurityExecutionRecord["provider"];
+  transport?: SecurityExecutionRecord["transport"];
+  mcpTool?: string | null;
+  underlyingExecutable?: string | null;
+  toolRequest?: SecurityToolRequest | null;
 }): SecurityExecutionRecord {
   const now = new Date().toISOString();
   return SecurityExecutionRecordSchema.parse({
     ...input,
+    transport: input.transport ?? "ssh_cli",
+    mcpTool: input.mcpTool ?? null,
+    underlyingExecutable: input.underlyingExecutable ?? null,
+    toolRequest: input.toolRequest ?? null,
     status: "planned",
     startedAt: null,
     completedAt: null,
@@ -273,6 +491,7 @@ export function createExecutionNode(input: {
   username?: string | null;
   credentialRef?: string | null;
   workingDirectory?: string | null;
+  securityRuntime?: ExecutionNode["securityRuntime"];
 }): ExecutionNode {
   const now = new Date().toISOString();
   return ExecutionNodeSchema.parse({
@@ -282,6 +501,10 @@ export function createExecutionNode(input: {
     username: input.username ?? null,
     credentialRef: input.credentialRef ?? null,
     workingDirectory: input.workingDirectory ?? null,
+    securityRuntime: input.securityRuntime ?? "ssh_cli",
+    mcpServerName: null,
+    mcpServerVersion: null,
+    mcpTools: [],
     platform: null,
     architecture: null,
     status: "unknown",

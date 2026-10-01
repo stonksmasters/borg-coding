@@ -111,6 +111,42 @@ function findOverlappingCidr(rules: readonly string[], candidate: Ipv4Range): st
 export function evaluateScopeTarget(scopeInput: AssessmentScope, target: SecurityTarget): ScopeDecision {
   const scope = AssessmentScopeSchema.parse(scopeInput);
 
+  if (target.kind === "file" || target.kind === "query") {
+    const normalized = target.kind === "query" ? target.value.trim().toLowerCase() : target.value.trim().replaceAll("\\", "/");
+    const allowedValues = target.kind === "file" ? scope.allowedFiles : scope.allowedQueries;
+    const excludedValues = target.kind === "file" ? scope.excludedFiles : scope.excludedQueries;
+    const normalize = (value: string) => target.kind === "query" ? value.trim().toLowerCase() : value.trim().replaceAll("\\", "/");
+    const excluded = excludedValues.find((value) => normalize(value) === normalized) ?? null;
+    if (excluded) return { allowed: false, normalizedTarget: normalized, reason: "Target matches an explicit exclusion.", matchedRule: excluded };
+    const allowed = allowedValues.find((value) => normalize(value) === normalized) ?? null;
+    return allowed
+      ? { allowed: true, normalizedTarget: normalized, reason: "Local analysis target is inside the assessment scope.", matchedRule: allowed }
+      : { allowed: false, normalizedTarget: normalized, reason: "Local analysis target is outside the assessment scope.", matchedRule: null };
+  }
+
+  if (target.kind === "email" || target.kind === "username" || target.kind === "phone" || target.kind === "url") {
+    const normalized = normalizeName(target.value);
+    const allowedValues = target.kind === "email"
+      ? scope.allowedEmails
+      : target.kind === "username"
+        ? scope.allowedUsernames
+        : target.kind === "phone"
+          ? scope.allowedPhones
+          : scope.allowedUrls;
+    const excludedValues = target.kind === "email"
+      ? scope.excludedEmails
+      : target.kind === "username"
+        ? scope.excludedUsernames
+        : target.kind === "phone"
+          ? scope.excludedPhones
+          : scope.excludedUrls;
+    if (excludedValues.some((value) => normalizeName(value) === normalized)) return { allowed: false, normalizedTarget: normalized, reason: "Target matches an explicit exclusion.", matchedRule: normalized };
+    const matched = allowedValues.find((value) => normalizeName(value) === normalized) ?? null;
+    return matched
+      ? { allowed: true, normalizedTarget: normalized, reason: "Identity target is inside the assessment scope.", matchedRule: matched }
+      : { allowed: false, normalizedTarget: normalized, reason: "Identity target is outside the assessment scope.", matchedRule: null };
+  }
+
   if (target.kind === "domain") {
     const normalized = normalizeName(target.value);
     if (!normalized) return { allowed: false, normalizedTarget: normalized, reason: "Domain target is empty.", matchedRule: null };

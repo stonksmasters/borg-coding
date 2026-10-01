@@ -8,6 +8,7 @@ import {
   createExecutionRequest,
   type ExecutionProvider,
 } from "./execution-provider.ts";
+import { defaultSecurityToolRegistry } from "./security-tool-registry.ts";
 
 export type CapabilityDefinition = {
   id: string;
@@ -17,18 +18,14 @@ export type CapabilityDefinition = {
 };
 
 export const defaultSecurityCapabilities: readonly CapabilityDefinition[] = [
-  { id: "nmap", executable: "nmap", category: "network", versionArgs: ["--version"] },
-  { id: "dig", executable: "dig", category: "dns", versionArgs: ["-v"] },
-  { id: "whois", executable: "whois", category: "osint", versionArgs: ["--version"] },
-  { id: "curl", executable: "curl", category: "web", versionArgs: ["--version"] },
-  { id: "python3", executable: "python3", category: "utility", versionArgs: ["--version"] },
-  { id: "git", executable: "git", category: "utility", versionArgs: ["--version"] },
-  { id: "openssl", executable: "openssl", category: "utility", versionArgs: ["version"] },
-  { id: "subfinder", executable: "subfinder", category: "osint", versionArgs: ["-version"] },
-  { id: "httpx", executable: "httpx", category: "web", versionArgs: ["-version"] },
-  { id: "amass", executable: "amass", category: "osint", versionArgs: ["-version"] },
-  { id: "nuclei", executable: "nuclei", category: "web", versionArgs: ["-version"] },
-  { id: "ffuf", executable: "ffuf", category: "web", versionArgs: ["-V"] },
+  ...defaultSecurityToolRegistry.map((definition) => ({
+    id: definition.id,
+    executable: definition.executable,
+    category: ["dns", "network", "web", "osint", "utility"].includes(definition.category)
+      ? definition.category as ExecutionCapability["category"]
+      : "utility" as const,
+    versionArgs: [...definition.versionArgs],
+  })),
 ] as const;
 
 function firstLine(value: string): string | null {
@@ -49,7 +46,7 @@ export async function discoverExecutionCapabilities(
         nodeId: node.id,
         executable: "which",
         args: [definition.executable],
-        timeoutMs: 4_000,
+        timeoutMs: 20_000,
       }));
 
       if (located.exitCode !== 0) {
@@ -67,7 +64,7 @@ export async function discoverExecutionCapabilities(
         nodeId: node.id,
         executable: definition.executable,
         args: definition.versionArgs,
-        timeoutMs: 4_000,
+        timeoutMs: 20_000,
       }));
 
       capabilities.push(ExecutionCapabilitySchema.parse({

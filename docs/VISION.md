@@ -1,122 +1,273 @@
-# BORG Code Vision
+# BORG Product Vision
 
-Last updated: 2026-09-18
+Last updated: 2026-09-29
 
 ## North star
 
-BORG Code is a private local AI website builder that turns a natural-language brief into a complete, verified website while keeping the user continuously informed and in control.
+BORG is a private, local-first AI operating layer for the user's computer, projects, services, and trusted remote machines.
 
-The target experience is simple:
+General Chat is the primary interface. From one persistent conversation, the user can ask BORG to build software, inspect local knowledge, operate approved tools, manage infrastructure, run security investigations, analyze data, and create automations. Focused workspaces provide richer controls and evidence for those same shared capabilities.
 
-1. The user describes the website they want.
-2. BORG turns the brief into a concrete project direction and implementation plan.
-3. The user approves the direction.
-4. BORG builds the frontend autonomously in small, inspectable slices.
-5. Each slice is verified in the browser, repaired when necessary, documented, and handed off to the next slice.
-6. When the frontend satisfies the approved brief, the user reviews the finished frontend.
-7. If the brief requires accounts, persistence, integrations, server logic, or other backend work, BORG begins a separate backend phase using the approved frontend as its contract.
-8. The completed project remains understandable, editable, and resumable later.
+BORG is not a generic chatbot and should not become a collection of unrelated AI applications. Its value comes from a coherent local capability graph around replaceable models.
 
-BORG is not a chat wrapper around a coding model. It is a persistent local software-development system whose primary product is a high-quality website.
+## Target experience
+
+The user should be able to say:
+
+- "Build this website and verify it in the browser."
+- "Investigate this username using public sources."
+- "Map my home network and explain what is exposed."
+- "Find the document where we agreed to the 60-day clause."
+- "Figure out why the Raspberry Pi is slow."
+- "Compare yesterday's benchmark with the current implementation."
+- "Run this workflow whenever a new file appears in this folder."
+
+BORG determines which typed capabilities are relevant, shows its proposed or active work, enforces the current permission mode and target scope, executes through an appropriate provider, preserves evidence, verifies the result, and explains what happened.
+
+## Product model
+
+```text
+                            BORG
+                              |
+                        GENERAL CHAT
+                              |
+                  Intent and Capability Registry
+                              |
+        +---------------------+----------------------+
+        |                     |                      |
+   Development          Security and Recon      Knowledge
+        |                     |                      |
+   repositories             Kali                 local files
+   browser                  network               documents
+   Git                      OSINT                 research
+        |                     |                      |
+        +---------------------+----------------------+
+                              |
+                         Automation
+                              |
+                    +---------+---------+
+                    |                   |
+                Local PC          Trusted nodes
+                                      Pi/server/NAS
+```
+
+Chat and workspaces are two views of the same system. A capability invoked from Chat must use the same provider, policy, job, evidence, and persistence infrastructure as one invoked from a focused workspace or automation.
 
 ## Product principles
 
-### Website first
+### Chat is the command surface
 
-The default BORG experience optimizes for building and refining websites, not exposing every engineering primitive in the runtime. Worktrees, checkpoints, role routing, review history, browser evidence, task events, and local-model controls remain important, but they support the website-building workflow rather than define the user experience.
+Regular chat is a first-class product. It owns persistent conversations, attachments, model selection, memory, tool permissions, activity, and results. Focused workspaces remain available when a task benefits from structured forms, graphs, previews, cases, or detailed evidence.
 
-### One brief can drive a complete build
+### Models choose intent; BORG controls execution
 
-A sufficiently clear initial brief should be enough to begin the full frontend workflow. BORG may ask for approval at meaningful product boundaries, but it should not require the user to repeatedly restate the project or manually break normal implementation into developer-sized tasks.
+The model may propose a goal or choose a registered capability. It should not invent opaque side effects.
 
-### Persistent knowledge, bounded model context
+```text
+User request
+  -> typed BORG capability
+  -> permission and scope checks
+  -> execution provider
+  -> validated tool adapter
+  -> job and artifacts
+  -> normalized evidence
+  -> user-facing explanation
+```
 
-BORG should remember the project without repeatedly sending the entire conversation or repository to the model.
+Filesystem, shell, Git, browser, desktop, network, and verification effects remain explicit and inspectable. A model adapter must never hide a tool side effect.
 
-Durable project state belongs in structured files and persistence. Model context is compiled for the current task from only the information that matters now.
+### One shared capability system
 
-This distinction is foundational:
+New workspaces add capability families rather than parallel agent runtimes. Development, security, knowledge, infrastructure, data, media, and automation share:
 
-- project memory is long-lived;
-- model context is temporary;
-- repository contents are inspected selectively;
-- decisions are recorded rather than rediscovered;
-- handoffs summarize completed work and required next actions.
+- typed capability definitions;
+- provider adapters;
+- ASK / PLAN / EDIT / AGENT permission semantics;
+- target and workspace boundaries;
+- durable jobs and cancellation;
+- activity and progress events;
+- artifacts and evidence;
+- verification and review;
+- local persistence.
 
-### Outer workflow, inner loops
+### Replaceable providers
 
-A website build has an outer workflow:
+Models and execution locations are implementation choices behind adapters. Ollama and `qwen3-coder:30b` are the initial model runtime. The local Windows machine is the initial execution environment. Kali, Raspberry Pis, servers, and future workers are execution providers or nodes, not separate sources of workflow authority.
 
-Project -> Phase -> Slice -> Next Slice -> Phase Completion
+### Persistent knowledge, bounded context
 
-Each slice has a smaller execution loop:
+BORG remembers projects and investigations without repeatedly sending entire conversations, repositories, or document collections to a model.
 
-Context -> Implement -> Preview -> Verify -> Repair -> Document -> Handoff
-
-BORG must not restart the entire project-planning loop every time a slice needs another implementation pass.
-
-### Quality is a product requirement
-
-A build is not complete because code compiles.
-
-User-facing work must meet an explicit visual and interaction standard. BORG uses design direction, browser evidence, responsive inspection, accessibility checks, runtime evidence, and independent review to distinguish technically valid output from finished product quality.
+Durable knowledge belongs in SQLite and inspectable `.localcode/` projections. Model context is compiled for the current task from relevant sources, decisions, entities, and evidence.
 
 ### Observable autonomy
 
-The user should always be able to understand:
+The user can always determine:
 
-- what phase BORG is in;
-- what slice it is working on;
+- what BORG is trying to accomplish;
+- what capability and provider it selected;
+- what scope and permission apply;
 - what it is doing now;
-- why that action is relevant;
-- what files or surfaces are affected;
-- what passed or failed verification;
-- whether BORG is implementing, verifying, repairing, reviewing, or waiting for approval.
-
-Autonomy without observability becomes a black box. BORG should expose progress without forcing the user to read raw chain-of-thought or low-level logs.
+- which files, systems, or targets are affected;
+- what evidence was collected;
+- what verification passed or failed;
+- whether it is working, blocked, awaiting approval, or complete.
 
 ### Human control at meaningful boundaries
 
-BORG may operate autonomously inside an approved implementation scope, but important boundaries remain explicit. Examples include approving a project plan, accepting a frontend phase, authorizing work outside the approved scope, and selecting whether to continue into a backend phase.
+ASK / PLAN / EDIT / AGENT semantics apply across the product. BORG can continue autonomously inside approved boundaries, while scope changes, intrusive security operations, destructive actions, publishing, and other consequential transitions remain visible and governed by policy.
+
+### Evidence before claims
+
+Results retain provenance: source, tool, timestamp, target, raw artifact, normalized observation, relationship, and confidence where applicable. Security and research correlations distinguish confirmed, strong, possible, unverified, and conflicting relationships.
 
 ### Local and private by default
 
-BORG is designed around local execution, local models, local repositories, and durable local state. External providers may be added deliberately, but privacy and local ownership are default architectural assumptions.
+Local models, storage, repositories, files, and execution are the default. Internet access and external providers are deliberate capabilities with visible boundaries.
 
-## Long-term product model
+### Windows 11 is a first-class target
 
-A BORG website becomes a structured project rather than an undifferentiated repository.
+BORG's desktop, process, filesystem, shell, and provider abstractions must work reliably on Windows. Linux systems such as Kali extend the local system as trusted workers.
 
-A project contains:
+## Capability families
 
-- phases;
-- implementation slices;
-- pages;
-- reusable components;
-- design direction;
-- project decisions;
-- data contracts;
-- verification evidence;
-- handoffs;
-- change history.
+### General Chat
 
-Pages and components become first-class entities with dedicated workspaces. Editing a ProductCard should not require loading the entire history of the project. Editing a Checkout page should compile context around that page, its dependencies, its design contract, and its recent verification state.
+Persistent conversation, attachments, model routing, memory, web access controls, voice in the future, and access to the full capability registry.
 
-Over time, high-quality components and page patterns can form a BORG-owned local corpus. The first goal is to build and catalog quality assets. Automatic retrieval from that corpus is a later capability and must not be added before the corpus and selection rules are trustworthy.
+### Development
+
+Website and application creation, repository work, planning, implementation, Git, tests, browser verification, repair, review, and resumable multi-slice workflows. The website builder remains BORG's most mature focused workspace and a proving ground for the shared runtime.
+
+### Security and Recon
+
+Authorized OSINT, asset discovery, network and web assessment, traffic and file analysis, evidence collection, and reporting. Kali acts as a sensor and execution platform. BORG owns scope, approval, orchestration, normalized results, and cases.
+
+### Files and Knowledge
+
+Local indexing, retrieval, comparison, citations, repository knowledge, document understanding, and inspectable personal or project memory.
+
+### Computer Control
+
+Visible operation of local applications and GUI-only workflows with explicit permissions, screenshots, and audit history.
+
+### Homelab and Infrastructure
+
+Trusted machines, SSH, containers, virtual machines, NAS devices, services, logs, backups, health, and resource usage.
+
+### Automation
+
+Scheduled and event-driven workflows built from the same capabilities and permission system used interactively.
+
+### Data and Analytics
+
+CSV, JSON, databases, logs, benchmark results, SQL, Python analysis, anomaly detection, and local dashboards.
+
+### Media
+
+Local image, audio, and video inspection and transformation, transcription, metadata, subtitles, and batch processing.
+
+### Model Lab
+
+Install, inspect, benchmark, compare, and route local models based on quality, speed, memory use, and task type.
+
+### Remote Access
+
+A phone or another trusted client can chat, review activity and diffs, inspect previews, approve governed work, and receive useful alerts without exposing raw machine control by default.
+
+## Kali and security architecture
+
+Kali is a security execution provider, not the place where an investigation lives.
+
+```text
+BORG Chat or Security Workspace
+  -> Security capability
+  -> ScopeGuard and operation policy
+  -> KaliProvider
+  -> MCP or SSH transport
+  -> fixed typed adapter
+  -> Kali tool
+  -> raw artifact and normalized result
+  -> BORG case, asset graph, and evidence
+```
+
+The Kali MCP server can provide transport and discovery, while BORG retains control over allowed targets, risk levels, arguments, timeouts, cancellation, artifacts, parsers, evidence, correlation, approvals, and audit history. Raw terminal access may exist as an explicit advanced capability; it is not the default model interface.
+
+## Identity recon direction
+
+Identity recon is an orchestrated investigation rather than a single lookup:
+
+```text
+username, email, phone, domain, name, or alias
+  -> approved public-source adapters
+  -> normalized identities and accounts
+  -> evidence-backed relationships
+  -> confidence and conflict analysis
+  -> investigation case
+```
+
+Initial free/local adapters may include Sherlock and Maigret for usernames, theHarvester and public profile or domain checks for email clues, PhoneInfoga for phone enrichment, and DNS/public-web sources for pivots. No single account match establishes identity. Every correlation must retain its evidence and reason.
+
+Phone recon should be presented as validation, geographic/carrier clues, and public-source pivots. It must not imply that free tooling can reliably identify a subscriber.
+
+## Security capability levels
+
+- Level 0 — Passive: OSINT, public DNS, public metadata, and local file inspection.
+- Level 1 — Discovery: approved host discovery, service identification, and website discovery.
+- Level 2 — Security scanning: vulnerability templates, configuration checks, TLS inspection, and authenticated assessment.
+- Level 3 — Active lab testing: credential auditing, MITM simulations, wireless testing, and other intrusive lab operations.
+- Level 4 — Exploit validation: controlled exploit and post-exploitation validation.
+
+Policy determines which levels can run automatically within approved scope. Intrusive operations require explicit scope and approval.
+
+## Shared durable concepts
+
+The platform should converge on a small set of reusable concepts:
+
+- conversation;
+- project or case;
+- capability;
+- provider and execution node;
+- scoped target;
+- job and step;
+- permission or approval;
+- event and activity;
+- artifact and evidence;
+- entity, observation, and relationship;
+- verification and review;
+- decision and handoff.
+
+Focused domains may extend these concepts, but should not create competing orchestration authorities.
+
+## Development direction
+
+The near-term platform sequence is:
+
+1. make General Chat a durable command surface;
+2. extract and harden the shared typed capability and job runtime;
+3. complete the Kali provider path with health, MCP/SSH transport, discovery, and one verified end-to-end operation;
+4. expand the security case, identity, asset, relationship, and evidence model;
+5. add carefully typed recon adapters incrementally;
+6. add local Files and Knowledge retrieval through the same capability system;
+7. extend trusted-node infrastructure and visible computer control;
+8. build automation on top of proven interactive capabilities.
+
+Existing website-builder reliability work continues because it validates long-running autonomy, context compilation, browser evidence, repair, and handoffs. New platform work should reuse those foundations rather than replace them.
 
 ## Success criteria
 
 BORG is moving toward the target when it can repeatedly:
 
-- take a complex website brief and form a coherent frontend plan;
-- maintain the plan across a long-running build;
-- execute each slice without unnecessary repository-wide replanning;
-- preserve important decisions without context bloat;
-- produce visually strong, responsive, accessible interfaces;
-- verify claims with deterministic and browser evidence;
-- recover from failures without losing project state;
-- show the user exactly where the build stands;
-- let the user isolate and improve a page or component later;
-- continue into backend implementation only when the product requires it.
+- begin from a natural-language request in General Chat;
+- choose only capabilities relevant to the request;
+- keep every side effect explicit and within the selected scope;
+- execute locally or on a trusted node through replaceable providers;
+- preserve progress across restarts and long-running work;
+- compile bounded, relevant model context from durable knowledge;
+- stream understandable activity without exposing hidden reasoning;
+- retain evidence and provenance for material claims;
+- verify outcomes using the appropriate deterministic or visual checks;
+- resume work without forcing the user to reconstruct prior context;
+- expose the same operation coherently through Chat, workspaces, and automation.
 
-The final goal is not maximum agent complexity. The final goal is a dependable local builder that can create, inspect, improve, verify, and maintain excellent full-stack websites from a high-level brief.
+The goal is a dependable local AI system that can understand, operate, verify, and remember work across the user's digital environment while keeping the user in control.

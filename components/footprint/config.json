@@ -1,0 +1,80 @@
+{
+  \
+capabilities\: {
+    \digital_footprint_analysis\: {
+      \description\: \Comprehensive
+email
+and
+social
+media
+footprint
+analysis\,
+      \tools\: [
+        \nmap\,
+        \amass\,
+        \
+eyewitness\,
+        \recon-ng\,
+        \social-engineer-toolkit\,
+        \metasploit\,
+        \sqlmap\
+      ],
+      \permissions\: [
+        \network_scanning\,
+        \web_reconnaissance\,
+        \social_media_monitoring\,
+        \email_tracking\
+      ]
+    },
+    \network_reconnaissance\: {
+      \description\: \Network
+discovery
+and
+service
+enumeration\,
+      \tools\: [
+        \nmap\,
+        \masscan\,
+        \nikto\,
+        \dirb\,
+        \gobuster\
+      ],
+      \permissions\: [
+        \network_scanning\,
+        \service_discovery\,
+        \vulnerability_scanning\
+      ]
+    },
+    \social_media_monitoring\: {
+      \description\: \Social
+media
+account
+and
+mention
+monitoring\,
+      \tools\: [
+        \social-engineer-toolkit\,
+        \theharvester\,
+        \maltego\,
+        \shodan-cli\
+      ],
+      \permissions\: [
+        \web_reconnaissance\,
+        \social_media_monitoring\,
+        \information_gathering\
+      ]
+    }
+  },
+  \access_control\: {
+    \authorized_networks\: [
+      \192.168.0.0/16\,
+      \10.0.0.0/8\,
+      \172.16.0.0/12\
+    ],
+    \authorized_domains\: [
+      \.gmail.com\,
+      \.yahoo.com\,
+      \.hotmail.com\
+    ]
+  }
+}

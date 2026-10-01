@@ -111,6 +111,9 @@ test("planned security operation is bound to workflow and waits at the existing 
     assert.equal(workflow.status, "awaiting_approval");
     assert.equal(workflow.security?.operationId, "operation-1");
     assert.equal(security.getExecution("execution-1")?.status, "planned");
+    assert.equal(security.getExecution("execution-1")?.toolRequest?.toolId, "nmap");
+    assert.equal(security.getExecution("execution-1")?.toolRequest?.risk, "active");
+    assert.equal(security.getExecution("execution-1")?.toolRequest?.approvalRequirement, "execution");
 
     const approved = { ...approval, status: "APPROVED" as const, decidedAt: new Date().toISOString() };
     const decided = engine.decideApproval(task, approved, "execution");

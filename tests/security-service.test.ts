@@ -60,6 +60,34 @@ test("security service registers and refreshes a Kali SSH node without exposing 
     assert.equal(refreshed.architecture, "aarch64");
     assert.equal(refreshed.capabilities.find((capability) => capability.id === "nmap")?.status, "available");
     assert.equal(refreshed.capabilities.find((capability) => capability.id === "ffuf")?.status, "missing");
+
+    const tools = service.listTools(node.id);
+    assert.equal(tools.find((tool) => tool.id === "nmap")?.availability, "available");
+    assert.equal(tools.find((tool) => tool.id === "nmap")?.executionMode, "typed_adapter");
+    assert.equal(tools.find((tool) => tool.id === "sqlmap")?.availability, "missing");
+    assert.equal(tools.find((tool) => tool.id === "sqlmap")?.executionMode, "not_enabled");
+  } finally {
+    service.close();
+  }
+});
+
+test("security tool registry is inspectable before a node is selected", () => {
+  const service = new SecurityService(":memory:", new ServiceFakeProvider());
+  try {
+    const tools = service.listTools();
+    assert.ok(tools.length >= 20);
+    assert.ok(tools.every((tool) => tool.availability === "unknown" && tool.nodeId === null));
+    assert.deepEqual(tools.find((tool) => tool.id === "dig")?.operationIds, ["dns_lookup"]);
+    assert.equal(tools.find((tool) => tool.id === "hashcat")?.defaultRisk, "intrusive");
+  } finally {
+    service.close();
+  }
+});
+
+test("security tool registry rejects an unknown node", () => {
+  const service = new SecurityService(":memory:", new ServiceFakeProvider());
+  try {
+    assert.throws(() => service.listTools("missing"), /was not found/i);
   } finally {
     service.close();
   }
@@ -95,6 +123,36 @@ test("security service creates a durable assessment with an explicit authorized 
     assert.equal(described?.executionNode?.id, "kali-pi");
     assert.deepEqual(described?.scope?.allowedCidrs, ["192.168.4.0/24"]);
     assert.deepEqual(service.listAssessments("security-home-lab").map((assessment) => assessment.id), ["home-lab"]);
+  } finally {
+    service.close();
+  }
+});
+
+test("security service reuses a matching SSH node and allows it to be removed", () => {
+  const service = new SecurityService(":memory:", new ServiceFakeProvider());
+  try {
+    const first = service.registerNode({
+      name: "Kali Raspberry Pi",
+      provider: "ssh",
+      host: "192.168.4.70",
+      port: 22,
+      username: "kali",
+    });
+    const duplicate = service.registerNode({
+      name: "Kali Raspberry Pi duplicate",
+      provider: "ssh",
+      host: "192.168.4.70",
+      port: 22,
+      username: "kali",
+      securityRuntime: "kali_mcp",
+    });
+
+    assert.equal(duplicate.id, first.id);
+    assert.equal(duplicate.securityRuntime, "kali_mcp");
+    assert.equal(duplicate.name, "Kali Raspberry Pi duplicate");
+    assert.equal(service.listNodes().length, 1);
+    assert.equal(service.deleteNode(first.id), true);
+    assert.equal(service.listNodes().length, 0);
   } finally {
     service.close();
   }

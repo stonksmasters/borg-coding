@@ -10,6 +10,8 @@ const eslintConfig = defineConfig([
     // Default ignores of eslint-config-next:
     ".next/**",
     ".borg/**",
+    // Unfinished local footprint prototypes are not part of the application build.
+    "components/footprint/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

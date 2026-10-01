@@ -1,16 +1,95 @@
 # BORG Code Architecture
 
-Last updated: 2026-09-21
+Last updated: 2026-09-29
 
 ## Overview
 
-BORG has two architectural layers that should not be confused.
+BORG has three architectural layers that should not be confused.
 
-The lower layer is the durable coding-agent runtime: tasks, sessions, permission modes, worktrees, specialist routing, implementation, verification, review, repair, checkpoints, and local-model execution.
+The lower layer is the durable agent and capability runtime: conversations, tasks, permission modes, typed capabilities, provider adapters, scoped targets, jobs, events, artifacts, evidence, verification, review, checkpoints, persistence, and local-model execution.
 
-The upper layer is the website-builder product: project planning, frontend phases, implementation slices, design direction, live preview, browser verification, phase completion, page/component organization, and eventually backend continuation.
+The middle layer contains focused workflow domains such as Development, Security and Recon, Files and Knowledge, Infrastructure, Computer Control, Data, and Automation. Each domain adds typed concepts and user interfaces while reusing the lower runtime.
 
-The website-builder layer orchestrates the runtime. The runtime should not force the user to think in its internal primitives.
+The upper layer is General Chat: the primary command surface that interprets a user's intent, selects registered capabilities, presents progress and approvals, and links to focused workspaces when richer inspection is useful.
+
+The website builder is the most mature Development workflow. Its project, phase, slice, Context Compiler, RunView, browser evidence, and repair systems remain core architectural assets, but they no longer define the entire product boundary.
+
+## Platform execution model
+
+The canonical cross-domain path is:
+
+```text
+Conversation or focused workspace
+  -> typed capability request
+  -> permission and scope policy
+  -> durable job and step
+  -> provider and execution node
+  -> explicit tool operation
+  -> artifacts and normalized evidence
+  -> verification and review
+  -> durable result and user explanation
+```
+
+The model may select a capability and supply schema-constrained arguments. BORG code owns provider selection, invocation construction, side effects, bounds, parsing, persistence, and verification.
+
+Chat, focused workspaces, and automation must converge on this same path. They must not create parallel execution or approval systems.
+
+## Shared runtime boundaries
+
+### Model providers
+
+Model providers handle inference and streaming model output. They do not perform hidden filesystem, shell, Git, network, browser, or verification side effects.
+
+### Capability registry
+
+The registry declares a capability's typed input and output, purpose, risk, required permissions, scope behavior, compatible providers, evidence types, and verification expectations. Discovery makes a capability visible; it does not authorize execution.
+
+### Execution providers and nodes
+
+Providers translate a typed job into operations on a particular environment. Initial examples include the local workspace, browser, Git, generic SSH, and Kali. Nodes describe concrete machines or services. A Kali Raspberry Pi is a node used by a provider, not an independent agent or workflow owner.
+
+### Policy and scope
+
+ASK / PLAN / EDIT / AGENT semantics remain consistent across domains. Each capability also enforces relevant boundaries such as a selected repository root, approved security targets, trusted execution nodes, network access, or an allowed application surface.
+
+### Jobs, artifacts, and evidence
+
+Every material execution is represented by a durable job with inspectable steps, events, cancellation, timeouts, outputs, and errors. Raw artifacts are retained when useful. Normalized evidence records provenance and supports domain entities, observations, relationships, findings, and verification.
+
+### Durable knowledge and context
+
+SQLite is the durable system of record. `.localcode/` contains inspectable project knowledge and generated projections. Models receive bounded ContextPacks compiled for the current request rather than entire histories or repositories.
+
+## Domain authority
+
+`WorkflowEngine` remains the durable workflow authority. Domain services can validate, plan, normalize, and project their own state, but they do not infer or advance workflow state independently.
+
+Focused domains extend the shared runtime:
+
+- Development adds projects, phases, slices, pages, components, diffs, previews, and build verification.
+- Security adds assessments, cases, scopes, assets, identities, services, observations, relationships, confidence, and evidence.
+- Knowledge adds indexed sources, chunks, citations, collections, and retrieval records.
+- Infrastructure adds machines, services, health observations, deployments, and incidents.
+- Automation adds triggers and schedules around already registered capabilities.
+
+The desktop gateway remains transport. User interfaces render persisted state and server-owned views rather than deriving authoritative status from model prose.
+
+## Kali provider boundary
+
+Kali extends BORG as a security execution provider:
+
+```text
+Security capability
+  -> assessment scope and operation policy
+  -> approval when required
+  -> KaliProvider
+  -> MCP or SSH transport
+  -> fixed typed adapter
+  -> Kali tool
+  -> raw and normalized evidence
+```
+
+MCP can supply tool discovery and transport, but it does not replace BORG's capability registry, target validation, risk classification, command construction, evidence model, or workflow authority. Generic terminal execution is an explicit advanced capability rather than the normal interface offered to the model.
 
 ## Product execution hierarchy
 

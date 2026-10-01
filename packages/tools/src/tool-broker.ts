@@ -13,8 +13,44 @@ import { activityToolDefinition, normalizeActivityUpdate } from "./activity-tool
 interface ToolPolicy { internetEnabled: boolean; updatedAt: string; }
 export interface ToolCall { function: { name: string; arguments: Record<string, unknown> }; }
 export type PermissionMode = "ask" | "plan" | "edit" | "agent";
+export type SecurityChatBridge = {
+  listAssessments(projectId: string): unknown;
+  createInvestigationPlan(assessmentId: string, input: { objective: string; subjects: Array<{ kind: string; value: string }> }): unknown;
+  readCase(assessmentId: string): unknown;
+};
 
 const definitions = {
+  security_list_assessments: {
+    type: "function",
+    function: {
+      name: "security_list_assessments",
+      description: "List durable, explicitly scoped security assessments for a BORG project.",
+      parameters: { type: "object", required: ["project_id"], properties: { project_id: { type: "string" } } },
+    },
+  },
+  security_create_investigation_plan: {
+    type: "function",
+    function: {
+      name: "security_create_investigation_plan",
+      description: "Create a typed investigation plan inside an existing scoped security assessment. This does not approve active operations.",
+      parameters: {
+        type: "object", required: ["assessment_id", "objective", "subjects"],
+        properties: {
+          assessment_id: { type: "string" },
+          objective: { type: "string" },
+          subjects: { type: "array", items: { type: "object", required: ["kind", "value"], properties: { kind: { type: "string", enum: ["email", "username", "phone", "domain", "url", "host", "cidr"] }, value: { type: "string" } } } },
+        },
+      },
+    },
+  },
+  security_read_case: {
+    type: "function",
+    function: {
+      name: "security_read_case",
+      description: "Read a security assessment summary, including scope, executions, assets, observations, and evidence-backed relationships.",
+      parameters: { type: "object", required: ["assessment_id"], properties: { assessment_id: { type: "string" } } },
+    },
+  },
   repository_list: {
     type: "function",
     function: {
@@ -210,12 +246,14 @@ export class ToolBroker {
   private languageRoot: string | undefined;
   private language: LanguageIntelligenceService | undefined;
   private readonly memory: RepositoryMemory | undefined;
+  private readonly security: SecurityChatBridge | undefined;
 
-  constructor(policyPath: string, access?: AccessController, worktreeOptions?: WorktreeToolOptions, memory?: RepositoryMemory) {
+  constructor(policyPath: string, access?: AccessController, worktreeOptions?: WorktreeToolOptions, memory?: RepositoryMemory, security?: SecurityChatBridge) {
     this.policyPath = policyPath;
     this.access = access;
     this.worktree = worktreeOptions ? new WorktreeTools(worktreeOptions) : undefined;
     this.memory = memory;
+    this.security = security;
     this.ollamaApiKey = process.env.OLLAMA_API_KEY;
   }
 
@@ -245,6 +283,7 @@ export class ToolBroker {
     const status = this.status();
     const available = [];
     if (mode !== "ask") available.push(activityToolDefinition);
+    if (this.security) available.push(definitions.security_list_assessments, definitions.security_create_investigation_plan, definitions.security_read_case);
     const allowed = <T extends { function: { name: string } }>(items: readonly T[]): T[] =>
       items.filter((item) =>
         (!role || roleAllowsTool(role, item.function.name))
@@ -267,6 +306,21 @@ export class ToolBroker {
     if (call.function.name === "activity_update") {
       if (mode === "ask") throw new Error("Structured activity updates are unavailable in ASK mode.");
       return normalizeActivityUpdate(call.function.arguments);
+    }
+    if (call.function.name.startsWith("security_")) {
+      if (!this.security) throw new Error("Security Chat tools are not configured.");
+      if (call.function.name === "security_list_assessments") return { assessments: this.security.listAssessments(String(call.function.arguments.project_id ?? "")) };
+      if (call.function.name === "security_create_investigation_plan") {
+        const subjects = Array.isArray(call.function.arguments.subjects)
+          ? call.function.arguments.subjects.map((item) => {
+              const value = item && typeof item === "object" ? item as Record<string, unknown> : {};
+              return { kind: String(value.kind ?? ""), value: String(value.value ?? "") };
+            })
+          : [];
+        return { plan: this.security.createInvestigationPlan(String(call.function.arguments.assessment_id ?? ""), { objective: String(call.function.arguments.objective ?? ""), subjects }) };
+      }
+      if (call.function.name === "security_read_case") return this.security.readCase(String(call.function.arguments.assessment_id ?? ""));
+      throw new Error(`Unknown security tool: ${call.function.name}`);
     }
     if (role && !roleAllowsTool(role, call.function.name)) throw new Error(`The ${role} role cannot invoke ${call.function.name}.`);
     if (disciplines?.length && !specialistAllowsTool(disciplines, call.function.name)) throw new Error(`The active specialist packs cannot invoke ${call.function.name}.`);

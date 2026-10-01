@@ -1016,8 +1016,25 @@ const server = createServer(async (request, response) => {
     const taskId = decodeURIComponent(approvalRoute[1]);
     void readJson(request).then(async (input) => {
       const session = chats.sessionForTask(taskId);
-      if (!session) return send(response, 404, { error: "Session for approval was not found." });
       const decision = String(input.decision ?? "").toLowerCase();
+      if (!session) {
+        const current = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/approval`, {
+          signal: AbortSignal.timeout(10_000),
+        });
+        const currentBody = await current.json().catch(() => ({})) as Record<string, unknown>;
+        if (!current.ok) return send(response, current.status, currentBody);
+        if (currentBody.securityApproval !== true) {
+          return send(response, 404, { error: "Session for approval was not found." });
+        }
+        const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/approval`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ decision }),
+          signal: AbortSignal.timeout(180_000),
+        });
+        const body = await upstream.json().catch(() => ({})) as Record<string, unknown>;
+        return send(response, upstream.status, body);
+      }
       const upstream = await fetch(`${coreUrl}/api/tasks/${encodeURIComponent(taskId)}/approval`, {
         method: "POST",
         headers: { "content-type": "application/json" },
