@@ -30,7 +30,7 @@ const pagesSchema = z.object({ version: z.literal(1), pages: z.array(page) });
 const componentsSchema = z.object({ version: z.literal(1), components: z.array(component) });
 export type ProjectModel = { pages: z.infer<typeof page>[]; components: z.infer<typeof component>[] };
 
-const excluded = new Set([".git", ".borg", ".agents", ".codex", "node_modules", "dist", "build", ".next", ".vinext", ".wrangler", "coverage"]);
+const excluded = new Set([".git", ".borg", ".agents", ".codex", "node_modules", "dist", "build", ".next", ".vinext", ".vite-cache", ".wrangler", "coverage"]);
 const sensitive = /(^\.env($|\.)|secret|credential|id_rsa|id_ed25519|\.pem$|\.key$|\.pfx$)/i;
 const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".html"]);
 

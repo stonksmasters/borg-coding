@@ -64,6 +64,16 @@ export type VerificationServiceDependencies = {
   processRuntime: ProcessRuntime;
 };
 
+export function isConstructionVerificationFailure(verification: Pick<VerificationOutcome, "results">): boolean {
+  return (verification.results ?? []).some((result) => {
+    if (Number(result.exitCode ?? 0) === 0) return false;
+    const label = String(result.label ?? "").toLowerCase();
+    const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    return /build|check|lint|dependency integrity|render integrity|brief contract|construction readiness/.test(label)
+      || /(?:TS\d{4}|cannot find module|unresolved_import|module not found|BORG_(?:DEPENDENCY|RENDER|BRIEF|READINESS))/.test(output);
+  });
+}
+
 function boundedEvidence(value: string, maximum = 4_000): string {
   return value.trim().slice(0, maximum);
 }
@@ -255,6 +265,7 @@ export class VerificationService {
     emit({ type: "tool.completed", tool: "verification_run", output: verification });
 
     const failure = [
+      ...(verification.results ?? []).filter((result) => Number(result.exitCode ?? 0) !== 0).map((result) => `${result.label ?? [result.command, ...(result.args ?? [])].filter(Boolean).join(" ")} (exit ${result.exitCode}):\n${result.stdout ?? ""}\n${result.stderr ?? ""}`),
       ...(verification.browserEvidence?.issues ?? []),
       ...(verification.specialistEvidence?.failures ?? []),
     ].filter(Boolean).join(" ") || "Deterministic verification failed.";

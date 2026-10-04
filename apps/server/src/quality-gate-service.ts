@@ -6,6 +6,7 @@ import type {
   DesignReviewResult,
   VisualDirectorService,
 } from "../../../packages/design-intelligence/src/index.ts";
+import { evaluateStyleContractEvidence } from "../../../packages/design-intelligence/src/index.ts";
 import type { ProjectPlan, SliceState } from "../../../packages/web-builder/src/slice-docs.ts";
 import { runFreshReview, type FreshReview } from "./fresh-review.ts";
 import type { FocusedScope } from "./task-scope-resolver.ts";
@@ -21,7 +22,7 @@ export type VisualQualityDecision =
     }
   | {
       action: "repair_current_slice";
-      source: "local_vision" | "visual_director" | "render_integrity";
+      source: "local_vision" | "visual_director" | "render_integrity" | "style_contract";
       reason: string;
       repairEvidence: string;
       findings: Finding[];
@@ -152,6 +153,20 @@ export class QualityGateService {
         action: "block",
         source: "visual_director",
         reason: "Design quality could not be verified because responsive browser evidence is missing.",
+        designReview: null,
+        visionReview,
+      };
+    }
+
+    const styleContractIssues = evaluateStyleContractEvidence(input.designBrief, input.browserEvidence);
+    if (styleContractIssues.length) {
+      input.appendTaskEvent("STYLE_CONTRACT_FAILED", { attempt: input.attempt, issues: styleContractIssues });
+      return {
+        action: "repair_current_slice",
+        source: "style_contract",
+        reason: styleContractIssues[0],
+        repairEvidence: ["APPROVED PERSONAL STYLE CONTRACT REPAIR REQUIRED.", ...styleContractIssues.map((item) => `- ${item}`)].join("\n"),
+        findings: [],
         designReview: null,
         visionReview,
       };

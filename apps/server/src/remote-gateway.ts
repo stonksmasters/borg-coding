@@ -11,6 +11,7 @@ const pairingCode = configuredPairingCode && /^\d{6}$/.test(configuredPairingCod
   : String(randomInt(100000, 1000000));
 
 const sessions = new Map<string, number>();
+const previewTargets = new Map<string, string>();
 const attempts = new Map<string, { count: number; resetAt: number }>();
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const PAIR_WINDOW_MS = 60_000;
@@ -183,6 +184,36 @@ async function proxyJson(response: ServerResponse, path: string, init: RequestIn
   }
 }
 
+async function proxyPreview(request: IncomingMessage, response: ServerResponse, sessionId: string) {
+  try {
+    const upstream = await fetch(`${gatewayUrl}/api/sessions/${encodeURIComponent(sessionId)}/preview`, { method: "POST", signal: AbortSignal.timeout(120_000) });
+    const body = await upstream.json().catch(() => ({})) as { preview?: { url?: string }; [key: string]: unknown };
+    if (upstream.ok && body.preview?.url) {
+      const token = sessionToken(request);
+      if (token) previewTargets.set(token, body.preview.url);
+      body.preview.url = "/api/remote/preview";
+    }
+    sendJson(response, upstream.status, body);
+  } catch (error) {
+    sendJson(response, 502, { error: error instanceof Error ? error.message : "Website preview is unavailable." });
+  }
+}
+
+async function proxyPreviewContent(request: IncomingMessage, response: ServerResponse, pathname: string, search: string) {
+  const token = sessionToken(request);
+  const target = token ? previewTargets.get(token) : null;
+  if (!target) return sendJson(response, 404, { error: "Start the preview from the Preview tab first." });
+  try {
+    const resourcePath = pathname === "/api/remote/preview" ? "/" : pathname;
+    const upstream = await fetch(new URL(`${resourcePath}${search}`, target), { signal: AbortSignal.timeout(30_000) });
+    const body = Buffer.from(await upstream.arrayBuffer());
+    response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/octet-stream", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    response.end(body);
+  } catch (error) {
+    sendJson(response, 502, { error: error instanceof Error ? error.message : "Preview resource unavailable." });
+  }
+}
+
 async function proxyStream(request: IncomingMessage, response: ServerResponse, path: string, body?: string) {
   const controller = new AbortController();
   request.once("aborted", () => controller.abort());
@@ -230,12 +261,13 @@ const server = createServer((request, response) => {
   });
 
   if (method === "GET" && pathname === "/health") {
-    return sendJson(response, 200, {
-      status: "ok",
-      remote: true,
-      pairedSessions: sessions.size,
-      gateway: gatewayUrl,
-    });
+    void fetch(`${gatewayUrl}/health`, { signal: AbortSignal.timeout(3_000) })
+      .then(async (upstream) => {
+        const gateway = await upstream.json().catch(() => null);
+        sendJson(response, upstream.ok ? 200 : 503, { status: upstream.ok ? "ok" : "degraded", remote: true, pairedSessions: sessions.size, gatewayConnected: upstream.ok, gateway });
+      })
+      .catch((error) => sendJson(response, 503, { status: "degraded", remote: true, pairedSessions: sessions.size, gatewayConnected: false, error: error instanceof Error ? error.message : "BORG desktop gateway is unavailable." }));
+    return;
   }
 
   if (method === "GET" && pathname === "/api/local-info") {
@@ -308,6 +340,17 @@ const server = createServer((request, response) => {
     return;
   }
 
+  if (method === "GET" && pathname === "/api/remote/preview") {
+    void proxyPreviewContent(request, response, pathname, url.search);
+    return;
+  }
+
+  const remotePreviewRoute = pathname.match(/^\/api\/remote\/sessions\/([^/]+)\/preview$/);
+  if (method === "POST" && remotePreviewRoute) {
+    void proxyPreview(request, response, decodeURIComponent(remotePreviewRoute[1]));
+    return;
+  }
+
   if (method === "POST" && pathname === "/api/remote/chat") {
     void readBody(request)
       .then((body) => proxyStream(request, response, "/api/chat", body))
@@ -334,6 +377,14 @@ const server = createServer((request, response) => {
     return;
   }
 
+  const taskReadRoute = pathname.match(/^\/api\/remote\/tasks\/([^/]+)\/(changes|design|docs|activity|processes|review-history|project|contexts)$/);
+  if (method === "GET" && taskReadRoute) {
+    const taskId = encodeURIComponent(decodeURIComponent(taskReadRoute[1]));
+    const resource = taskReadRoute[2];
+    void proxyJson(response, `/api/tasks/${taskId}/${resource}${url.search}`);
+    return;
+  }
+
   const approvalRoute = pathname.match(/^\/api\/remote\/tasks\/([^/]+)\/approval$/);
   if (method === "POST" && approvalRoute) {
     void readBody(request)
@@ -354,6 +405,11 @@ const server = createServer((request, response) => {
 
   if (method === "GET" && sendStatic(response, pathname)) return;
 
+  if (method === "GET" && sessionToken(request) && previewTargets.has(sessionToken(request)!)) {
+    void proxyPreviewContent(request, response, pathname, url.search);
+    return;
+  }
+
   sendJson(response, 404, { error: "Not found." });
 });
 
@@ -367,6 +423,7 @@ server.listen(remotePort, "0.0.0.0", () => {
 async function shutdown(signal: string) {
   console.log(`[lifecycle] remote gateway shutdown requested: ${signal}`);
   sessions.clear();
+  previewTargets.clear();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   process.exit(0);
 }

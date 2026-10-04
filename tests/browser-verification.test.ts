@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { BrowserVerification, assertLoopbackUrl, resolveTaskBrowserUrl, routeJourneyIssue } from "../packages/browser-verification/src/index.ts";
+import { BrowserVerification, assertLoopbackUrl, resolveTaskBrowserUrl, routeConsistencyIssue, routeInteractionIssue, routeJourneyIssue, routeQualityIssue } from "../packages/browser-verification/src/index.ts";
 
 async function availablePort(): Promise<number> {
   return await new Promise((resolvePort, reject) => {
@@ -40,6 +41,31 @@ test("route journeys reject links that render the entry page at a different URL"
   assert.match(routeJourneyIssue({ route: "/products", name: "Products", linked: true, reached: true, renderedDistinctContent: false }) ?? "", /same page content/i);
   assert.match(routeJourneyIssue({ route: "/products", name: "Products", linked: false, reached: false, renderedDistinctContent: false }) ?? "", /No rendered navigation link/i);
   assert.equal(routeJourneyIssue({ route: "/products", name: "Products", linked: true, reached: true, renderedDistinctContent: true }), null);
+});
+
+test("route quality requires three responsive viewports and clean accessibility", () => {
+  const base = { route: "/work", name: "Work", linked: true, reached: true, renderedDistinctContent: true };
+  assert.match(routeQualityIssue({ ...base, responsiveViewports: 2, accessibilityPassed: true }) ?? "", /mobile, tablet, and desktop/i);
+  assert.match(routeQualityIssue({ ...base, responsiveViewports: 3, accessibilityPassed: false }) ?? "", /accessibility violation/i);
+  assert.equal(routeQualityIssue({ ...base, responsiveViewports: 3, accessibilityPassed: true }), null);
+});
+
+test("cross-page consistency requires a complete semantic shell, active navigation, and shared typography", () => {
+  const rootStyle = { bodyFontFamily: "Inter", bodyColor: "rgb(20, 20, 20)", headingFontFamily: "Newsreader" };
+  const base = {
+    route: "/work", name: "Work", activeNavigation: true,
+    landmarks: { header: true, navigation: true, main: true, footer: true },
+    styleSignature: rootStyle,
+  };
+  assert.equal(routeConsistencyIssue(base, rootStyle), null);
+  assert.match(routeConsistencyIssue({ ...base, landmarks: { ...base.landmarks, footer: false } }, rootStyle) ?? "", /footer/i);
+  assert.match(routeConsistencyIssue({ ...base, activeNavigation: false }, rootStyle) ?? "", /aria-current/i);
+  assert.match(routeConsistencyIssue({ ...base, styleSignature: { ...rootStyle, bodyFontFamily: "Arial" } }, rootStyle) ?? "", /typography/i);
+});
+
+test("route interaction evidence reports unusable controls", () => {
+  assert.equal(routeInteractionIssue({ route: "/contact", name: "Contact", interactionIssues: [] }), null);
+  assert.match(routeInteractionIssue({ route: "/contact", name: "Contact", interactionIssues: ["form has no submit control"] }) ?? "", /form has no submit control/i);
 });
 
 test("browser tools expose the complete evidence workflow", () => {
@@ -114,6 +140,32 @@ test("managed preview receives project environment without exposing the value in
     assert.equal(started.stderr.includes(secret), false);
   } finally {
     await runtime.execute("browser_server_stop", {}, context);
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test("managed development servers allocate a fresh port when the requested URL is occupied", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-browser-port-"));
+  const occupiedServer = createHttpServer((_request, response) => response.end("occupied"));
+  await new Promise<void>((resolveListen) => occupiedServer.listen(0, "127.0.0.1", resolveListen));
+  const address = occupiedServer.address();
+  const occupiedPort = typeof address === "object" && address ? address.port : 0;
+  const runtime = new BrowserVerification();
+  const context = { taskId: "browser-port-test", worktreePath: root };
+  try {
+    const started = await runtime.execute("browser_server_start", {
+      command: "node",
+      args: ["-e", "require('node:http').createServer((_, response) => response.end('managed')).listen(Number(process.env.PORT), '127.0.0.1')"],
+      url: `http://127.0.0.1:${occupiedPort}`,
+      timeout_seconds: 10,
+    }, context) as { running: boolean; url: string };
+
+    assert.equal(started.running, true);
+    assert.notEqual(new URL(started.url).port, String(occupiedPort));
+    assert.equal(await (await fetch(started.url)).text(), "managed");
+  } finally {
+    await runtime.execute("browser_server_stop", {}, context);
+    await new Promise<void>((resolveClose) => occupiedServer.close(() => resolveClose()));
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

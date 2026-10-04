@@ -26,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Switch } from "@/components/ui/switch";
 
-const API = (process.env.NEXT_PUBLIC_BORG_API_URL ?? "http://127.0.0.1:4312").replace(/\/$/, "");
+const API = (process.env.NEXT_PUBLIC_BORG_API_URL ?? "/__borg_api").replace(/\/$/, "");
 const WEBSITE_TEMPLATES = [
   { id: "auto", label: "Auto", detail: "Let BORG choose the closest starting point from the brief." },
   { id: "saas-landing", label: "SaaS landing", detail: "Product story, proof, pricing, and conversion." },
@@ -202,6 +202,7 @@ export function BorgWorkspaceV2() {
   const [previewError, setPreviewError] = useState("");
   const [previewVersion, setPreviewVersion] = useState(0);
   const [previewViewport, setPreviewViewport] = useState<"desktop" | "tablet" | "mobile">("desktop");
+  const [previewMounted, setPreviewMounted] = useState(false);
   const [checkpointOpen, setCheckpointOpen] = useState(false);
   const [checkpointName, setCheckpointName] = useState("");
   const [checkpoints, setCheckpoints] = useState<TaskCheckpoint[]>([]);
@@ -710,6 +711,10 @@ export function BorgWorkspaceV2() {
     setPreviewError("");
     setPreviewVersion((value) => value + 1);
   }, [previewProcess?.url, previewProcess?.status, previewUrl]);
+
+  useEffect(() => {
+    setPreviewMounted(!taskIsRunning(taskState));
+  }, [activeTaskId, taskState]);
 
   useEffect(() => {
     if (!activeTaskId) {
@@ -1726,8 +1731,10 @@ export function BorgWorkspaceV2() {
                     ? <TerminalPanel processes={processes} events={processEvents} onStop={stopTaskProcess} />
                     : rightPanel === "memory"
                       ? <DocsPanel docs={buildDocs} />
-                      : previewUrl
-                        ? <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#151a22] p-2 sm:p-3"><div className={`h-full min-h-[520px] overflow-hidden rounded-md border border-white/10 bg-white shadow-2xl transition-[width] duration-200 ${previewViewport === "mobile" ? "w-[390px] max-w-full" : previewViewport === "tablet" ? "w-[820px] max-w-full" : "w-full"}`}><iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} className="h-full w-full border-0 bg-white" /></div></div>
+                      : previewUrl && previewMounted
+                        ? <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#151a22] p-2 sm:p-3"><div className={`h-full min-h-[520px] overflow-hidden rounded-md border border-white/10 bg-white shadow-2xl transition-[width] duration-200 ${previewViewport === "mobile" ? "w-[390px] max-w-full" : previewViewport === "tablet" ? "w-[820px] max-w-full" : "w-full"}`}><iframe key={`${previewUrl}:${previewVersion}`} title="Website live preview" src={previewUrl} sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts" className="h-full w-full border-0 bg-white" /></div></div>
+                        : previewUrl
+                          ? <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto p-6 text-center"><div><Monitor className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">Live preview is paused while BORG works so project code cannot freeze the desktop interface.</p><Button size="sm" variant="outline" onClick={() => setPreviewMounted(true)} className="mt-4 border-white/10 bg-white/4 text-slate-300">Load preview</Button></div></div>
                         : <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto overscroll-contain p-6 text-center"><div><Monitor className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">{previewError || "The live preview will appear here as soon as the website is ready."}</p>{isWebsite && activeSession && <Button size="sm" variant="outline" onClick={() => void activatePreview(activeSession.id)} className="mt-4 border-white/10 bg-white/4 text-slate-300">{previewError ? "Retry preview" : "Start preview"}</Button>}</div></div>}
           </div>
         </div>}</div>

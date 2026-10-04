@@ -56,6 +56,20 @@ async function stopChild(child: ChildProcess | null) {
   }
 }
 
+async function removeRuntimeRoot(root: string) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EBUSY" && code !== "EPERM") throw error;
+      await delay(250 * (attempt + 1));
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+}
+
 async function waitForHttp(url: string, child: LoggedChild) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (child.process.exitCode !== null) throw new Error(`Core exited before becoming ready.\n${child.logs()}`);
@@ -186,7 +200,7 @@ function createWebsiteRepository(runtimeRoot: string, taskId: string) {
     name: "recovery-fixture",
     private: true,
     scripts: {
-      dev: "node -e \"process.exit(0)\"",
+      dev: "node -e \"const h=require('http').createServer((q,s)=>{s.setHeader('content-type','text/html');s.end('<!doctype html><html lang=\\\"en\\\"><title>Recovery Fixture</title><main><h1>Recovery Fixture</h1><p>Recovered slice</p></main></html>')}).listen(process.env.PORT,'127.0.0.1');setTimeout(()=>h.close(),4000)\" --",
       build: "node -e \"process.exit(0)\"",
       check: "node -e \"process.exit(0)\"",
     },
@@ -346,7 +360,7 @@ async function runRuntimeCase(mode: FailureMode) {
   } catch (error) {
     await stopChild(core?.process ?? null);
     if (ollama) await new Promise<void>((resolveClose) => ollama!.server.close(() => resolveClose()));
-    rmSync(runtimeRoot, { recursive: true, force: true });
+    await removeRuntimeRoot(runtimeRoot);
     throw error;
   }
 }
@@ -354,7 +368,7 @@ async function runRuntimeCase(mode: FailureMode) {
 async function cleanupRuntime(result: Awaited<ReturnType<typeof runRuntimeCase>>) {
   await stopChild(result.core?.process ?? null);
   if (result.ollama) await new Promise<void>((resolveClose) => result.ollama!.server.close(() => resolveClose()));
-  rmSync(result.runtimeRoot, { recursive: true, force: true });
+  await removeRuntimeRoot(result.runtimeRoot);
 }
 
 test("approved slice recovers from a missing target, verifies, and reaches its checkpoint without re-planning", { timeout: 45_000 }, async () => {

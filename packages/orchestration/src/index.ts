@@ -91,7 +91,7 @@ const roleInstructions = (
   reviewer: readonly string[],
 ): Readonly<Record<EngineeringRole, readonly string[]>> => ({ architect, implementer, verifier, reviewer });
 
-const commonTools = ["repository_*", "web_search", "web_fetch", "worktree_read", "worktree_write", "worktree_patch", "worktree_command", "git_status", "git_diff", "verification_*"] as const;
+const commonTools = ["repository_*", "web_search", "web_fetch", "image_search", "image_download", "worktree_stat", "worktree_list", "worktree_read", "worktree_read_many", "worktree_observation_read", "worktree_write", "worktree_patch", "worktree_command", "git_status", "git_diff", "verification_*"] as const;
 const browserTools = [...commonTools, "browser_*"] as const;
 
 const specialistPacks: Readonly<Record<EngineeringDiscipline, SpecialistCapabilityPack>> = {
@@ -233,8 +233,8 @@ const specialistPacks: Readonly<Record<EngineeringDiscipline, SpecialistCapabili
 
 const capabilityMap: Record<EngineeringRole, readonly string[]> = {
   architect: ["repository_*", "web_search", "web_fetch"],
-  implementer: ["repository_*", "worktree_read", "worktree_write", "worktree_patch", "worktree_command", "git_status", "git_diff", "browser_*"],
-  verifier: ["worktree_read", "git_status", "git_diff", "verification_*", "browser_*"],
+  implementer: ["repository_*", "image_search", "image_download", "worktree_stat", "worktree_list", "worktree_read", "worktree_read_many", "worktree_observation_read", "worktree_write", "worktree_patch", "worktree_command", "git_status", "git_diff", "browser_*"],
+  verifier: ["worktree_read", "worktree_read_many", "worktree_observation_read", "git_status", "git_diff", "verification_*", "browser_*"],
   reviewer: [],
 };
 

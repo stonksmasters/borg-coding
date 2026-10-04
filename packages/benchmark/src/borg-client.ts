@@ -57,6 +57,7 @@ export interface BenchmarkWorkflowStatus {
 }
 
 export interface CreateBenchmarkWebsiteInput {
+  contextBudgetCharacters?: number;
   name: string;
   brief: string;
   template?: string;
@@ -209,8 +210,10 @@ export class BorgBenchmarkClient {
         name: input.name,
         brief: input.brief,
         template: input.template ?? "auto",
+        contextBudgetCharacters: input.contextBudgetCharacters,
         activeMode: "agent",
       }),
+      signal: this.signal(10 * 60_000),
     });
   }
 

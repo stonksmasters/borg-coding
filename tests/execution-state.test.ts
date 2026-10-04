@@ -1,6 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRepairContext, executionAllowsTool, formatRepairContext, parseVerificationErrors } from "../packages/core/src/execution-state.ts";
+import { buildRepairContext, executionAllowsTool, formatRepairContext, parseVerificationErrors, partitionRepairContext } from "../packages/core/src/execution-state.ts";
+
+test("repair work units cover all four missing sections without broadening scope", () => {
+  const names = ["Hero", "Projects", "Services", "Contact"];
+  const context = buildRepairContext({ attempt: 1, results: [{ command: "npm", args: ["run", "build"], exitCode: 2, stdout: names.map((name) => `src/sections/${name}/index.tsx(1,25): error TS2307: Cannot find module './${name}' or its corresponding type declarations.`).join("\n") }] });
+  const units = partitionRepairContext(context);
+  assert.equal(units.length, 2);
+  assert.equal(units.flatMap((unit) => unit.verification.errors).length, 4);
+  for (const unit of units) {
+    assert.equal(unit.implicatedFiles.length, 2);
+    assert.ok(unit.allowedFiles.every((path) => unit.implicatedFiles.some((file) => path.startsWith(file.slice(0, file.lastIndexOf("/") + 1)))));
+  }
+  assert.equal(executionAllowsTool("IMPLEMENTING", "technical_repair", "worktree_read_many"), true);
+  assert.equal(executionAllowsTool("IMPLEMENTING", "technical_repair", "worktree_observation_read"), true);
+});
 
 test("durable implementation phase permits approved mutation while missing phase fails closed", () => {
   assert.equal(executionAllowsTool("IMPLEMENTING", "implementation", "worktree_patch"), true);

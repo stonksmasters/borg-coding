@@ -121,8 +121,44 @@ textarea { resize: vertical; min-height: 78px; padding: 12px; line-height: 1.45;
 }
 .session-chip.active { color: #10180b; background: #b8ff70; border-color: transparent; }
 .status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.workspace-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 3px; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; background: rgba(0,0,0,.2); scrollbar-width: none; }
+.workspace-tabs::-webkit-scrollbar { display: none; }
+.workspace-tabs button { flex: 0 0 auto; padding: 9px 12px; border: 0; border-radius: 9px; color: #788494; background: transparent; font-size: .75rem; font-weight: 700; }
+.workspace-tabs button.active { color: #fff; background: rgba(255,255,255,.1); }
+.workspace-panel { min-height: 0; }
+.compact { min-height: 34px; padding: 0 11px; font-size: .75rem; }
+.preview-link { display: inline-flex; align-items: center; justify-content: center; margin: 12px 0; text-decoration: none; }
+.preview-frame-shell { height: min(68vh, 760px); overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; background: #fff; }
+.preview-frame-shell iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+.rich-content { display: grid; gap: 10px; margin-top: 14px; min-width: 0; }
+.rich-content h3 { margin: 12px 0 0; color: #e7edf5; font-size: .9rem; }
+.info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.info-item { min-width: 0; padding: 11px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: rgba(255,255,255,.02); }
+.info-value { margin-top: 5px; color: #cbd3de; font-size: .78rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.stack-list { display: grid; gap: 8px; }
+.stack-item { padding: 11px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: rgba(255,255,255,.02); }
+.stack-item summary { cursor: pointer; color: #cbd3de; font-size: .78rem; overflow-wrap: anywhere; }
+.stack-item p { margin: 6px 0 0; }
+.data-block { max-height: 55vh; margin: 10px 0 0; padding: 11px; overflow: auto; border-radius: 8px; color: #9ca8b7; background: #070a0f; font: .7rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-block { white-space: pre; overflow-wrap: normal; }
+.file-list { max-height: 48vh; overflow: auto; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+.file-row { padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,.05); color: #9ca8b7; font-size: .72rem; overflow-wrap: anywhere; }
+.file-row:last-child { border-bottom: 0; }
 .metric { min-height: 110px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
 .metric strong { font-size: 1.08rem; overflow-wrap: anywhere; }
+.work-card, .plan-card, .blocker-card { margin-top: 4px; }
+.work-objective { margin: 14px 0 18px; color: #e9eef5; font-size: 1rem; line-height: 1.55; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.detail-grid > div { padding: 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; background: rgba(255,255,255,.025); }
+.detail-grid strong { display: block; margin-top: 6px; font-size: .88rem; line-height: 1.35; overflow-wrap: anywhere; }
+.blocker-card { border-color: rgba(255,198,88,.35); background: linear-gradient(135deg, rgba(255,198,88,.09), rgba(255,255,255,.025)); }
+.blocker-card h2 { margin: 6px 0 8px; }
+.next-step { margin: 12px 0 0; color: #c9ff91; font-weight: 750; }
+.stage-list { display: grid; grid-template-columns: 1fr; gap: 7px; margin-top: 14px; }
+.stage-item { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; color: #7f8a98; font-size: .82rem; }
+.stage-item.done { color: #c9ff91; border-color: rgba(167,255,79,.22); }
+.stage-item.pending { color: #b9d9ff; border-color: rgba(99,179,255,.3); }
+.stage-marker { width: 16px; font-size: 1rem; font-weight: 800; text-align: center; }
 .action-card { display: grid; gap: 16px; border-color: rgba(255,198,88,.26); }
 .button-row > * { flex: 1; }
 .transcript-card, .activity-card { min-height: 0; }
@@ -175,4 +211,6 @@ footer { display: flex; justify-content: center; padding: 6px 0 2px; }
   .shell { padding-left: 20px; padding-right: 20px; }
   .status-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .metric { min-height: 120px; }
+  .stage-list { grid-template-columns: repeat(5, 1fr); }
+  .preview-frame-shell { height: 72vh; }
 }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { ProcessRuntime, type ProcessSnapshot } from "../../process-runtime/src/index.ts";
+import { findAvailableLoopbackPort, ProcessRuntime, type ProcessSnapshot } from "../../process-runtime/src/index.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import axe from "axe-core";
@@ -8,6 +8,21 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 const MAX_EVENTS = 500;
 const MAX_STARTUP_SECONDS = 60;
 const serverCommands = new Set(["node", "npm", "python", "python3", "dotnet", "cargo", "go"]);
+
+async function occupied(url: URL) {
+  try {
+    await fetch(url, { signal: AbortSignal.timeout(1_000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function bindManagedPort(command: string, args: string[], port: number) {
+  if (command !== "npm" || args[0] !== "run" || !["dev", "start", "serve", "preview"].includes(args[1] ?? "")) return args;
+  if (args.some((value) => value === "--port" || /^--port=/.test(value))) return args;
+  return [...args, "--", "--host", "127.0.0.1", "--port", String(port)];
+}
 
 export interface BrowserTaskContext {
   taskId: string;
@@ -38,6 +53,14 @@ export interface BrowserRouteEvidence {
   reached: boolean;
   renderedDistinctContent: boolean;
   finalUrl: string | null;
+  responsiveViewports: number;
+  accessibilityPassed: boolean;
+  landmarks: { header: boolean; navigation: boolean; main: boolean; footer: boolean };
+  activeNavigation: boolean;
+  styleSignature: { bodyFontFamily: string; bodyColor: string; headingFontFamily: string };
+  consistencyPassed: boolean;
+  interactionPassed: boolean;
+  interactionIssues: string[];
   issue: string | null;
 }
 
@@ -46,6 +69,35 @@ export function routeJourneyIssue(input: Pick<BrowserRouteEvidence, "route" | "n
   if (!input.reached) return `The navigation link for ${input.name} did not reach ${input.route}.`;
   if (!input.renderedDistinctContent) return `${input.name} (${input.route}) renders the same page content as ${root.name} (${root.route}).`;
   return null;
+}
+
+export function routeQualityIssue(
+  input: Pick<BrowserRouteEvidence, "route" | "name" | "linked" | "reached" | "renderedDistinctContent" | "responsiveViewports" | "accessibilityPassed">,
+  root = { route: "/", name: "Home" },
+): string | null {
+  return routeJourneyIssue(input, root)
+    ?? (input.responsiveViewports < 3 ? `${input.name} (${input.route}) lacks required mobile, tablet, and desktop evidence.` : null)
+    ?? (!input.accessibilityPassed ? `${input.name} (${input.route}) has a serious or critical accessibility violation.` : null);
+}
+
+export function routeConsistencyIssue(
+  input: Pick<BrowserRouteEvidence, "route" | "name" | "landmarks" | "activeNavigation" | "styleSignature">,
+  rootStyle: BrowserRouteEvidence["styleSignature"],
+): string | null {
+  const missing = Object.entries(input.landmarks).filter(([, present]) => !present).map(([name]) => name);
+  if (missing.length) return `${input.name} (${input.route}) is missing shared shell landmark(s): ${missing.join(", ")}.`;
+  if (!input.activeNavigation) return `${input.name} (${input.route}) does not expose its active navigation state with aria-current="page".`;
+  if (input.styleSignature.bodyFontFamily !== rootStyle.bodyFontFamily || input.styleSignature.headingFontFamily !== rootStyle.headingFontFamily) {
+    return `${input.name} (${input.route}) does not preserve the shared site typography.`;
+  }
+  if (input.styleSignature.bodyColor !== rootStyle.bodyColor) return `${input.name} (${input.route}) does not preserve the shared body text color.`;
+  return null;
+}
+
+export function routeInteractionIssue(input: Pick<BrowserRouteEvidence, "route" | "name" | "interactionIssues">): string | null {
+  return input.interactionIssues.length
+    ? `${input.name} (${input.route}) has unusable interaction(s): ${input.interactionIssues.slice(0, 5).join("; ")}.`
+    : null;
 }
 
 export interface BrowserDomElement {
@@ -356,7 +408,12 @@ export class BrowserVerification {
     if (!serverCommands.has(command)) throw new Error(`Development server command is not allowlisted: ${command}`);
     const args = Array.isArray(input.args) ? input.args.map(String) : [];
     if (args.length > 40 || args.some((argument) => argument.length > 1_000 || argument.includes("\0"))) throw new Error("Development server arguments exceed the bounded policy.");
-    const url = assertLoopbackUrl(String(input.url ?? "")).toString();
+    const requestedUrl = assertLoopbackUrl(String(input.url ?? ""));
+    const selectedPort = await occupied(requestedUrl) ? await findAvailableLoopbackPort() : Number(requestedUrl.port || (requestedUrl.protocol === "https:" ? 443 : 80));
+    const selectedUrl = new URL(requestedUrl);
+    selectedUrl.port = String(selectedPort);
+    const url = selectedUrl.toString();
+    const managedArgs = bindManagedPort(command, args, selectedPort);
     const root = realpathSync(resolve(context.worktreePath));
     const requestedCwd = String(input.cwd ?? "").trim();
     const candidateCwd = requestedCwd ? resolve(root, requestedCwd) : root;
@@ -368,10 +425,10 @@ export class BrowserVerification {
       kind: "dev_server",
       label: "Development server",
       command,
-      args,
+      args: managedArgs,
       cwd,
       url,
-      env: { HOST: "127.0.0.1", BROWSER: "none", ...(this.environmentForTask?.(context.taskId) ?? {}) },
+      env: { HOST: "127.0.0.1", PORT: String(selectedPort), BROWSER: "none", ...(this.environmentForTask?.(context.taskId) ?? {}) },
       redact: Object.values(this.environmentForTask?.(context.taskId) ?? {}),
       startupTimeoutMs: numberInRange(input.timeout_seconds, 30, 1, MAX_STARTUP_SECONDS) * 1_000,
     });
@@ -572,6 +629,7 @@ export class BrowserVerification {
     await session.page.goto(rootUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await session.page.waitForTimeout(150);
     const rootContent = (await session.page.locator("body").innerText()).replace(/\s+/g, " ").trim();
+    const rootConsistency = await this.pageConsistency(session.page, root.route);
     const checks: BrowserRouteEvidence[] = [];
     for (const item of routes.filter((candidate) => candidate.route !== "/" && !/[:\[]/.test(candidate.route))) {
       await session.page.goto(rootUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -594,12 +652,105 @@ export class BrowserVerification {
       const reached = Boolean(finalUrl && new URL(finalUrl).pathname === item.route);
       const content = linked ? (await session.page.locator("body").innerText()).replace(/\s+/g, " ").trim() : "";
       const renderedDistinctContent = reached && content.length > 0 && content !== rootContent;
-      const issue = routeJourneyIssue({ route: item.route, name: item.name, linked, reached, renderedDistinctContent }, root);
-      checks.push({ route: item.route, name: item.name, linked, reached, renderedDistinctContent, finalUrl, issue });
+      let responsiveViewports = 0;
+      let accessibilityPassed = reached;
+      if (reached) {
+        const routeUrl = new URL(item.route, serverUrl).toString();
+        for (const viewport of [
+          { name: "mobile", width: 390, height: 844 },
+          { name: "tablet", width: 768, height: 1024 },
+          { name: "desktop", width: 1440, height: 900 },
+        ]) {
+          await session.page.setViewportSize({ width: viewport.width, height: viewport.height });
+          session.viewport = { width: viewport.width, height: viewport.height };
+          await session.page.goto(routeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+          await session.page.waitForTimeout(150);
+          await this.screenshot(session, context, `route-${safeName(item.name, "page")}-${viewport.name}`, true);
+          const accessibility = await this.auditAccessibility(session.page);
+          const blocking = accessibility.violations.some((violation) => violation.impact === "critical" || violation.impact === "serious");
+          accessibilityPassed = accessibilityPassed && !blocking;
+          responsiveViewports += 1;
+        }
+      }
+      const consistency = reached
+        ? await this.pageConsistency(session.page, item.route)
+        : { landmarks: { header: false, navigation: false, main: false, footer: false }, activeNavigation: false, styleSignature: { bodyFontFamily: "", bodyColor: "", headingFontFamily: "" } };
+      const interactionIssues = reached ? await this.pageInteractionIssues(session.page) : ["Route was not reached."];
+      const interactionPassed = interactionIssues.length === 0;
+      const qualityIssue = routeQualityIssue({ route: item.route, name: item.name, linked, reached, renderedDistinctContent, responsiveViewports, accessibilityPassed }, root);
+      const consistencyIssue = qualityIssue ? null : routeConsistencyIssue({ route: item.route, name: item.name, ...consistency }, rootConsistency.styleSignature);
+      const interactionIssue = qualityIssue || consistencyIssue ? null : routeInteractionIssue({ route: item.route, name: item.name, interactionIssues });
+      const issue = qualityIssue ?? consistencyIssue ?? interactionIssue;
+      checks.push({
+        route: item.route, name: item.name, linked, reached, renderedDistinctContent, finalUrl,
+        responsiveViewports, accessibilityPassed, ...consistency, consistencyPassed: consistencyIssue === null,
+        interactionPassed, interactionIssues, issue,
+      });
     }
     session.routeChecks = checks;
     session.dom = await this.inspectDom(session.page, "body, body *", 160);
     this.updateReport(context.taskId);
+  }
+
+  private async pageConsistency(page: Page, route: string) {
+    const landmarks = {
+      header: await page.locator("header").count() > 0,
+      navigation: await page.locator("nav").count() > 0,
+      main: await page.locator("main").count() > 0,
+      footer: await page.locator("footer").count() > 0,
+    };
+    const activeNavigation = await page.locator('a[aria-current="page"]').evaluateAll((links, expectedRoute) =>
+      links.some((link) => {
+        try { return new URL((link as HTMLAnchorElement).href).pathname === expectedRoute; } catch { return false; }
+      }), route);
+    const styleSignature = await page.evaluate(() => {
+      const body = getComputedStyle(document.body);
+      const heading = document.querySelector("h1, h2, h3");
+      return {
+        bodyFontFamily: body.fontFamily,
+        bodyColor: body.color,
+        headingFontFamily: heading ? getComputedStyle(heading).fontFamily : body.fontFamily,
+      };
+    });
+    return { landmarks, activeNavigation, styleSignature };
+  }
+
+  private async pageInteractionIssues(page: Page): Promise<string[]> {
+    return page.evaluate(() => {
+      const visible = (element: Element) => {
+        const node = element as HTMLElement;
+        const style = getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const issues: string[] = [];
+      for (const link of document.querySelectorAll("a")) {
+        if (!visible(link)) continue;
+        const href = link.getAttribute("href")?.trim() ?? "";
+        if (!href || href === "#" || href.toLowerCase().startsWith("javascript:")) {
+          issues.push(`link \"${link.textContent?.trim().slice(0, 60) || "unnamed"}\" has no meaningful destination`);
+        }
+      }
+      for (const button of document.querySelectorAll("button:not([disabled])")) {
+        if (!visible(button)) continue;
+        const inForm = Boolean(button.closest("form"));
+        const explicitAction = button.getAttribute("type") === "submit" || button.hasAttribute("formaction");
+        if (!inForm && !explicitAction && !button.getAttribute("aria-controls") && !button.getAttribute("data-action")) {
+          issues.push(`button \"${button.textContent?.trim().slice(0, 60) || "unnamed"}\" exposes no inspectable action`);
+        }
+      }
+      for (const control of document.querySelectorAll("input:not([type=hidden]), textarea, select")) {
+        if (!visible(control)) continue;
+        const id = control.getAttribute("id");
+        const labelled = Boolean(control.getAttribute("aria-label") || control.getAttribute("aria-labelledby") || control.closest("label") || (id && document.querySelector(`label[for="${CSS.escape(id)}"]`)));
+        if (!labelled) issues.push(`${control.tagName.toLowerCase()} control lacks an accessible label`);
+      }
+      for (const form of document.querySelectorAll("form")) {
+        if (!visible(form)) continue;
+        if (!form.querySelector('button[type="submit"], input[type="submit"]')) issues.push("form has no submit control");
+      }
+      return [...new Set(issues)].slice(0, 20);
+    });
   }
 
   private async screenshot(session: BrowserSession, context: BrowserTaskContext, rawName: unknown, fullPage: boolean): Promise<ScreenshotEvidence> {

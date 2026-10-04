@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { GitWorktreeManager } from "../packages/repository/src/git-worktree-manager.ts";
-import { validateBrowserEvidence, WorktreeTools, type RecordedApproval } from "../packages/tools/src/worktree-tools.ts";
+import { briefContractViolations, constructionReadinessViolations, validateBrowserEvidence, WorktreeTools, type RecordedApproval } from "../packages/tools/src/worktree-tools.ts";
 
 test("browser evidence cannot pass for a broken build or the starter placeholder", () => {
   const evidence = {
@@ -60,6 +60,32 @@ test("browser evidence rejects filler, dead controls, and routes outside the app
   assert.match(issues, /\/dashboard/);
 });
 
+test("website readiness catches prohibited downloads, required copy, placeholders, and detached styling", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-readiness-"));
+  try {
+    mkdirSync(join(root, "src", "assets"), { recursive: true });
+    writeFileSync(join(root, ".borg-website.json"), JSON.stringify({
+      originalBrief: 'Build a site for Fieldwork, an independent landscape design studio. Do not download imagery. On success display: "Demo submission received locally. No email has been sent."',
+    }));
+    writeFileSync(join(root, "src", "main.tsx"), 'import "./style.css"; import App from "./App"; void App;\n');
+    writeFileSync(join(root, "src", "App.tsx"), 'export default function App(){return <main className="hero-shell"><h1>Hero Component</h1><section className="project-grid">Project Title</section><footer className="site-footer">Footer content will be added here.</footer></main>}\n');
+    writeFileSync(join(root, "src", "style.css"), 'body { margin: 0; }\n');
+    writeFileSync(join(root, "src", "assets", "photo.jpg.license.json"), '{}\n');
+
+    const briefIssues = briefContractViolations(root).map((item) => item.message).join(" ");
+    assert.match(briefIssues, /prohibits downloaded imagery/i);
+    assert.match(briefIssues, /exact visible text/i);
+    assert.match(briefIssues, /identity drift/i);
+    assert.match(briefIssues, /domain drift/i);
+
+    const readinessIssues = constructionReadinessViolations(root).map((item) => item.message).join(" ");
+    assert.match(readinessIssues, /placeholder|generic mock/i);
+    assert.match(readinessIssues, /visual readiness/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("worktree mutation requires approval and remains inside the recorded task worktree", async () => {
   const root = mkdtempSync(join(tmpdir(), "borg-mutation-"));
   const repository = join(root, "repo");
@@ -82,6 +108,13 @@ test("worktree mutation requires approval and remains inside the recorded task w
     await assert.rejects(() => tools.execute("worktree_patch", { path: "README.md", old_text: "Original", new_text: "Changed" }, context), /approved worktree/);
     approval = { taskId: context.taskId, status: "APPROVED", worktreePath: worktree.path, baseCommit: worktree.baseCommit };
 
+    const missingOptional = await tools.execute("worktree_stat", { path: "tailwind.config.js" }, context) as { exists: boolean; type: string | null };
+    assert.deepEqual(missingOptional, { path: "tailwind.config.js", exists: false, type: null, bytes: null });
+    const existingReadme = await tools.execute("worktree_stat", { path: "README.md" }, context) as { exists: boolean; type: string | null; bytes: number | null };
+    assert.equal(existingReadme.exists, true);
+    assert.equal(existingReadme.type, "file");
+    assert.ok((existingReadme.bytes ?? 0) > 0);
+
     const patched = await tools.execute("worktree_patch", { path: "README.md", old_text: "Original", new_text: "Changed" }, context) as { replacements: number };
     assert.equal(patched.replacements, 1);
     const nestedWrite = await tools.execute("worktree_write", { path: "src/features/cart/components/CartDrawer.tsx", content: "export const CartDrawer = () => null;\n" }, context) as { path: string; created: boolean };
@@ -103,6 +136,24 @@ test("worktree mutation requires approval and remains inside the recorded task w
     }, context);
     const windowsRead = await tools.execute("worktree_read", { path: "windows.txt" }, context) as { content: string };
     assert.equal(windowsRead.content, "updated\r\nsecond\r\n");
+    const batch = await tools.execute("worktree_read_many", { paths: ["README.md", "windows.txt"] }, context) as { files: Array<{ content: string; sha256: string }> };
+    assert.equal(batch.files.length, 2);
+    assert.equal(batch.files[1].content, windowsRead.content);
+    assert.match(batch.files[1].sha256, /^[a-f0-9]{64}$/);
+    const range = await tools.execute("worktree_read", { path: "windows.txt", start_line: 2, end_line: 2 }, context) as { content: string; sha256: string };
+    assert.equal(range.content, "second\r\n");
+    assert.equal(range.sha256, batch.files[1].sha256);
+    const unchanged = await tools.execute("worktree_read", { path: "windows.txt", known_sha256: range.sha256 }, context) as { notModified?: boolean; content?: string };
+    assert.equal(unchanged.notModified, true);
+    assert.equal(unchanged.content, undefined);
+    writeFileSync(join(worktree.path, "windows.txt"), "changed externally\r\n");
+    const fresh = await tools.execute("worktree_read", { path: "windows.txt", known_sha256: range.sha256 }, context) as { notModified?: boolean; content?: string };
+    assert.equal(fresh.notModified, undefined);
+    assert.equal(fresh.content, "changed externally\r\n");
+    await assert.rejects(() => tools.execute("worktree_read_many", { paths: ["../README.md"] }, context), /Unsafe|relative/);
+    await assert.rejects(() => tools.execute("worktree_read_many", { paths: Array(7).fill("README.md") }, context), /1 to 6/);
+    writeFileSync(join(worktree.path, "large.txt"), "x".repeat(24_001));
+    await assert.rejects(() => tools.execute("worktree_read_many", { paths: ["large.txt"] }, context), /exceeds 24000/);
     assert.equal(execFileSync("git", ["-C", repository, "status", "--short"], { encoding: "utf8" }), "");
 
     const status = await tools.execute("git_status", {}, context) as { stdout: string };
@@ -121,6 +172,13 @@ test("worktree mutation requires approval and remains inside the recorded task w
 
     const verification = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean };
     assert.equal(verification.passed, true);
+    writeFileSync(join(worktree.path, ".borg-website.json"), JSON.stringify({ framework: "vite-react", slug: "dependency-test" }));
+    writeFileSync(join(worktree.path, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: { "": {} } }));
+    writeFileSync(join(worktree.path, "package.json"), JSON.stringify({ scripts: { check: "node -e \"process.exit(0)\"" }, dependencies: { "react-router-dom": "^7.18.4" } }));
+    const dependencyBlocked = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean; results: Array<{ label: string; stderr?: string }> };
+    assert.equal(dependencyBlocked.passed, false);
+    assert.equal(dependencyBlocked.results.at(-1)?.label, "BORG dependency integrity");
+    assert.match(dependencyBlocked.results.at(-1)?.stderr ?? "", /react-router-dom.*package-lock\.json/i);
     writeFileSync(join(worktree.path, "package.json"), JSON.stringify({ scripts: { build: "node -e \"process.exit(0)\"" } }));
     const buildOnlyProfile = await tools.execute("verification_run", { profile: "quick" }, context) as { passed: boolean; results: Array<{ label: string; stderr?: string }> };
     assert.equal(buildOnlyProfile.passed, true);

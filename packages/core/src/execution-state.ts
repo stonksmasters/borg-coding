@@ -87,10 +87,24 @@ export function formatRepairContext(context: RepairContext): string {
   return [`REPAIR ${context.attempt + 1}`, `Category: ${context.classification}`, `Failure: ${context.verification.command} (exit ${context.verification.exitCode})`, errors, `Relevant files:\n${context.allowedFiles.length ? context.allowedFiles.map((file) => `- ${file}`).join("\n") : "- No file path was reported; inspect only the failing command evidence."}`, context.recentChanges.length ? `Recent changes:\n${context.recentChanges.map((file) => `- ${file}`).join("\n")}` : "", "Repair only this failure. Do not restart implementation or perform repository-wide discovery."].filter(Boolean).join("\n\n");
 }
 
+/** Keep every diagnostic, while focusing each repair invocation on at most two source files. */
+export function partitionRepairContext(context: RepairContext): RepairContext[] {
+  const files = [...new Set(context.verification.errors.map((error) => error.file).filter((file): file is string => Boolean(file)))];
+  if (files.length <= 2) return [context];
+  const units: RepairContext[] = [];
+  for (let index = 0; index < files.length; index += 2) {
+    const selected = files.slice(index, index + 2);
+    const errors = context.verification.errors.filter((error) => !error.file || selected.includes(error.file));
+    const allowedFiles = [...new Set([...selected, ...errors.flatMap(relativeModuleTargets)])];
+    units.push({ ...context, implicatedFiles: selected, allowedFiles, verification: { ...context.verification, errors } });
+  }
+  return units;
+}
 
-const repairTools = new Set(["activity_update", "worktree_list", "worktree_read", "worktree_write", "worktree_patch", "worktree_command", "git_diff", "git_status", "browser_open", "browser_click", "browser_dom", "browser_console", "browser_network", "browser_responsive", "browser_screenshot", "browser_accessibility", "browser_close", "browser_server_start"]);
-const verificationTools = new Set(["activity_update", "verification_run", "verification_profiles", "worktree_read", "git_diff", "git_status"]);
-const reviewTools = new Set(["activity_update", "worktree_read", "git_diff", "git_status", "browser_close"]);
+
+const repairTools = new Set(["activity_update", "image_search", "image_download", "worktree_stat", "worktree_list", "worktree_read", "worktree_read_many", "worktree_observation_read", "worktree_write", "worktree_patch", "worktree_command", "git_diff", "git_status", "browser_open", "browser_click", "browser_dom", "browser_console", "browser_network", "browser_responsive", "browser_screenshot", "browser_accessibility", "browser_close", "browser_server_start"]);
+const verificationTools = new Set(["activity_update", "verification_run", "verification_profiles", "worktree_read", "worktree_read_many", "worktree_observation_read", "git_diff", "git_status"]);
+const reviewTools = new Set(["activity_update", "worktree_read", "worktree_read_many", "worktree_observation_read", "git_diff", "git_status", "browser_close"]);
 
 export function executionAllowsTool(
   taskState: TaskState | undefined,

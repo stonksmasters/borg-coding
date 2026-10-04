@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -37,6 +37,11 @@ export class GitWorktreeManager {
     if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) throw new Error("Unsafe worktree destination.");
     if (existsSync(destination)) throw new Error("A worktree already exists for this task.");
     await execFileAsync("git", [...git, "worktree", "add", "--detach", destination, baseCommit], { windowsHide: true });
+    const repositoryDependencies = resolve(repository, "node_modules");
+    const worktreeDependencies = resolve(destination, "node_modules");
+    if (existsSync(repositoryDependencies) && !existsSync(worktreeDependencies)) {
+      symlinkSync(realpathSync(repositoryDependencies), worktreeDependencies, "junction");
+    }
     return { path: destination, repositoryPath: repository, baseCommit };
   }
 

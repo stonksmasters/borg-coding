@@ -77,6 +77,17 @@ export class SqliteTaskRepository {
       );
       CREATE INDEX IF NOT EXISTS idx_context_packs_task_created ON context_packs(task_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_context_packs_project_profile ON context_packs(project_id, profile_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS personal_style_profiles (
+        id TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL,
+        fingerprint TEXT NOT NULL, data TEXT NOT NULL,
+        created_at TEXT NOT NULL, approved_at TEXT,
+        PRIMARY KEY (id, version)
+      );
+      CREATE TABLE IF NOT EXISTS tool_observations (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        tool TEXT NOT NULL, output_json TEXT NOT NULL, sha256 TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_personal_style_profiles_status_version ON personal_style_profiles(status, version DESC);
       CREATE TABLE IF NOT EXISTS approvals (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
         status TEXT NOT NULL, requested_at TEXT NOT NULL, decided_at TEXT,
@@ -149,6 +160,43 @@ export class SqliteTaskRepository {
     `);
   }
 
+  savePersonalStyleProfile(profile: { id: string; version: number; status: string; fingerprint: string; createdAt: string; approvedAt: string | null; [key: string]: unknown }): void {
+    this.database.prepare(`
+      INSERT INTO personal_style_profiles (id, version, status, fingerprint, data, created_at, approved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id, version) DO UPDATE SET status=excluded.status, fingerprint=excluded.fingerprint,
+      data=excluded.data, approved_at=excluded.approved_at
+    `).run(profile.id, profile.version, profile.status, profile.fingerprint, JSON.stringify(profile), profile.createdAt, profile.approvedAt);
+  }
+
+  activatePersonalStyleProfile(profile: { id: string; version: number; status: string; fingerprint: string; createdAt: string; approvedAt: string | null; [key: string]: unknown }): void {
+    if (profile.status !== "approved") throw new Error("Only approved personal style profiles may be activated.");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const approved = this.database.prepare("SELECT id, version, data FROM personal_style_profiles WHERE status = 'approved'").all() as { id: string; version: number; data: string }[];
+      for (const row of approved) {
+        if (row.id === profile.id && row.version === profile.version) continue;
+        const data = { ...(JSON.parse(row.data) as Record<string, unknown>), status: "superseded" };
+        this.database.prepare("UPDATE personal_style_profiles SET status = 'superseded', data = ? WHERE id = ? AND version = ?").run(JSON.stringify(data), row.id, row.version);
+      }
+      this.savePersonalStyleProfile(profile);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  activePersonalStyleProfile(): unknown | null {
+    const row = this.database.prepare("SELECT data FROM personal_style_profiles WHERE status = 'approved' ORDER BY approved_at DESC, version DESC LIMIT 1").get() as { data: string } | undefined;
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  listPersonalStyleProfiles(): unknown[] {
+    const rows = this.database.prepare("SELECT data FROM personal_style_profiles ORDER BY created_at DESC, version DESC").all() as { data: string }[];
+    return rows.map((row) => JSON.parse(row.data));
+  }
+
   saveTask(task: Task): void {
     const value = TaskSchema.parse(task);
     this.database.prepare(`
@@ -208,6 +256,16 @@ export class SqliteTaskRepository {
   appendEvent(event: TaskEvent): void {
     this.database.prepare("INSERT INTO task_events (id, task_id, type, payload, occurred_at) VALUES (?, ?, ?, ?, ?)")
       .run(event.id, event.taskId, event.type, JSON.stringify(event.payload), event.occurredAt);
+  }
+
+  saveToolObservation(taskId: string, observation: { id: string; tool: string; output: unknown; sha256: string }): void {
+    this.database.prepare("INSERT INTO tool_observations (id, task_id, tool, output_json, sha256) VALUES (?, ?, ?, ?, ?)")
+      .run(observation.id, taskId, observation.tool, JSON.stringify(observation.output), observation.sha256);
+  }
+
+  findToolObservation(taskId: string, id: string): { tool: string; output: unknown; sha256: string } | null {
+    const row = this.database.prepare("SELECT tool, output_json, sha256 FROM tool_observations WHERE id = ? AND task_id = ?").get(id, taskId) as { tool: string; output_json: string; sha256: string } | undefined;
+    return row ? { tool: row.tool, output: JSON.parse(row.output_json), sha256: row.sha256 } : null;
   }
 
   listEvents(taskId: string): TaskEvent[] {

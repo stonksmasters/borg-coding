@@ -27,6 +27,7 @@ test("recovery policy treats safety and repository boundary violations as fatal"
     ["The task does not have an approved worktree.", "approval_violation"],
     ["fatal: not a git repository", "repository_invalid"],
     ["EACCES: permission denied", "permission_denied"],
+    ["CONTEXT_CAPACITY_EXCEEDED: request requires 80000 characters", "context_capacity"],
   ] as const;
 
   for (const [message, category] of cases) {
@@ -48,6 +49,17 @@ test("unknown no-progress attempts get one bounded retry while unknown runtime f
   const exhausted = classifyImplementationFailure("ENOENT: missing file", 2, 2);
   assert.equal(exhausted.disposition, "fatal");
   assert.equal(exhausted.category, "retry_exhausted");
+});
+
+test("malformed model tool-call XML retries the same approved slice", () => {
+  const decision = classifyImplementationFailure(
+    "XML syntax error on line 18: element <function> closed by </parameter>",
+    0,
+    3,
+  );
+  assert.equal(decision.disposition, "retry");
+  assert.equal(decision.category, "model_protocol");
+  assert.match(decision.action, /same approved slice/i);
 });
 
 test("compact recovery evidence preserves only the current failure and deterministic preflight state", () => {

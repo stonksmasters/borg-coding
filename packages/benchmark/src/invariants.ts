@@ -52,6 +52,60 @@ function workflowVerificationPassed(snapshot: BenchmarkDebugSnapshot | null) {
   return snapshot?.workflow?.verification?.status === "passed";
 }
 
+function passedBrowserVerification(snapshot: BenchmarkDebugSnapshot | null) {
+  return snapshot?.events.some((event) =>
+    event.sourceType === "FOCUSED_BROWSER_VERIFICATION_COMPLETED"
+    && event.data?.passed === true,
+  ) === true;
+}
+
+function verifiedRouteJourneys(snapshot: BenchmarkDebugSnapshot | null) {
+  const routes = new Set<string>();
+  if (!snapshot) return routes;
+  for (const event of snapshot.events) {
+    if (event.sourceType !== "VERIFICATION_COMPLETED") continue;
+    const verification = event.data?.verification;
+    if (!verification || typeof verification !== "object") continue;
+    const browserEvidence = (verification as Record<string, unknown>).browserEvidence;
+    if (!browserEvidence || typeof browserEvidence !== "object") continue;
+    const routeChecks = (browserEvidence as Record<string, unknown>).routeChecks;
+    if (!Array.isArray(routeChecks)) continue;
+    for (const check of routeChecks) {
+      if (!check || typeof check !== "object") continue;
+      const value = check as Record<string, unknown>;
+      if (typeof value.route === "string" && value.linked === true && value.reached === true && value.renderedDistinctContent === true
+        && Number(value.responsiveViewports) >= 3 && value.accessibilityPassed === true && value.consistencyPassed === true
+        && value.interactionPassed === true && !value.issue) {
+        routes.add(value.route);
+      }
+    }
+  }
+  return routes;
+}
+
+function passedEngineeringChecks(snapshot: BenchmarkDebugSnapshot | null) {
+  const passed = new Set<string>();
+  if (!snapshot) return passed;
+  for (const event of snapshot.events) {
+    if (event.sourceType !== "VERIFICATION_COMPLETED") continue;
+    const verification = event.data?.verification;
+    if (!verification || typeof verification !== "object") continue;
+    const results = (verification as Record<string, unknown>).results;
+    if (!Array.isArray(results)) continue;
+    for (const result of results) {
+      if (!result || typeof result !== "object") continue;
+      const value = result as Record<string, unknown>;
+      if (Number(value.exitCode) !== 0) continue;
+      const label = `${String(value.label ?? "")} ${String(value.command ?? "")} ${Array.isArray(value.args) ? value.args.join(" ") : ""}`.toLowerCase();
+      if (/\blint\b/.test(label)) passed.add("lint");
+      if (/\b(?:check|typecheck|tsc)\b/.test(label)) passed.add("typecheck");
+      if (/\btest\b/.test(label)) passed.add("test");
+      if (/\bbuild\b/.test(label)) passed.add("build");
+    }
+  }
+  return passed;
+}
+
 function preDeliveryCheckpoint(snapshot: BenchmarkDebugSnapshot | null) {
   if (!snapshot) return null;
   return [...snapshot.checkpoints].reverse().find((checkpoint) =>
@@ -70,6 +124,33 @@ export function evaluateBenchmarkInvariants(input: BenchmarkInvariantInput): Ben
   const failures: BenchmarkFailure[] = [];
   const observedTaskIds = [...new Set(input.observations.map((item) => item.taskId).filter((value): value is string => Boolean(value)))];
   const snapshotTaskIds = new Set(input.snapshots.map((snapshot) => snapshot.task.id));
+  const designBriefEvents = uniqueEvents(input.snapshots, "DESIGN_BRIEF_CREATED");
+  if (input.completionClaimed && input.benchmark.expected.requirePersonalStyleProfile) {
+    const hasPinnedProfile = designBriefEvents.some((event) => {
+      const brief = event.data?.brief;
+      if (!brief || typeof brief !== "object") return false;
+      const value = brief as Record<string, unknown>;
+      return typeof value.styleProfileId === "string"
+        && typeof value.styleProfileVersion === "number"
+        && typeof value.styleFingerprint === "string"
+        && /^[a-f0-9]{64}$/.test(value.styleFingerprint)
+        && typeof value.selectedArchetype === "string";
+    });
+    if (!hasPinnedProfile) failures.push(violation(
+      "PERSONAL_STYLE_PROFILE_MISSING",
+      "design",
+      "The benchmark requires a pinned approved personal style profile, but the authoritative design brief did not record its id, version, fingerprint, and archetype.",
+    ));
+  }
+
+  if (input.benchmark.expected.maximumSlices !== undefined) {
+    const observedMaximum = Math.max(0, ...input.observations.map((item) => item.sliceTotal ?? 0), ...input.snapshots.map((item) => item.workflow?.sliceTotal ?? 0));
+    if (observedMaximum > input.benchmark.expected.maximumSlices) failures.push(violation(
+      "SLICE_LIMIT_EXCEEDED",
+      "planning",
+      `The approved plan contains ${observedMaximum} slices; this benchmark permits at most ${input.benchmark.expected.maximumSlices}.`,
+    ));
+  }
 
   if (input.completionClaimed) {
     for (const taskId of observedTaskIds) {
@@ -211,6 +292,44 @@ export function evaluateBenchmarkInvariants(input: BenchmarkInvariantInput): Ben
   }
 
   if (input.completionClaimed) {
+    const completedSliceSnapshots = [...new Set(input.observations
+      .filter((item) => item.sliceIndex !== null)
+      .map((item) => item.taskId))]
+      .map((taskId) => snapshotForTask(input.snapshots, taskId));
+
+    for (const snapshot of completedSliceSnapshots) {
+      if (!snapshot || passedBrowserVerification(snapshot)) continue;
+      const taskId = snapshot.task.id;
+      const sliceId = sliceLabel(snapshot);
+      if (input.benchmark.expected.requireBrowserVerification) {
+        failures.push(violation(
+          "BROWSER_VERIFICATION_EVIDENCE_MISSING",
+          "verification",
+          "Frontend completion was claimed without passed browser verification evidence for every observed slice.",
+          taskId,
+          sliceId,
+        ));
+      }
+      if (input.benchmark.expected.requireResponsiveVerification) {
+        failures.push(violation(
+          "RESPONSIVE_VERIFICATION_EVIDENCE_MISSING",
+          "verification",
+          "Frontend completion was claimed without passed responsive viewport evidence for every observed slice.",
+          taskId,
+          sliceId,
+        ));
+      }
+      if (input.benchmark.expected.requireAccessibilityVerification) {
+        failures.push(violation(
+          "ACCESSIBILITY_VERIFICATION_EVIDENCE_MISSING",
+          "verification",
+          "Frontend completion was claimed without passed accessibility evidence for every observed slice.",
+          taskId,
+          sliceId,
+        ));
+      }
+    }
+
     const finalObservation = [...input.observations].reverse().find((item) => item.sliceIndex !== null) ?? null;
     const finalSnapshot = snapshotForTask(input.snapshots, finalObservation?.taskId ?? null);
     if (finalSnapshot && !workflowVerificationPassed(finalSnapshot)) {
@@ -243,6 +362,28 @@ export function evaluateBenchmarkInvariants(input: BenchmarkInvariantInput): Ben
           finalSnapshot?.task.id ?? null,
         ));
       }
+    }
+
+    const verifiedRoutes = verifiedRouteJourneys(finalSnapshot);
+    for (const required of input.benchmark.expected.requiredRoutes.filter((route) => route !== "/")) {
+      if (verifiedRoutes.has(required)) continue;
+      failures.push(violation(
+        "REQUIRED_ROUTE_NOT_VERIFIED",
+        "verification",
+        `Required benchmark route ${required} lacks passed linked-navigation and distinct-render evidence in the final frontend verification.`,
+        finalSnapshot?.task.id ?? null,
+        required,
+      ));
+    }
+    const engineeringChecks = passedEngineeringChecks(finalSnapshot);
+    const missingEngineeringChecks = ["lint", "typecheck", "test", "build"].filter((check) => !engineeringChecks.has(check));
+    if (missingEngineeringChecks.length) {
+      failures.push(violation(
+        "ENGINEERING_VERIFICATION_EVIDENCE_MISSING",
+        "verification",
+        `Final frontend completion lacks successful engineering evidence for: ${missingEngineeringChecks.join(", ")}.`,
+        finalSnapshot?.task.id ?? null,
+      ));
     }
   }
 

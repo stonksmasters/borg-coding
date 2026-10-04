@@ -75,6 +75,64 @@
         </article>
       </section>
 
+      <nav id="workspaceTabs" class="workspace-tabs" aria-label="Workspace views">
+        <button type="button" data-tab="overview" class="active">Status</button>
+        <button type="button" data-tab="chat">Chat</button>
+        <button type="button" data-tab="preview">Preview</button>
+        <button type="button" data-tab="blueprint">Blueprint</button>
+        <button type="button" data-tab="project">Project</button>
+        <button type="button" data-tab="review">Review</button>
+        <button type="button" data-tab="debug">Debug</button>
+      </nav>
+
+      <section class="card work-card workspace-panel" data-panel="overview">
+        <div class="section-heading"><div><p class="eyebrow">CURRENT WORK</p><h2 id="sliceTitle">No active slice</h2></div><span id="sliceProgress" class="pill">—</span></div>
+        <p id="objective" class="work-objective">Choose a session to see its objective.</p>
+        <div class="detail-grid">
+          <div><span class="label">Current action</span><strong id="currentAction">—</strong></div>
+          <div><span class="label">Next action</span><strong id="nextAction">—</strong></div>
+          <div><span class="label">Verification</span><strong id="verificationState">—</strong></div>
+          <div><span class="label">Visual review</span><strong id="visualState">—</strong></div>
+        </div>
+      </section>
+
+      <section id="blockerCard" class="card blocker-card workspace-panel hidden" data-panel="overview">
+        <p class="eyebrow">NEEDS ATTENTION</p><h2 id="blockerTitle">Recovery required</h2>
+        <p id="blockerDetail" class="muted"></p><p id="blockerAction" class="next-step"></p>
+      </section>
+
+      <section class="card plan-card workspace-panel" data-panel="overview">
+        <div class="section-heading"><div><p class="eyebrow">PLAN &amp; PROGRESS</p><h2>Stage checklist</h2></div><span id="planPhase" class="pill">—</span></div>
+        <div id="stageChecklist" class="stage-list"></div>
+      </section>
+
+      <section id="previewPanel" class="card workspace-panel hidden" data-panel="preview">
+        <div class="section-heading"><div><p class="eyebrow">LIVE WEBSITE</p><h2>Preview</h2></div><button id="refreshPreviewButton" class="secondary compact" type="button">Refresh</button></div>
+        <p id="previewMessage" class="muted">Open this tab to start the website preview.</p>
+        <a id="openPreviewLink" class="primary preview-link hidden" target="_blank" rel="noopener">Open full screen</a>
+        <div id="previewFrameShell" class="preview-frame-shell hidden"><iframe id="previewFrame" title="Website live preview"></iframe></div>
+      </section>
+
+      <section class="card workspace-panel hidden" data-panel="blueprint">
+        <div class="section-heading"><div><p class="eyebrow">BLUEPRINT</p><h2>Product plan</h2></div></div>
+        <div id="blueprintContent" class="rich-content"><p class="muted">No blueprint loaded.</p></div>
+      </section>
+
+      <section class="card workspace-panel hidden" data-panel="project">
+        <div class="section-heading"><div><p class="eyebrow">PROJECT</p><h2>Files and context</h2></div></div>
+        <div id="projectContent" class="rich-content"><p class="muted">No project data loaded.</p></div>
+      </section>
+
+      <section class="card workspace-panel hidden" data-panel="review">
+        <div class="section-heading"><div><p class="eyebrow">REVIEW</p><h2>Changes and evidence</h2></div></div>
+        <div id="reviewContent" class="rich-content"><p class="muted">No review data loaded.</p></div>
+      </section>
+
+      <section class="card workspace-panel hidden" data-panel="debug">
+        <div class="section-heading"><div><p class="eyebrow">DEBUG</p><h2>Control plane</h2></div></div>
+        <div id="debugContent" class="rich-content"><p class="muted">No debug snapshot loaded.</p></div>
+      </section>
+
       <section id="approvalCard" class="card action-card hidden">
         <div>
           <p class="eyebrow">ACTION REQUIRED</p>
@@ -87,7 +145,7 @@
         </div>
       </section>
 
-      <section class="card transcript-card">
+      <section class="card transcript-card workspace-panel hidden" data-panel="chat">
         <div class="section-heading">
           <div>
             <p class="eyebrow">CHAT</p>
@@ -106,7 +164,7 @@
         </form>
       </section>
 
-      <section class="card activity-card">
+      <section class="card activity-card workspace-panel" data-panel="overview">
         <div class="section-heading">
           <div>
             <p class="eyebrow">CONTROL PLANE</p>

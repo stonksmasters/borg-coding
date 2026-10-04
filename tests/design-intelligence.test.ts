@@ -260,3 +260,38 @@ test("design director propagates caller cancellation instead of waiting for its 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("design director retries one transient local runtime disconnect", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    if (requests === 1) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify({
+      message: {
+        content: JSON.stringify({
+          audience: "Design-conscious homeowners",
+          primaryPromise: "A landscape studio grounded in place.",
+          brandCharacter: ["Editorial", "Grounded", "Precise"],
+          visualDirection: "Warm editorial compositions with expressive serif type and deep green accents.",
+          typography: { display: "Editorial serif", body: "Neutral sans", hierarchy: "Expressive display, structured headings, readable body." },
+          palette: [{ role: "canvas", direction: "warm ivory" }, { role: "ink", direction: "deep green" }, { role: "accent", direction: "earth" }],
+          sections: [{ purpose: "Hero", composition: "Asymmetric image and type", visualWeight: "high-impact" }, { purpose: "Work", composition: "Editorial project index", visualWeight: "balanced" }, { purpose: "Contact", composition: "Quiet form", visualWeight: "quiet" }],
+          motion: ["Restrained reveals"],
+          mobileStrategy: ["Recompose the hero around portrait imagery", "Keep controls reachable"],
+          contentVoice: ["Specific", "Calm"],
+          avoid: ["Fake metrics", "Generic claims", "Crowded cards", "Random gradients", "Decorative motion"],
+          qualityBar: ["Clear hierarchy", "Distinct composition", "Credible copy", "Responsive layout", "Accessible interaction"],
+        }),
+      },
+    }), { status: 200 });
+  };
+  try {
+    const result = await new DesignDirectorService("http://127.0.0.1:11434").createBrief({
+      taskId: "task-design-retry", request: "Build a landscape studio homepage", model: "devstral-small-2:latest",
+      repositoryContext: "Greenfield React app", isGreenfield: true,
+    });
+    assert.equal(requests, 2);
+    assert.match(result.visualDirection, /editorial/i);
+  } finally { globalThis.fetch = originalFetch; }
+});

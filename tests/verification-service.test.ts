@@ -4,10 +4,17 @@ import type { BrowserEvidenceReport } from "../packages/browser-verification/src
 import { selectSpecialistPacks } from "../packages/orchestration/src/index.ts";
 import {
   findingsFromVerification,
+  isConstructionVerificationFailure,
   VerificationService,
   type VerificationOutcome,
   type VerificationServiceDependencies,
 } from "../apps/server/src/verification-service.ts";
+
+test("construction failures are distinguished from interaction and visual failures", () => {
+  assert.equal(isConstructionVerificationFailure({ results: [{ label: "npm run build", exitCode: 1, stderr: "UNRESOLVED_IMPORT missing.jpg" }] }), true);
+  assert.equal(isConstructionVerificationFailure({ results: [{ label: "BORG construction readiness", exitCode: 1, stderr: "BORG_READINESS" }] }), true);
+  assert.equal(isConstructionVerificationFailure({ results: [{ label: "browser journey", exitCode: 1, stderr: "filter did not update" }] }), false);
+});
 
 test("failed verification becomes actionable review findings", () => {
   const report = browserEvidence("task-findings", false);
@@ -108,6 +115,14 @@ test("VerificationService normalizes deterministic verification without owning w
   assert.equal(h.taskEvents.length, 0);
   assert.equal(h.emitted[0]?.type, "tool.started");
   assert.equal(h.emitted.at(-1)?.type, "tool.completed");
+});
+
+test("failed build diagnostics lead the failure summary before missing browser evidence", async () => {
+  const h = serviceHarness({ deterministic: { passed: false, results: [{ command: "npm", args: ["run", "build"], exitCode: 2, stdout: "TS2307: Cannot find module './Hero'", stderr: "compiler failed" }], browserEvidence: browserEvidence("task-compiler", false) } });
+  const result = await h.service.run({ taskId: "task-compiler", taskContext: { taskId: "task-compiler" }, activeDisciplines: ["frontend"], packs: selectSpecialistPacks(["frontend"]), verificationProfile: "quick", specialistInstructions: "", focusedScope: null, focusedBrowserRoute: null }, h.emit, h.appendTaskEvent, 0);
+  assert.match(result.failure, /^npm run build \(exit 2\):/);
+  assert.match(result.failure, /TS2307.*Hero/);
+  assert.match(result.failure, /compiler failed/);
 });
 
 test("focused verification fails closed when the managed preview server is unavailable", async () => {

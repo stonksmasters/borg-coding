@@ -21,6 +21,19 @@ const els = {
   runtimeState: document.querySelector("#runtimeState"),
   diagnosticState: document.querySelector("#diagnosticState"),
   diagnosticDetail: document.querySelector("#diagnosticDetail"),
+  sliceTitle: document.querySelector("#sliceTitle"),
+  sliceProgress: document.querySelector("#sliceProgress"),
+  objective: document.querySelector("#objective"),
+  currentAction: document.querySelector("#currentAction"),
+  nextAction: document.querySelector("#nextAction"),
+  verificationState: document.querySelector("#verificationState"),
+  visualState: document.querySelector("#visualState"),
+  blockerCard: document.querySelector("#blockerCard"),
+  blockerTitle: document.querySelector("#blockerTitle"),
+  blockerDetail: document.querySelector("#blockerDetail"),
+  blockerAction: document.querySelector("#blockerAction"),
+  planPhase: document.querySelector("#planPhase"),
+  stageChecklist: document.querySelector("#stageChecklist"),
   approvalCard: document.querySelector("#approvalCard"),
   approvalTitle: document.querySelector("#approvalTitle"),
   approvalDetail: document.querySelector("#approvalDetail"),
@@ -36,6 +49,16 @@ const els = {
   activity: document.querySelector("#activity"),
   lastUpdated: document.querySelector("#lastUpdated"),
   logoutButton: document.querySelector("#logoutButton"),
+  workspaceTabs: document.querySelector("#workspaceTabs"),
+  previewMessage: document.querySelector("#previewMessage"),
+  openPreviewLink: document.querySelector("#openPreviewLink"),
+  previewFrameShell: document.querySelector("#previewFrameShell"),
+  previewFrame: document.querySelector("#previewFrame"),
+  refreshPreviewButton: document.querySelector("#refreshPreviewButton"),
+  blueprintContent: document.querySelector("#blueprintContent"),
+  projectContent: document.querySelector("#projectContent"),
+  reviewContent: document.querySelector("#reviewContent"),
+  debugContent: document.querySelector("#debugContent"),
 };
 
 const state = {
@@ -50,7 +73,40 @@ const state = {
   refreshing: false,
   streamBusy: false,
   actions: {},
+  activeTab: localStorage.getItem("borg.remote.tab") || "overview",
+  blueprint: null,
+  previewUrl: null,
 };
+
+function textNode(tag, text, className = "") {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  element.textContent = text ?? "";
+  return element;
+}
+
+function labeledValue(label, value) {
+  const item = document.createElement("div");
+  item.className = "info-item";
+  item.append(textNode("span", label, "label"), textNode("div", value || "—", "info-value"));
+  return item;
+}
+
+function renderObject(container, value, empty = "No information available.") {
+  container.replaceChildren();
+  if (!value || (Array.isArray(value) && !value.length)) return container.append(textNode("p", empty, "muted"));
+  const pre = textNode("pre", JSON.stringify(value, null, 2), "data-block");
+  container.append(pre);
+}
+
+function setTab(tab) {
+  state.activeTab = tab;
+  localStorage.setItem("borg.remote.tab", tab);
+  for (const button of els.workspaceTabs.querySelectorAll("button")) button.classList.toggle("active", button.dataset.tab === tab);
+  for (const panel of document.querySelectorAll(".workspace-panel")) panel.classList.toggle("hidden", panel.dataset.panel !== tab);
+  if (tab === "preview") void loadPreview();
+  if (["blueprint", "project", "review", "debug"].includes(tab)) void loadWorkspaceTab(tab);
+}
 
 function setCommandState(action, phase, message) {
   state.actions[action] = phase;
@@ -173,6 +229,8 @@ function renderSessions() {
     button.className = `session-chip${session.id === state.activeSessionId ? " active" : ""}`;
     button.textContent = session.title || "Untitled session";
     button.addEventListener("click", () => {
+      state.previewUrl = null;
+      els.previewFrame.removeAttribute("src");
       state.activeSessionId = session.id;
       localStorage.setItem("borg.remote.session", session.id);
       setCommandState("session", "accepted", `Selected ${session.title || "session"}.`);
@@ -264,6 +322,7 @@ function renderState(runtime) {
 function renderWorkflow(payload) {
   const workflow = payload?.workflow || payload?.status || payload || null;
   state.workflow = workflow;
+  state.blueprint = payload?.blueprint || null;
   els.workflowState.textContent = human(workflow?.status ?? workflow?.phase, "—");
   els.workflowNext.textContent = workflow?.nextAction ? `Next: ${human(workflow.nextAction)}` : "No next action";
   const index = Number(workflow?.sliceIndex);
@@ -271,6 +330,148 @@ function renderWorkflow(payload) {
   els.sliceState.textContent = Number.isFinite(index) && Number.isFinite(total) && total > 0
     ? `${index + 1} / ${total}`
     : human(workflow?.sliceTitle, "—");
+
+  const run = workflow?.run || {};
+  const slice = run.slice || {};
+  const blocker = run.blocker || workflow?.recovery || null;
+  const verification = run.verification || {};
+  els.sliceTitle.textContent = slice.title || workflow?.sliceTitle || "No active slice";
+  els.sliceProgress.textContent = Number.isFinite(index) && Number.isFinite(total) && total > 0 ? `Slice ${index + 1} of ${total}` : "—";
+  els.objective.textContent = slice.outcome || workflow?.objective || workflow?.detail || "No objective has been recorded.";
+  els.currentAction.textContent = human(run.currentAction || workflow?.currentAction, "Idle");
+  els.nextAction.textContent = human(run.nextAction || workflow?.nextAction, "No next action");
+  els.verificationState.textContent = human(verification.status ?? workflow?.verificationPassed, "Pending");
+  els.visualState.textContent = human(verification.visualStatus, "Pending");
+  els.planPhase.textContent = human(workflow?.phase, "—");
+  els.blockerCard.classList.toggle("hidden", !blocker);
+  if (blocker) {
+    els.blockerTitle.textContent = blocker.title || human(blocker.category, "Recovery required");
+    els.blockerDetail.textContent = blocker.detail || blocker.reason || workflow?.detail || "BORG needs attention before it can continue.";
+    const action = blocker.action || blocker.resumeAction || workflow?.nextAction;
+    els.blockerAction.textContent = action ? `Next step: ${human(action)}` : "";
+  }
+  const completed = new Set(Array.isArray(workflow?.completed) ? workflow.completed : []);
+  const pending = new Set(Array.isArray(workflow?.pending) ? workflow.pending : []);
+  const stages = [["Plan", "PLAN_COMPLETED"], ["Implement", "IMPLEMENTATION_RESPONSE_COMPLETED"], ["Verify", "VERIFICATION_COMPLETED"], ["Review", "REVIEW_COMPLETED"], ["Deliver", "DELIVERY_READY"]];
+  els.stageChecklist.replaceChildren();
+  for (const [label, key] of stages) {
+    const item = document.createElement("div");
+    const done = completed.has(key);
+    const waiting = pending.has(key);
+    item.className = `stage-item ${done ? "done" : waiting ? "pending" : "idle"}`;
+    const marker = document.createElement("span"); marker.className = "stage-marker"; marker.textContent = done ? "✓" : waiting ? "•" : "–";
+    const text = document.createElement("span"); text.textContent = label;
+    item.append(marker, text); els.stageChecklist.append(item);
+  }
+  renderBlueprint();
+}
+
+function renderBlueprint() {
+  const blueprint = state.blueprint;
+  els.blueprintContent.replaceChildren();
+  if (!blueprint) return els.blueprintContent.append(textNode("p", "No durable product blueprint is available for this task.", "muted"));
+  const header = document.createElement("div"); header.className = "info-grid";
+  header.append(
+    labeledValue("Product", blueprint.productName || blueprint.title || "Website"),
+    labeledValue("Goal", blueprint.productGoal || blueprint.goal || blueprint.objective),
+    labeledValue("Audience", Array.isArray(blueprint.targetAudience) ? blueprint.targetAudience.join(", ") : blueprint.targetAudience),
+    labeledValue("Direction", blueprint.visualDirection || blueprint.designDirection),
+  );
+  els.blueprintContent.append(header);
+  const slices = blueprint.slices || blueprint.implementationSlices || blueprint.phases;
+  if (Array.isArray(slices) && slices.length) {
+    els.blueprintContent.append(textNode("h3", "Implementation slices"));
+    const list = document.createElement("div"); list.className = "stack-list";
+    slices.forEach((slice, index) => {
+      const item = document.createElement("article"); item.className = "stack-item";
+      item.append(textNode("strong", `${index + 1}. ${slice.title || slice.name || "Untitled slice"}`));
+      item.append(textNode("p", slice.outcome || slice.objective || slice.description || "", "muted"));
+      list.append(item);
+    });
+    els.blueprintContent.append(list);
+  }
+  const details = document.createElement("details"); details.append(textNode("summary", "Full blueprint data"), textNode("pre", JSON.stringify(blueprint, null, 2), "data-block"));
+  els.blueprintContent.append(details);
+}
+
+async function loadPreview(force = false) {
+  if (!state.activeSessionId) return;
+  if (state.previewUrl && !force) return;
+  els.previewMessage.textContent = "Starting the task preview…";
+  els.refreshPreviewButton.disabled = true;
+  try {
+    const response = await api(`/api/remote/sessions/${encodeURIComponent(state.activeSessionId)}/preview`, { method: "POST" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.preview?.url) throw new Error(body.error || "No website preview is available for this session.");
+    state.previewUrl = body.preview.url;
+    els.previewFrame.src = `${state.previewUrl}?borgRemote=${Date.now()}`;
+    els.openPreviewLink.href = state.previewUrl;
+    els.openPreviewLink.classList.remove("hidden");
+    els.previewFrameShell.classList.remove("hidden");
+    els.previewMessage.textContent = "Live preview from the active task worktree.";
+  } catch (error) {
+    state.previewUrl = null;
+    els.previewFrameShell.classList.add("hidden");
+    els.openPreviewLink.classList.add("hidden");
+    els.previewMessage.textContent = error instanceof Error ? error.message : "Preview unavailable.";
+  } finally { els.refreshPreviewButton.disabled = false; }
+}
+
+async function loadWorkspaceTab(tab) {
+  if (!state.taskId) return;
+  const id = encodeURIComponent(state.taskId);
+  try {
+    if (tab === "blueprint") { renderBlueprint(); return; }
+    if (tab === "project") {
+      const [project, docs, contexts] = await Promise.all(["project", "docs", "contexts"].map(async (resource) => { const response = await api(`/api/remote/tasks/${id}/${resource}`); return response.ok ? response.json() : null; }));
+      els.projectContent.replaceChildren();
+      const entries = project?.entries || project?.tree || [];
+      els.projectContent.append(textNode("h3", "Files"));
+      if (Array.isArray(entries) && entries.length) {
+        const list = document.createElement("div"); list.className = "file-list";
+        for (const entry of entries.slice(0, 300)) list.append(textNode("div", `${entry.type === "directory" ? "▸" : "·"} ${entry.path || entry.name}`, "file-row mono"));
+        els.projectContent.append(list);
+      } else els.projectContent.append(textNode("p", "No project files returned.", "muted"));
+      els.projectContent.append(textNode("h3", "Build documents"));
+      const docList = document.createElement("div"); docList.className = "stack-list";
+      for (const doc of docs?.docs || []) { const item = document.createElement("details"); item.className = "stack-item"; item.append(textNode("summary", doc.title || doc.path || "Document"), textNode("pre", doc.content || doc.text || JSON.stringify(doc, null, 2), "data-block")); docList.append(item); }
+      els.projectContent.append(docList, textNode("h3", `Model context (${contexts?.contexts?.length || 0})`));
+      for (const context of contexts?.contexts || []) els.projectContent.append(labeledValue(context.role || "Context", `${context.model || "model"} · ${new Date(context.createdAt).toLocaleString()}`));
+    }
+    if (tab === "review") {
+      const resources = ["changes", "design", "activity", "processes", "review-history"];
+      const data = await Promise.all(resources.map(async (resource) => { const response = await api(`/api/remote/tasks/${id}/${resource}`); return response.ok ? response.json() : null; }));
+      const [changes, design, activity, processes, history] = data;
+      els.reviewContent.replaceChildren();
+      els.reviewContent.append(textNode("h3", `Changes · ${changes?.files?.length || 0} files`));
+      els.reviewContent.append(labeledValue("Diff summary", `+${changes?.additions || 0} / -${changes?.deletions || 0}`));
+      for (const file of changes?.files || []) { const details = document.createElement("details"); details.className = "stack-item"; details.append(textNode("summary", `${human(file.status)} · ${file.path} (+${file.additions}/-${file.deletions})`), textNode("pre", file.patch || "No textual patch.", "data-block diff-block")); els.reviewContent.append(details); }
+      els.reviewContent.append(textNode("h3", "Design review"));
+      els.reviewContent.append(labeledValue("Status", design?.review?.status || "Not completed"), labeledValue("Summary", design?.review?.summary || "No design review summary."));
+      for (const finding of design?.review?.findings || []) els.reviewContent.append(labeledValue(`${human(finding.severity)} · ${finding.title || finding.dimension}`, finding.description || finding.evidence));
+      els.reviewContent.append(textNode("h3", `Review history · ${history?.findings?.length || 0} findings`));
+      for (const finding of history?.findings || []) els.reviewContent.append(labeledValue(`${human(finding.state)} · ${finding.title}`, finding.description || finding.evidence));
+      els.reviewContent.append(textNode("h3", "Activity and processes"));
+      for (const item of activity?.activities || []) els.reviewContent.append(labeledValue(item.title || human(item.phase), item.detail));
+      for (const process of processes?.processes || []) els.reviewContent.append(labeledValue(`${process.label} · ${human(process.status)}`, process.stderr || process.stdout || `${process.command || ""} ${(process.args || []).join(" ")}`));
+    }
+    if (tab === "debug") renderDebugContent(state.debug);
+  } catch (error) {
+    const target = tab === "project" ? els.projectContent : tab === "review" ? els.reviewContent : els.debugContent;
+    target.replaceChildren(textNode("p", error instanceof Error ? error.message : "Unable to load this panel.", "error"));
+  }
+}
+
+function renderDebugContent(snapshot) {
+  els.debugContent.replaceChildren();
+  if (!snapshot) return els.debugContent.append(textNode("p", "No debug snapshot is available.", "muted"));
+  const grid = document.createElement("div"); grid.className = "info-grid";
+  grid.append(labeledValue("Task", `${snapshot.task?.state || "—"} · attempt ${snapshot.task?.attempts ?? 0}`), labeledValue("Workflow", `${snapshot.workflow?.phase || "—"} · ${snapshot.workflow?.status || "—"}`), labeledValue("Next action", snapshot.workflow?.nextAction), labeledValue("Git", snapshot.git?.status || "Clean"));
+  els.debugContent.append(grid, textNode("h3", "Diagnostics"));
+  for (const item of snapshot.diagnostics || []) els.debugContent.append(labeledValue(`${human(item.severity)} · ${item.title}`, `${item.detail || item.evidence || ""}${item.suggestedAction ? ` Next: ${item.suggestedAction}` : ""}`));
+  els.debugContent.append(textNode("h3", `Models and context · ${snapshot.modelContexts?.length || 0}`));
+  for (const item of snapshot.modelContexts || []) els.debugContent.append(labeledValue(item.role, `${item.model} · ${item.manifestCount} context items`));
+  const details = document.createElement("details"); details.append(textNode("summary", "Raw sanitized snapshot"), textNode("pre", JSON.stringify(snapshot, null, 2), "data-block")); els.debugContent.append(details);
 }
 
 function renderDebug(payload) {
@@ -282,6 +483,7 @@ function renderDebug(payload) {
   els.diagnosticState.textContent = errors ? `${errors} error${errors === 1 ? "" : "s"}` : warnings ? `${warnings} warning${warnings === 1 ? "" : "s"}` : "Healthy";
   els.diagnosticDetail.textContent = diagnostics[0]?.title || "No invariant violations";
   renderActivity(snapshot);
+  renderDebugContent(snapshot);
 }
 
 async function refreshSessions() {
@@ -306,6 +508,7 @@ async function refreshActive() {
     const response = await api(`/api/remote/sessions/${encodeURIComponent(state.activeSessionId)}`);
     if (!response.ok) return;
     const runtime = await response.json();
+    if (state.activeSession?.id !== runtime?.session?.id) state.previewUrl = null;
     renderState(runtime);
     if (state.taskId) {
       const [workflowResponse, debugResponse] = await Promise.all([
@@ -519,6 +722,8 @@ els.refreshButton.addEventListener("click", async () => {
     setCommandState("refresh", "failed", error instanceof Error ? error.message : "Refresh failed.");
   }
 });
+els.workspaceTabs.addEventListener("click", (event) => { const button = event.target.closest("button[data-tab]"); if (button) setTab(button.dataset.tab); });
+els.refreshPreviewButton.addEventListener("click", () => void loadPreview(true));
 els.logoutButton.addEventListener("click", async () => {
   setCommandState("logout", "sending", "Unpairing this device…");
   await fetch("/api/logout", { method: "POST" }).catch(() => undefined);
@@ -531,6 +736,7 @@ els.logoutButton.addEventListener("click", async () => {
 });
 
 void loadLocalSetup();
+setTab(state.activeTab);
 void (async () => {
   if (await refreshSessions()) await refreshActive();
 })();

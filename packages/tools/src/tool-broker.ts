@@ -187,6 +187,22 @@ const definitions = {
       parameters: { type: "object", required: ["url"], properties: { url: { type: "string" } } },
     },
   },
+  image_search: {
+    type: "function",
+    function: {
+      name: "image_search",
+      description: "Search Openverse for openly licensed images suitable for the approved interface. Results include creator, license, attribution, landing page, and downloadable image URL.",
+      parameters: { type: "object", required: ["query"], properties: { query: { type: "string" }, max_results: { type: "integer", minimum: 1, maximum: 8 } } },
+    },
+  },
+  image_download: {
+    type: "function",
+    function: {
+      name: "image_download",
+      description: "Download one selected public image into the approved task worktree and write adjacent attribution metadata. Use only URLs and attribution returned by image_search. The path is safe to import only when this tool returns ok=true and confirmedPath; a failed call creates no usable asset.",
+      parameters: { type: "object", required: ["url", "path", "title", "creator", "license", "license_url", "landing_url"], properties: { url: { type: "string" }, path: { type: "string" }, title: { type: "string" }, creator: { type: "string" }, license: { type: "string" }, license_url: { type: "string" }, landing_url: { type: "string" } } },
+    },
+  },
 } as const;
 
 const repositoryDefinitions = [
@@ -295,6 +311,7 @@ export class ToolBroker {
     if (status.internetEnabled) {
       const internet = status.webSearchAvailable ? [definitions.web_search, definitions.web_fetch] : [definitions.web_fetch];
       available.push(...allowed(internet));
+      available.push(...allowed([definitions.image_search, definitions.image_download]));
     }
     return available;
   }
@@ -357,9 +374,15 @@ export class ToolBroker {
       if (!this.worktree) throw new Error("Worktree tools are not configured.");
       return this.worktree.execute(call.function.name, call.function.arguments, context);
     }
+    if ((call.function.name === "image_search" || call.function.name === "image_download") && context && this.worktree) {
+      const policy = this.worktree.externalImagePolicy(context);
+      if (!policy.allowed) throw new Error(policy.reason ?? "The approved brief prohibits external imagery.");
+    }
     if (!this.status().internetEnabled) throw new Error("Internet tools are disabled by the user.");
     if (call.function.name === "web_search") return this.webSearch(String(call.function.arguments.query ?? ""), Number(call.function.arguments.max_results ?? 5));
     if (call.function.name === "web_fetch") return this.webFetch(String(call.function.arguments.url ?? ""));
+    if (call.function.name === "image_search") return this.imageSearch(String(call.function.arguments.query ?? ""), Number(call.function.arguments.max_results ?? 6));
+    if (call.function.name === "image_download") return this.imageDownload(call.function.arguments, context);
     throw new Error(`Unknown or unavailable tool: ${call.function.name}`);
   }
 
@@ -415,5 +438,44 @@ export class ToolBroker {
       return { url: url.toString(), content: contentType.includes("html") ? htmlToText(raw).slice(0, 60_000) : raw.slice(0, 60_000) };
     }
     throw new Error("Too many redirects.");
+  }
+
+  private async imageSearch(query: string, maxResults: number) {
+    if (!query.trim()) throw new Error("Image search query is required.");
+    const url = await validatePublicUrl(`https://api.openverse.org/v1/images/?q=${encodeURIComponent(query.trim())}&page_size=${Math.max(1, Math.min(8, Math.floor(maxResults)))}`);
+    const response = await fetch(url, { signal: AbortSignal.timeout(20_000), headers: { "user-agent": "BORG-Code/0.3" } });
+    if (!response.ok) throw new Error(`Image search failed (${response.status}).`);
+    const body = await response.json() as { results?: Array<Record<string, unknown>> };
+    return { provider: "openverse", query: query.trim(), results: (body.results ?? []).slice(0, 8).map((item) => ({
+      title: String(item.title ?? "Untitled image"), creator: String(item.creator ?? "Unknown creator"),
+      license: String(item.license ?? "unknown"), licenseUrl: String(item.license_url ?? ""),
+      landingUrl: String(item.foreign_landing_url ?? ""), url: String(item.url ?? ""),
+      thumbnail: String(item.thumbnail ?? ""), width: Number(item.width ?? 0), height: Number(item.height ?? 0),
+      attribution: String(item.attribution ?? ""), source: String(item.source ?? item.provider ?? "openverse"),
+    })).filter((item) => item.url && item.landingUrl && item.licenseUrl) };
+  }
+
+  private async imageDownload(input: Record<string, unknown>, context?: TaskToolContext) {
+    if (!this.worktree || !context) throw new Error("Image downloads require an approved task worktree.");
+    let url = await validatePublicUrl(String(input.url ?? ""));
+    let response: Response | null = null;
+    for (let redirect = 0; redirect <= 3; redirect += 1) {
+      response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(30_000), headers: { "user-agent": "BORG-Code/0.3" } });
+      if (response.status < 300 || response.status >= 400) break;
+      const location = response.headers.get("location");
+      if (!location) throw new Error("Image redirect did not include a destination.");
+      url = await validatePublicUrl(new URL(location, url).toString());
+    }
+    if (!response?.ok) throw new Error(`Image download failed (${response?.status ?? "unavailable"}).`);
+    const contentType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    if (!new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"]).has(contentType)) throw new Error("Downloaded resource is not a supported raster image.");
+    const declaredLength = Number(response.headers.get("content-length") ?? 0);
+    if (declaredLength > 8_000_000) throw new Error("Downloaded image exceeds the 8 MB asset limit.");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const asset = this.worktree.writeImageAsset(context, input.path, bytes);
+    const metadataPath = `${asset.path}.license.json`;
+    const metadata = { provider: "openverse", title: String(input.title ?? ""), creator: String(input.creator ?? ""), license: String(input.license ?? ""), licenseUrl: String(input.license_url ?? ""), landingUrl: String(input.landing_url ?? ""), sourceUrl: url.toString(), downloadedAt: new Date().toISOString() };
+    await this.worktree.execute("worktree_write", { path: metadataPath, content: JSON.stringify(metadata, null, 2) + "\n" }, context);
+    return { ok: true, confirmedPath: asset.path, ...asset, contentType, attributionPath: metadataPath, attribution: metadata };
   }
 }

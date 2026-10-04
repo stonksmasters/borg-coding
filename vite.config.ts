@@ -10,6 +10,7 @@ const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const runtimeWatchIgnores = ["**/.borg/**", "**/.localcode/**"];
 
 const localBindingConfig = {
   main: "vinext/server/fetch-handler",
@@ -49,9 +50,23 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      host: "127.0.0.1",
+      proxy: {
+        "/__borg_api": {
+          target: "http://127.0.0.1:4312",
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/__borg_api/, ""),
+        },
+      },
+      watch: isCodexSeatbeltSandbox
+        ? {
+            ignored: runtimeWatchIgnores,
+            useFsEvents: false,
+            usePolling: true,
+          }
+        : { ignored: runtimeWatchIgnores },
+    },
     plugins: [
       vinext(),
       sites(),

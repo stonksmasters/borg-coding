@@ -47,6 +47,7 @@ const folder = ".localcode/build";
 const stateFile = "state.md";
 const workflowFile = "workflow.md";
 const designBriefFile = "design-brief.md";
+const designProfileFile = "design-profile.json";
 const legacyStateFile = "state.json";
 const planMarker = /<borg-project-plan>([\s\S]*?)<\/borg-project-plan>/i;
 
@@ -460,6 +461,35 @@ export function persistDesignBrief(root: string, brief: Record<string, unknown>)
   const dir = docsDirectory(root);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, designBriefFile), `# Approved design brief\n\nThis brief is durable project-level frontend context and must be inherited by every frontend slice.\n\n\`\`\`json\n${JSON.stringify(brief, null, 2)}\n\`\`\`\n`);
+  if (brief.styleProfileVersion && brief.selectedArchetype) {
+    writeFileSync(join(dir, designProfileFile), JSON.stringify({
+      generated: true,
+      profileId: brief.styleProfileId ?? null,
+      profileVersion: brief.styleProfileVersion,
+      fingerprint: brief.styleFingerprint ?? null,
+      archetype: brief.selectedArchetype,
+      referenceIds: brief.referenceIds ?? [],
+      hardConstraints: brief.hardConstraints ?? [],
+      creativeBounds: brief.creativeBounds ?? [],
+      assetRequirements: brief.assetRequirements ?? [],
+    }, null, 2) + "\n");
+  }
+}
+
+function requestsSingleCompleteSlice(brief: string) {
+  return /\bcomplete representative page\b[\s\S]{0,240}\bfirst bounded slice\b/i.test(brief)
+    || /\bentire (?:one[- ]page|single[- ]page) (?:site|frontend|website|page)\b[\s\S]{0,240}\b(?:one|single|first) (?:bounded )?slice\b/i.test(brief);
+}
+
+function singleCompleteSlice(brief: string, slices: ProjectSlice[]): ProjectSlice[] {
+  if (!requestsSingleCompleteSlice(brief)) return slices;
+  return [{
+    id: "complete-page",
+    title: "Complete representative page",
+    outcome: "The complete requested page, its visual foundation, interactions, responsive behavior, and verification evidence are ready for delivery.",
+    scope: [...new Set(slices.flatMap((slice) => slice.scope))].slice(0, 40),
+    acceptanceCriteria: [...new Set(slices.flatMap((slice) => slice.acceptanceCriteria))].slice(0, 40),
+  }];
 }
 
 export function readPersistedDesignBrief(root: string): Record<string, unknown> | null {
@@ -631,6 +661,7 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
     scope: ["responsive review", "accessibility review", "visual polish", "browser verification", "loading/empty/error states", "data/action contract", "cross-slice consistency"],
     acceptanceCriteria: ["typecheck and build pass", "key browser journeys pass", "mobile and desktop reviews pass", "accessibility and visual reviews are complete", "no obvious placeholder or dead-control quality remains"],
   });
+  const boundedSlices = singleCompleteSlice(brief, slices);
 
   const sitemap = fallbackSitemap(brief, commerce, dashboard, contentHeavy, seller, admin, accounts);
   const components = fallbackComponents(sitemap);
@@ -651,7 +682,7 @@ export function fallbackProjectPlan(brief: string, template = ""): ProjectPlan {
     components,
     styles: fallbackStyles(commerce),
     visualDirection: commerce ? "Premium, mobile-first commercial product design with immersive discovery and trustworthy purchase flows." : "Follow the approved brief and Design Director direction; establish a coherent reusable visual system.",
-    backendRequired, slices,
+    backendRequired, slices: boundedSlices,
     acceptanceCriteria: [
       "Every approved page is navigable.",
       "Visible controls work with local data or are clearly identified as demonstrations.",
@@ -749,7 +780,7 @@ export function parseProjectPlanResult(
       }
       return repaired;
     };
-    if (slices.length < 2) {
+    if (slices.length < 2 && !requestsSingleCompleteSlice(brief)) {
       const generatedFallback = fallbackProjectPlan(brief, template).slices;
       const repairedSlices = repairSlices(generatedFallback);
       if (repairedSlices.length < 2) return selectFallback("Planner returned fewer than two usable implementation slices.");
@@ -971,7 +1002,7 @@ export function parseProjectPlanResult(
       styles,
       visualDirection: normalizeStyleDirection(raw.visualDirection) || styles.direction,
       backendRequired: resolvedBackendRequired(raw.backendRequired),
-      slices,
+      slices: singleCompleteSlice(brief, slices),
       acceptanceCriteria: list(raw.acceptanceCriteria, fallback.acceptanceCriteria),
     };
     const authoritativeCandidate = applyFrozenAuthority(candidate);

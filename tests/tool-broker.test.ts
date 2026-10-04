@@ -49,7 +49,9 @@ test("specialist packs filter and enforce role-eligible tools", async () => {
     const broker = new ToolBroker(join(root, "tools.json"), undefined, {
       worktreeRoot: root,
       findApproval: () => null,
+      findObservation: () => null,
     });
+    broker.configure({ internetEnabled: true });
     const context = { taskId: "task-specialist" };
     const backendTools = broker.toolDefinitions("agent", context, "implementer", ["backend"]);
     const frontendTools = broker.toolDefinitions("agent", context, "implementer", ["frontend"]);
@@ -57,6 +59,17 @@ test("specialist packs filter and enforce role-eligible tools", async () => {
     assert.equal(backendTools.some((tool) => tool.function.name === "worktree_patch"), true);
     assert.equal(backendTools.some((tool) => tool.function.name === "browser_capture"), false);
     assert.equal(frontendTools.some((tool) => tool.function.name === "browser_capture"), true);
+    assert.equal(frontendTools.some((tool) => tool.function.name === "image_search"), true);
+    assert.equal(frontendTools.some((tool) => tool.function.name === "image_download"), true);
+    assert.equal(frontendTools.some((tool) => tool.function.name === "worktree_stat"), true);
+    assert.equal(frontendTools.some((tool) => tool.function.name === "worktree_list"), true);
+    assert.equal(frontendTools.some((tool) => tool.function.name === "worktree_read_many"), true);
+    assert.equal(frontendTools.some((tool) => tool.function.name === "worktree_observation_read"), true);
+    for (const mode of ["ask", "plan"] as const) {
+      assert.equal(broker.toolDefinitions(mode, context).some((tool) => tool.function.name === "worktree_read_many"), false);
+      await assert.rejects(() => broker.execute({ function: { name: "worktree_read_many", arguments: { paths: ["README.md"] } } }, mode, context), /require EDIT or AGENT/);
+      await assert.rejects(() => broker.execute({ function: { name: "worktree_observation_read", arguments: { observation_id: "saved" } } }, mode, context), /require EDIT or AGENT/);
+    }
     await assert.rejects(
       () => broker.execute({ function: { name: "browser_open", arguments: { url: "http://127.0.0.1:3000" } } }, "agent", context, "implementer", ["backend"]),
       /active specialist packs cannot invoke browser_open/,

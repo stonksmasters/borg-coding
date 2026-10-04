@@ -74,6 +74,7 @@ export {
 } from "./collector.ts";
 
 export { formatBenchmarkReport } from "./report.ts";
+export { benchmarkQualityScore, type BenchmarkQualityCategory, type BenchmarkQualityScore } from "./quality-score.ts";
 
 export {
   writeBenchmarkArtifacts,

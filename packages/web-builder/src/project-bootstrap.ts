@@ -16,6 +16,7 @@ export const websiteTemplates = ["saas-landing", "portfolio", "ecommerce", "dash
 export type WebsiteTemplate = typeof websiteTemplates[number];
 export type WebsiteProjectStatus = "new" | "generating" | "ready" | "needs_attention" | "archived";
 export type WebsiteProjectOptions = {
+  contextBudgetCharacters?: number;
   frontendCapabilityVersion?: 1;
   template?: WebsiteTemplate;
   originalBrief?: string;
@@ -69,6 +70,7 @@ async function run(command: string, args: string[], cwd: string, timeout = 120_0
 }
 
 export async function createWebsiteProject(name: string, root = websiteRoot(), install?: (projectPath: string) => Promise<void>, options: WebsiteProjectOptions = {}) {
+  if (options.contextBudgetCharacters !== undefined && (!Number.isInteger(options.contextBudgetCharacters) || options.contextBudgetCharacters < 8_000 || options.contextBudgetCharacters > 24_000)) throw new Error("Context pack budget must be an integer between 8000 and 24000.");
   const slug = websiteSlug(name);
   const projectPath = resolve(root, slug);
   if (existsSync(projectPath)) throw new Error(`A website named “${slug}” already exists.`);
@@ -85,14 +87,14 @@ export async function createWebsiteProject(name: string, root = websiteRoot(), i
       version: "0.1.0",
       private: true,
       type: "module",
-      scripts: { dev: "vite --host 127.0.0.1", build: "tsc --noEmit && vite build" },
+      scripts: { dev: "vite --host 0.0.0.0", build: "tsc --noEmit && vite build" },
       dependencies: { "lucide-react": "^0.468.0", motion: "^12.23.24", react: "19.2.6", "react-dom": "19.2.6" },
       devDependencies: { "@tailwindcss/vite": "^4.1.14", "@vitejs/plugin-react": "6.0.2", tailwindcss: "^4.1.14", vite: "8.0.13", typescript: "5.9.3", "@types/node": "^22.19.19", "@types/react": "19.2.14", "@types/react-dom": "19.2.3" },
     }, null, 2) + "\n",
     "index.html": `<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="theme-color" content="#0b0d0f" /><title>${title.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;")}</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>\n`,
-    "vite.config.ts": "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\nimport tailwindcss from '@tailwindcss/vite';\nimport { borgLocalApi } from './server/local-api';\n\nexport default defineConfig({ plugins: [react(), tailwindcss(), borgLocalApi()] });\n",
+    "vite.config.ts": "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\nimport tailwindcss from '@tailwindcss/vite';\nimport { borgLocalApi } from './server/local-api';\n\nexport default defineConfig({ cacheDir: '.vite-cache', plugins: [react(), tailwindcss(), borgLocalApi()] });\n",
     "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ES2022", useDefineForClassFields: true, lib: ["ES2022", "DOM", "DOM.Iterable"], types: ["node", "vite/client"], module: "ESNext", skipLibCheck: true, moduleResolution: "Bundler", allowImportingTsExtensions: true, resolveJsonModule: true, isolatedModules: true, noEmit: true, jsx: "react-jsx", strict: true }, include: ["src", "server", "vite.config.ts"] }, null, 2) + "\n",
-    ".gitignore": "node_modules\ndist\n.env\n.env.*\n.borg/evidence\n.borg/data.sqlite*\n.localcode/build/workflow-state.json\n",
+    ".gitignore": "node_modules\ndist\n.vite-cache\n.env\n.env.*\n.borg/evidence\n.borg/data.sqlite*\n.localcode/build/workflow-state.json\n",
     "src/main.tsx": "import React from 'react';\nimport { createRoot } from 'react-dom/client';\nimport App from './App';\nimport './style.css';\n\ncreateRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);\n",
     "server/db.ts": `import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -216,6 +218,9 @@ img, svg { display: block; max-width: 100%; }
 `,
     [marker]: JSON.stringify({ id: randomUUID(), name: title, slug, framework: "vite-react", template, starterVersion: 3, designPipeline: "premium-v1", status: "new", originalBrief: options.originalBrief?.trim() || null, createdAt, lastOpenedAt: createdAt }, null, 2) + "\n",
   };
+  if (options.contextBudgetCharacters !== undefined) {
+    files[marker] = JSON.stringify({ ...JSON.parse(files[marker]), contextBudgetCharacters: options.contextBudgetCharacters }, null, 2) + "\n";
+  }
   if (options.frontendCapabilityVersion === 1) {
     Object.assign(files, frontendFoundationFiles(template));
     const manifest = JSON.parse(files[marker]);
@@ -250,6 +255,7 @@ export function websiteInfo(projectPath: string) {
     const data = JSON.parse(readFileSync(manifestPath, "utf8")) as {
       name?: string;
       frontendCapabilityVersion?: number;
+      contextBudgetCharacters?: number;
       slug?: string;
       framework?: string;
       template?: WebsiteTemplate;
@@ -260,6 +266,7 @@ export function websiteInfo(projectPath: string) {
     };
     return data.framework === "vite-react" && typeof data.slug === "string" ? {
       path: canonical,
+      contextBudgetCharacters: Number.isInteger(data.contextBudgetCharacters) && data.contextBudgetCharacters! >= 8_000 ? Math.min(data.contextBudgetCharacters!, 24_000) : 24_000,
       frontendCapabilityVersion: data.frontendCapabilityVersion === 1 ? 1 as const : undefined,
       name: data.name ?? data.slug,
       slug: data.slug,
@@ -291,7 +298,7 @@ export class WebsitePreviewManager {
     if (current && current.child.exitCode === null) return { url: current.url, status: "running" as const };
     const port = await freePort();
     const npm = packageRunner();
-    const child = spawn(npm.command, [...npm.prefix, "run", "dev", "--", "--port", String(port), "--strictPort"], { cwd: website.path, windowsHide: true, stdio: "ignore", env: { ...process.env, BROWSER: "none" } });
+    const child = spawn(npm.command, [...npm.prefix, "run", "dev", "--", "--port", String(port), "--strictPort"], { cwd: website.path, windowsHide: true, stdio: "ignore", env: { ...process.env, HOST: "0.0.0.0", BROWSER: "none" } });
     const url = `http://127.0.0.1:${port}`;
     this.processes.set(website.path, { child, url });
     child.once("exit", () => { if (this.processes.get(website.path)?.child === child) this.processes.delete(website.path); });

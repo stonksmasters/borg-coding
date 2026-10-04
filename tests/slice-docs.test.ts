@@ -26,6 +26,18 @@ import {
   slicePrompt,
 } from "../packages/web-builder/src/slice-docs.ts";
 
+test("an explicitly complete one-page benchmark stays within one bounded slice", () => {
+  const brief = "Build a complete one-page frontend. Deliver the complete representative page, including its design foundation, as the first bounded slice.";
+  const fallback = fallbackProjectPlan(brief, "portfolio");
+  assert.equal(fallback.slices.length, 1);
+  assert.equal(fallback.slices[0]?.id, "complete-page");
+
+  const modelPlan = { ...fallbackProjectPlan("Build a portfolio", "portfolio"), siteGoal: brief };
+  const parsed = parseProjectPlanResult(JSON.stringify(modelPlan), brief, "portfolio");
+  assert.equal(parsed.plan.slices.length, 1);
+  assert.equal(parsed.plan.slices[0]?.id, "complete-page");
+});
+
 test("website types receive appropriately sized fallback phase plans", () => {
   const landing = fallbackProjectPlan("A premium landing page with pricing and a waitlist.", "saas-landing");
   const content = fallbackProjectPlan("A content site with articles, categories, and search.", "portfolio");

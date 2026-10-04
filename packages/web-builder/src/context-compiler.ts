@@ -256,7 +256,9 @@ function compileContextPack(input: InternalInput): CompiledContext {
     scope,
   };
 
-  const budgetCharacters = Math.max(8_000, Math.min(64_000, input.budgetCharacters ?? 48_000));
+  const execution = input.stage === "execution" || input.stage === "repair";
+  const authorityText = (text: string, maximum: number) => execution ? text : bounded(text, maximum);
+  const budgetCharacters = Math.max(8_000, Math.min(24_000, input.budgetCharacters ?? 24_000));
   const manifest: ContextManifestItem[] = [];
   const sections: string[] = [];
   let characters = 0;
@@ -268,28 +270,28 @@ function compileContextPack(input: InternalInput): CompiledContext {
     content: string,
     required = false,
   ) => {
-    const clean = content.trim();
+    const clean = kind === "source" ? content : content.trim();
     if (!clean) return false;
     const section = `--- ${path} (${reason}) ---\n${clean}\n`;
-    if (characters + section.length > budgetCharacters) {
-      if (required) throw new Error(`Context budget is too small for required project state: ${path}.`);
+    if (characters + section.length + (sections.length ? 1 : 0) > budgetCharacters) {
+      if (required) throw new Error(`CONTEXT_CAPACITY_EXCEEDED: Context budget is too small for required project state: ${path}.`);
       return false;
     }
+    characters += section.length + (sections.length ? 1 : 0);
     sections.push(section);
-    characters += section.length;
     manifest.push({ kind, path, reason, characters: section.length, sha256: hash(section), required });
     return true;
   };
 
   if (input.productContract?.trim()) {
-    add("contract", "@borg/website-product-contract", "Pinned website product contract", bounded(input.productContract, 8_000), true);
+    add("contract", "@borg/website-product-contract", "Pinned website product contract", authorityText(input.productContract, 8_000), true);
   }
 
-  const authoritativeBrief = input.projectBrief?.trim() ? bounded(input.projectBrief, 4_000) : "";
+  const authoritativeBrief = input.projectBrief?.trim() ? authorityText(input.projectBrief, 4_000) : "";
   const projectBrief = authoritativeBrief || optionalProjection(input.root, "brief.md", 4_000);
   if (projectBrief) add(authoritativeBrief ? "authority" : "projection", "@borg/project-brief", "Original project brief", projectBrief, Boolean(authoritativeBrief));
 
-  add("authority", "@borg/project-plan", "Durable approved project constraints", bounded(JSON.stringify({
+  add("authority", "@borg/project-plan", "Durable approved project constraints", authorityText(JSON.stringify({
     revision: plan.revision,
     siteGoal: plan.siteGoal,
     audience: plan.audience,
@@ -301,10 +303,10 @@ function compileContextPack(input: InternalInput): CompiledContext {
     backendRequired: plan.backendRequired,
   }, null, 2), 4_500), true);
 
-  add("authority", "@borg/style-system", "Durable global style system", bounded(JSON.stringify(plan.styles, null, 2), 5_000), true);
+  add("authority", "@borg/style-system", "Durable global style system", authorityText(JSON.stringify(plan.styles, null, 2), 5_000), true);
 
   if (input.profileKind === "slice") {
-    add("authority", "@borg/current-work", "Core-selected frontend slice", bounded(JSON.stringify({
+    add("authority", "@borg/current-work", "Core-selected frontend slice", authorityText(JSON.stringify({
       index: sliceIndex,
       total: plan.slices.length,
       slice,
@@ -312,37 +314,37 @@ function compileContextPack(input: InternalInput): CompiledContext {
       feedback: state?.feedback ?? [],
     }, null, 2), 4_500), true);
   } else if (scope?.type === "page") {
-    add("authority", "@borg/current-work", "Selected page workspace boundary", bounded(JSON.stringify(
+    add("authority", "@borg/current-work", "Selected page workspace boundary", authorityText(JSON.stringify(
       plan.sitemap.find((item) => item.id === scope.id) ?? registry.pages[0] ?? { id: scope.id },
       null,
       2,
     ), 6_000), true);
   } else if (scope?.type === "component") {
-    add("authority", "@borg/current-work", "Selected component workspace boundary", bounded(JSON.stringify(
+    add("authority", "@borg/current-work", "Selected component workspace boundary", authorityText(JSON.stringify(
       plan.components.find((item) => item.id === scope.id) ?? registry.components[0] ?? { id: scope.id },
       null,
       2,
     ), 6_000), true);
   } else if (scope?.type === "quick_edit") {
-    add("authority", "@borg/current-work", "Bounded quick edit scope", bounded(JSON.stringify({
+    add("authority", "@borg/current-work", "Bounded quick edit scope", authorityText(JSON.stringify({
       request: input.request,
       allowed: "Only source files included in this ContextPack and their direct registered dependencies.",
       preserve: ["project slice index", "project plan", "sitemap", "global style system", "unrelated pages", "unrelated components"],
       escalation: "Return SCOPE_EXCEEDED when the requested result requires files or authority outside this pack.",
     }, null, 2), 4_000), true);
   } else {
-    add("authority", "@borg/current-work", "Global style workspace boundary", bounded(JSON.stringify({
+    add("authority", "@borg/current-work", "Global style workspace boundary", authorityText(JSON.stringify({
       scope: "global styles",
       allowed: ["color", "typography", "spacing", "radii", "shadows", "layout rhythm", "responsive styling", "motion", "accessibility styling"],
       preserve: ["routes", "page responsibilities", "component responsibilities", "product behavior", "data contracts"],
     }, null, 2), 4_000), true);
   }
 
-  const design = readPersistedDesignBrief(input.root);
-  if (design) add("projection", ".localcode/build/design-brief.md", "Persisted approved design direction", bounded(JSON.stringify(design, null, 2), 6_000));
+  add("registry", ".localcode/build/pages.json", input.profileKind === "styles" ? "Project page inventory" : "Pages relevant to this context", authorityText(JSON.stringify(registry.pages, null, 2), 4_500), true);
+  add("registry", ".localcode/build/components.json", input.profileKind === "styles" ? "Project component inventory" : "Components relevant to this context", authorityText(JSON.stringify(registry.components, null, 2), 5_500), true);
 
-  add("registry", ".localcode/build/pages.json", input.profileKind === "styles" ? "Project page inventory" : "Pages relevant to this context", bounded(JSON.stringify(registry.pages, null, 2), 4_500), true);
-  add("registry", ".localcode/build/components.json", input.profileKind === "styles" ? "Project component inventory" : "Components relevant to this context", bounded(JSON.stringify(registry.components, null, 2), 5_500), true);
+  const design = readPersistedDesignBrief(input.root);
+  if (design) add("projection", ".localcode/build/design-brief.md", "Persisted approved design direction", authorityText(JSON.stringify(design, null, 2), 6_000));
 
   const decisions = optionalProjection(input.root, "decisions.md", 3_500, true);
   if (decisions) add("projection", ".localcode/build/decisions.md", "Recent durable project decisions", decisions);
@@ -371,7 +373,12 @@ function compileContextPack(input: InternalInput): CompiledContext {
     const safe = validateProjectSource(input.root, candidate.path);
     const absolute = join(input.root, safe);
     if (!existsSync(absolute) || !lstatSync(absolute).isFile()) continue;
-    add("source", safe, candidate.reason, bounded(readFileSync(absolute, "utf8"), 10_000));
+    const content = readFileSync(absolute, "utf8");
+    if (content.length <= 10_000 && add("source", safe, candidate.reason, content)) continue;
+    add("source", safe, candidate.reason, JSON.stringify({
+      sourceReference: true, path: safe, sha256: hash(content), characters: content.length,
+      retrieve: "Use worktree_read with this path and optional start_line/end_line for exact current source. File contents are not included here.",
+    }));
   }
 
   const text = sections.join("\n");

@@ -10,7 +10,9 @@ import { websiteGenerationContext } from "../packages/web-builder/src/generation
 test("website bootstrap creates a committed React project and can be restored from its path", async () => {
   const root = mkdtempSync(join(tmpdir(), "borg-websites-"));
   try {
-    const project = await createWebsiteProject("Miller's Glass", root, async () => {}, { template: "portfolio", originalBrief: "Build a premium glass studio portfolio." });
+    const project = await createWebsiteProject("Miller's Glass", root, async () => {}, { template: "portfolio", originalBrief: "Build a premium glass studio portfolio.", contextBudgetCharacters: 20_000 });
+    assert.equal(websiteInfo(project.path)?.contextBudgetCharacters, 20_000);
+    assert.match(readFileSync(join(project.path, ".gitignore"), "utf8"), /^\.vite-cache$/m);
     assert.equal(project.slug, "miller-s-glass");
     assert.ok(existsSync(join(project.path, ".git")));
     assert.ok(existsSync(join(project.path, "src", "main.tsx")));

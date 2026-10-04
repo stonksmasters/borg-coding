@@ -1,14 +1,16 @@
-export type RecoveryCategory = "missing_path" | "patch_mismatch" | "port_conflict" | "process_interrupted" | "missing_reference" | "tool_usage" | "no_progress" | "approval_violation" | "path_escape" | "repository_invalid" | "permission_denied" | "retry_exhausted" | "unknown";
+export type RecoveryCategory = "missing_path" | "patch_mismatch" | "port_conflict" | "process_interrupted" | "missing_reference" | "tool_usage" | "model_protocol" | "no_progress" | "approval_violation" | "path_escape" | "repository_invalid" | "permission_denied" | "retry_exhausted" | "context_capacity" | "unknown";
 export type RecoveryDecision = { disposition: "retry" | "fatal"; category: RecoveryCategory; reason: string; action: string; message: string; attempt: number; maximum: number };
 export type PreflightEvidence = { contract: { kind: string }; repairedDirectories: readonly string[]; issues: readonly { severity: string; message: string }[]; gitHead: string | null };
 
 const fatalRules: Array<{ category: RecoveryCategory; pattern: RegExp; action: string }> = [
+  { category: "context_capacity", pattern: /CONTEXT_CAPACITY_EXCEEDED/, action: "Preserve the checkpoint and approved requirements. Narrow the current slice context before resuming; do not retry the same oversized request." },
   { category: "path_escape", pattern: /unsafe worktree path|escapes (?:the approved root|through a (?:parent )?link)|outside borg's managed worktree root|path traversal/i, action: "Stop execution and require operator inspection of the requested path." },
   { category: "approval_violation", pattern: /does not have an approved worktree|requires EDIT or AGENT|not approved|approval.*(?:missing|rejected)|mutation.*not authorized/i, action: "Stop execution and restore the approval boundary before any mutation." },
   { category: "repository_invalid", pattern: /not a valid git worktree|worktree root mismatch|repository.*(?:corrupt|diverged)|bad object|not a git repository/i, action: "Stop execution and recover the repository/worktree from a checkpoint." },
   { category: "permission_denied", pattern: /EACCES|EPERM|permission denied|not writable by BORG|source root is not writable/i, action: "Stop execution because the runtime does not have safe write permission." },
 ];
 const retryRules: Array<{ category: RecoveryCategory; pattern: RegExp; action: string }> = [
+  { category: "model_protocol", pattern: /XML syntax error|element <[^>]+> closed by <\/[^>]+>|malformed (?:XML|tool(?:[ -]call)?)/i, action: "Retry the model turn with the same approved slice and worktree state; do not mutate or re-plan in response to a transport-level tool-call encoding failure." },
   { category: "missing_path", pattern: /ENOENT|no such file or directory|parent is unavailable|parent path.*(?:missing|unavailable)|workspace.*directory.*missing/i, action: "Re-run workspace preflight, recreate contract directories, and continue the same approved slice." },
   { category: "patch_mismatch", pattern: /patch expected .* replacement|old_text may be empty only|new file requires empty old_text|exact text.*(?:not found|mismatch)/i, action: "Re-read only the target file and retry the smallest exact patch without re-planning." },
   { category: "port_conflict", pattern: /EADDRINUSE|address already in use|port .*?(?:occupied|in use)|strictPort/i, action: "Release or replace the managed preview process/port and retry verification." },

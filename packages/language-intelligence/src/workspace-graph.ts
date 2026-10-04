@@ -7,7 +7,7 @@ const MAX_FILES = 500;
 const MAX_DEPENDENTS = 200;
 const MAX_SOURCE_BYTES = 1_000_000;
 const ignoredDirectories = new Set([
-  ".git", ".localcode", ".borg", ".agents", ".codex", ".vinext", ".wrangler",
+  ".git", ".localcode", ".borg", ".agents", ".codex", ".vinext", ".vite-cache", ".wrangler",
   "node_modules", "dist", "build", ".next", "coverage", "target", "bin", "obj",
 ]);
 

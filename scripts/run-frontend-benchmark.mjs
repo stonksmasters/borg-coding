@@ -18,6 +18,8 @@ const root = resolve(process.cwd(), "benchmarks", "frontend-autonomy", id);
 const benchmark = parseFrontendAutonomyBenchmark(JSON.parse(await readFile(resolve(root, "benchmark.json"), "utf8")));
 const prompt = await readFile(resolve(root, benchmark.promptPath), "utf8");
 const baseUrl = process.env.BORG_GATEWAY_URL || "http://127.0.0.1:4312";
+const configuredTimeout = Number(process.env.BORG_BENCHMARK_TIMEOUT_MS || "");
+const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : undefined;
 
 console.log(`BORG frontend autonomy benchmark: ${benchmark.name}`);
 console.log(`Gateway: ${baseUrl}`);
@@ -27,6 +29,7 @@ const outcome = await runFrontendBenchmark({
   client: new BorgBenchmarkClient(baseUrl),
   benchmark,
   prompt,
+  timeoutMs,
   onObservation(observation) {
     const slice = observation.sliceTitle
       ? ` · ${observation.sliceTitle}`
@@ -45,4 +48,4 @@ await writeFile(resolve(written.directory, "environment.json"), JSON.stringify(e
 console.log("\n" + formatBenchmarkReport(artifacts));
 console.log(`\nArtifacts: ${written.directory}`);
 
-if (outcome.result.status !== "PASS") process.exitCode = 1;
+if (outcome.result.status !== "PASS" || !artifacts.summary.quality.exceptional) process.exitCode = 1;

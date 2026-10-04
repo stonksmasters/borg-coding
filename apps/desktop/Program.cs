@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -114,6 +116,7 @@ internal sealed class BorgApplicationContext : ApplicationContext
         this.activationSignal = activationSignal;
         this.exitSignal = exitSignal;
         window = new BorgWindow(host);
+        MainForm = window;
         _ = window.Handle;
 
         try { DesktopShortcut.EnsureExists(); }
@@ -198,9 +201,11 @@ internal sealed class BorgApplicationContext : ApplicationContext
     private void ShowWindow()
     {
         if (Volatile.Read(ref exitStarted) != 0) return;
+        host.LogLifecycle($"Showing desktop window: handleCreated={window.IsHandleCreated} visible={window.Visible} disposed={window.IsDisposed}.");
         window.Show();
         if (window.WindowState == FormWindowState.Minimized) window.WindowState = FormWindowState.Normal;
         window.Activate();
+        host.LogLifecycle($"Desktop window show completed: handle={window.Handle} visible={window.Visible} state={window.WindowState}.");
     }
 
     private async Task ExitAsync(string reason)
@@ -310,7 +315,7 @@ internal sealed record OwnedProcess(string Name, Process Process);
 
 internal sealed class BorgHost : IAsyncDisposable
 {
-    private readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(2) };
+    private readonly HttpClient http = CreateLocalHttpClient();
     private readonly List<OwnedProcess> ownedProcesses = [];
     private readonly object processLock = new();
     private readonly string repositoryRoot = RepositoryLocator.Find();
@@ -365,10 +370,11 @@ internal sealed class BorgHost : IAsyncDisposable
         StatusChanged?.Invoke("Starting the BORG workspace…");
         await EnsureServiceAsync(
             "web",
-            "http://localhost:5173/",
+            "http://127.0.0.1:5173/",
             "node.exe",
-            "--experimental-strip-types --import ./apps/server/src/desktop-lifecycle-hook.ts node_modules/vinext/dist/cli.js dev --port 5173",
-            TimeSpan.FromSeconds(75));
+            "--experimental-strip-types --import ./apps/server/src/desktop-lifecycle-hook.ts node_modules/vinext/dist/cli.js dev --host 127.0.0.1 --port 5173",
+            TimeSpan.FromSeconds(180),
+            "<title>BORG Code</title>");
 
         LogLifecycle("Desktop services are ready.");
         return new StartResult(repositoryRoot, ollamaReady);
@@ -408,16 +414,16 @@ internal sealed class BorgHost : IAsyncDisposable
         }
     }
 
-    private async Task EnsureServiceAsync(string name, string healthUrl, string executable, string arguments, TimeSpan timeout)
+    private async Task EnsureServiceAsync(string name, string healthUrl, string executable, string arguments, TimeSpan timeout, string? expectedContent = null)
     {
-        if (await IsHealthyAsync(healthUrl))
+        if (await IsHealthyAsync(healthUrl, expectedContent))
         {
             LogLifecycle($"Service {name} was already healthy and is not adopted as an owned child.");
             return;
         }
         if (name == "web") RecoverStaleVinextLock();
         StartOwnedProcess(name, executable, arguments);
-        await WaitForAsync(healthUrl, timeout, throwOnTimeout: true);
+        await WaitForAsync(healthUrl, timeout, throwOnTimeout: true, expectedContent: expectedContent);
     }
 
     private void RecoverStaleVinextLock()
@@ -489,26 +495,52 @@ internal sealed class BorgHost : IAsyncDisposable
         LogLifecycle($"Started owned process: {name} pid={process.Id} executable={executable} arguments={arguments}.");
     }
 
-    private async Task<bool> WaitForAsync(string url, TimeSpan timeout, bool throwOnTimeout)
+    private async Task<bool> WaitForAsync(string url, TimeSpan timeout, bool throwOnTimeout, string? expectedContent = null)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (await IsHealthyAsync(url)) return true;
+            if (await IsHealthyAsync(url, expectedContent)) return true;
             await Task.Delay(500);
         }
         if (throwOnTimeout) throw new TimeoutException($"Timed out waiting for {url}.");
         return false;
     }
 
-    private async Task<bool> IsHealthyAsync(string url)
+    private async Task<bool> IsHealthyAsync(string url, string? expectedContent = null)
     {
         try
         {
             using var response = await http.GetAsync(url);
-            return response.IsSuccessStatusCode;
+            if (!response.IsSuccessStatusCode) return false;
+            if (expectedContent is null) return true;
+            var content = await response.Content.ReadAsStringAsync();
+            return content.Contains(expectedContent, StringComparison.OrdinalIgnoreCase);
         }
         catch { return false; }
+    }
+
+    private static HttpClient CreateLocalHttpClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            UseProxy = false,
+            ConnectCallback = async (context, cancellationToken) =>
+            {
+                var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+                try
+                {
+                    await socket.ConnectAsync(IPAddress.Loopback, context.DnsEndPoint.Port, cancellationToken);
+                    return new NetworkStream(socket, ownsSocket: true);
+                }
+                catch
+                {
+                    socket.Dispose();
+                    throw;
+                }
+            },
+        };
+        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
     }
 
     private void AppendLog(string name, string? line)

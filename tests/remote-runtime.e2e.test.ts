@@ -220,6 +220,7 @@ test("remote web controls reach the real desktop gateway and WorkflowEngine auth
     await page.locator('#commandStatus[data-state="accepted"]').waitFor();
 
     await page.getByRole("button", { name: "Chat fixture" }).click();
+    await page.locator('#workspaceTabs button[data-tab="chat"]').click();
     await page.locator("#messageInput").fill("Can the remote client stream a reply?");
     await page.locator("#sendButton").click();
     await page.getByText("Remote stream reached the model adapter.").waitFor({ timeout: 10_000 });

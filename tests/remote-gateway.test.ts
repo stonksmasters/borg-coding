@@ -57,6 +57,16 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
       response.end(JSON.stringify({ status: "ok", gateway: true }));
       return;
     }
+    if (request.method === "GET" && url === "/") {
+      response.setHeader("content-type", "text/html");
+      response.end("<!doctype html><h1>Preview fixture</h1><script src=\"/asset.js\"></script>");
+      return;
+    }
+    if (request.method === "GET" && url === "/asset.js") {
+      response.setHeader("content-type", "text/javascript");
+      response.end("window.previewFixture = true;");
+      return;
+    }
     if (request.method === "GET" && url === "/api/sessions") {
       response.end(JSON.stringify({
         sessions: [{
@@ -83,6 +93,16 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
     }
     if (request.method === "POST" && url === "/api/sessions/session-1/stop") {
       response.end(JSON.stringify({ stopped: true, sessionId: "session-1" }));
+      return;
+    }
+    if (request.method === "POST" && url === "/api/sessions/session-1/preview") {
+      const address = gateway.address();
+      const port = typeof address === "object" && address ? address.port : gatewayPort;
+      response.end(JSON.stringify({ preview: { url: `http://127.0.0.1:${port}`, status: "running" } }));
+      return;
+    }
+    if (request.method === "GET" && url === "/api/tasks/task-1/changes") {
+      response.end(JSON.stringify({ files: [{ path: "src/App.tsx", status: "modified", additions: 2, deletions: 1, patch: "+fixture" }], additions: 2, deletions: 1, clean: false }));
       return;
     }
     if (request.method === "GET" && url === "/api/tasks/task-1/workflow-status") {
@@ -171,10 +191,17 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
   const base = `http://127.0.0.1:${remotePort}`;
   await waitFor(`${base}/health`, child, () => stderr);
 
+  const health = await fetch(`${base}/health`);
+  assert.equal(health.status, 200);
+  assert.equal((await health.json() as { gatewayConnected: boolean }).gatewayConnected, true);
+
   const shell = await fetch(base);
   assert.equal(shell.status, 200);
   assert.equal(shell.headers.get("cache-control"), "no-store");
-  assert.match(await shell.text(), /BORG Remote/);
+  const shellHtml = await shell.text();
+  assert.match(shellHtml, /BORG Remote/);
+  assert.match(shellHtml, /CURRENT WORK/);
+  assert.match(shellHtml, /PLAN &amp; PROGRESS/);
 
   const clientScript = await fetch(`${base}/app.js`);
   assert.equal(clientScript.status, 200);
@@ -222,6 +249,18 @@ test("LAN remote pairs devices and proxies only the bounded BORG control surface
   const debug = await fetch(`${base}/api/remote/tasks/task-1/debug`, { headers: auth });
   assert.equal(debug.status, 200);
   assert.equal((await debug.json() as { snapshot: { task: { id: string } } }).snapshot.task.id, "task-1");
+
+  const changes = await fetch(`${base}/api/remote/tasks/task-1/changes`, { headers: auth });
+  assert.equal(changes.status, 200);
+  assert.equal((await changes.json() as { files: unknown[] }).files.length, 1);
+
+  const preview = await fetch(`${base}/api/remote/sessions/session-1/preview`, { method: "POST", headers: auth });
+  assert.equal(preview.status, 200);
+  assert.equal((await preview.json() as { preview: { url: string } }).preview.url, "/api/remote/preview");
+  const previewPage = await fetch(`${base}/api/remote/preview`, { headers: auth });
+  assert.match(await previewPage.text(), /Preview fixture/);
+  const previewAsset = await fetch(`${base}/asset.js`, { headers: auth });
+  assert.match(await previewAsset.text(), /previewFixture/);
 
   const approval = await fetch(`${base}/api/remote/tasks/task-1/approval`, {
     method: "POST",

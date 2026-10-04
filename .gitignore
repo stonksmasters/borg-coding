@@ -34,6 +34,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 /.npm-cache/
+/tmp-*.log
+/tmp-*.pid
+/tmp-*.json
+/.dotnet/
 
 # BORG local state (task history, approvals, access policy, worktrees, logs)
 /.borg/

@@ -10,6 +10,33 @@ import { SqliteTaskRepository } from "../packages/persistence/src/sqlite-task-re
 import { createTask } from "../packages/core/src/contracts.ts";
 import { deriveWorkflowStatus } from "../apps/server/src/workflow-status.ts";
 
+test("execution context preserves long authority and references large source with current hashes", () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-exact-context-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const path = join(root, "src", "App.tsx");
+    writeFileSync(path, "export const value = 1;\r\n".repeat(600));
+    const plan = fallbackProjectPlan("Build a store", "ecommerce");
+    persistProposedProjectPlan(root, "Build a store", plan, "plan-task");
+    approveProjectPlan(root, "plan-task");
+    const productContract = "a".repeat(8100) + " FINAL REQUIREMENT";
+    const pack = compileStyleFrontendContext({ root, stage: "execution", productContract, sourceHints: ["src/App.tsx"] });
+    assert.ok(pack.text.includes(productContract));
+    assert.match(pack.text, /sourceReference/);
+    assert.doesNotMatch(pack.text, /export const value/);
+    assert.equal(pack.characters, pack.text.length);
+    assert.equal(pack.budgetCharacters, 24_000);
+    assert.ok(pack.characters <= 24_000);
+    assert.ok(pack.manifest.some((item) => item.kind === "source" && item.path === "src/App.tsx"));
+    writeFileSync(path, "  export const value = 2;\r\n");
+    const next = compileStyleFrontendContext({ root, stage: "repair", productContract, sourceHints: ["src/App.tsx"] });
+    assert.ok(next.text.includes("  export const value = 2;\r\n"));
+    assert.notEqual(pack.fingerprint, next.fingerprint);
+    assert.equal(next.profile.stage, "repair");
+    assert.throws(() => compileStyleFrontendContext({ root, stage: "execution", productContract: "x".repeat(70_000) }), /required project state/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("approved website state yields scoped, durable context and registries", () => {
   const root = mkdtempSync(join(tmpdir(), "borg-project-context-"));
   try {

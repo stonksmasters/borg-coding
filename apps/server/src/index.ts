@@ -102,6 +102,7 @@ const processRuntime = new ProcessRuntime({
 const tools = new ToolBroker(resolve(".borg/tools.json"), access, {
   worktreeRoot,
   findApproval: (taskId) => tasks.findApproval(taskId),
+  findObservation: (taskId, observationId) => tasks.findToolObservation(taskId, observationId),
   processRuntime,
   environmentForTask: (taskId) => {
     const repositoryPath = taskProjectRepository(taskId);
@@ -1035,7 +1036,7 @@ const server = createServer((request, response) => {
         args: ["run", "dev", "--", "--port", String(port), "--strictPort"],
         cwd: website.path,
         url,
-        env: { HOST: "127.0.0.1", BROWSER: "none" },
+        env: { HOST: "0.0.0.0", BROWSER: "none" },
         startupTimeoutMs: 60_000,
       });
       const previewUrl = process.url ?? url;
@@ -1214,14 +1215,23 @@ const server = createServer((request, response) => {
     const approval = tasks.findApproval(taskId);
     if (!task) return send(response, 404, { error: "Task not found." });
     if (!approval?.worktreePath || approval.status !== "APPROVED") return send(response, 200, { taskId, ...buildChangeLog("", "") });
+    const worktreePath = approval.worktreePath;
     void (async () => {
-      const context = { taskId };
-      const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", context) as { stdout?: string };
-      const diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", context) as { stdout?: string };
-      const live = buildChangeLog(status.stdout ?? "", diff.stdout ?? "");
-      if (!live.clean) return send(response, 200, { taskId, ...live });
       const captured = tasks.listEvents(taskId).findLast((event) => event.type === "CHANGESET_CAPTURED")?.payload as { status?: string; diff?: string } | undefined;
-      return send(response, 200, { taskId, ...(captured ? buildChangeLog(captured.status ?? "", captured.diff ?? "") : live) });
+      const context = { taskId };
+      try {
+        const status = await tools.execute({ function: { name: "git_status", arguments: {} } }, "agent", context) as { stdout?: string };
+        const diff = await tools.execute({ function: { name: "git_diff", arguments: {} } }, "agent", context) as { stdout?: string };
+        const live = buildChangeLog(status.stdout ?? "", diff.stdout ?? "");
+        if (!live.clean) return send(response, 200, { taskId, ...live });
+        return send(response, 200, { taskId, ...(captured ? buildChangeLog(captured.status ?? "", captured.diff ?? "") : live) });
+      } catch (error) {
+        if (captured) return send(response, 200, { taskId, ...buildChangeLog(captured.status ?? "", captured.diff ?? ""), source: "captured", liveError: error instanceof Error ? error.message : "Live Git inspection unavailable." });
+        const gitOptions = { cwd: worktreePath, encoding: "utf8" as const, windowsHide: true, maxBuffer: 5_000_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } };
+        const status = execFileSync("git", ["-c", `safe.directory=${worktreePath}`, "status", "--short", "--untracked-files=all"], gitOptions);
+        const diff = execFileSync("git", ["-c", `safe.directory=${worktreePath}`, "diff", "--no-ext-diff", "--unified=3"], gitOptions);
+        return send(response, 200, { taskId, ...buildChangeLog(status, diff), source: "read_only", liveError: error instanceof Error ? error.message : "Indexed Git inspection unavailable." });
+      }
     })().catch((error) => send(response, 400, { error: error instanceof Error ? error.message : "Unable to inspect task changes." }));
     return;
   }

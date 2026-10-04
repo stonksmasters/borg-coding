@@ -97,6 +97,7 @@ test("runner follows gateway authority from planning approval through two autono
       if (request.method === "POST" && url === "/api/websites") {
         const body = await readJson(request);
         assert.match(String(body.brief ?? ""), /Northline/);
+        assert.equal(body.contextBudgetCharacters, benchmark.limits.maxContextCharacters);
         return json(response, 201, { session: { id: "session-1", title: "Benchmark", activeMode: "plan", workspaceId: "runner-test", workflowRole: "primary" } });
       }
       if (request.method === "POST" && url === "/api/chat") {
@@ -168,7 +169,10 @@ test("runner follows gateway authority from planning approval through two autono
               projectPlan: { backendRequired: false, sitemap: [{ route: "/" }, { route: "/work" }] },
             },
             approval: { status: "APPROVED", worktreePath: "/tmp/slice-1", baseCommit: "base" },
-            events: [],
+            events: [
+              { id: "browser-1", sourceType: "FOCUSED_BROWSER_VERIFICATION_COMPLETED", occurredAt: new Date().toISOString(), status: "succeeded", data: { passed: true } },
+              { id: "design-1", sourceType: "DESIGN_REVIEW_COMPLETED", occurredAt: new Date().toISOString(), status: "succeeded", data: { review: { status: "pass" } } },
+            ],
             contextPacks: [{ id: "pack-1", sliceId: "home", characters: 10000, budgetCharacters: 24000 }],
             git: { worktreePath: "/tmp/slice-1", worktreeExists: true, baseCommit: "base", headCommit: "head" },
             checkpoints: [{ id: "cp-1", kind: "pre_delivery", taskState: "DELIVERY_READY", workflowVersion: 4, verification: { status: "passed" } }],
@@ -206,7 +210,14 @@ test("runner follows gateway authority from planning approval through two autono
               projectPlan: { backendRequired: false, sitemap: [{ route: "/" }, { route: "/work" }] },
             },
             approval: { status: "APPROVED", worktreePath: "/tmp/slice-2", baseCommit: "base" },
-            events: [],
+            events: [
+              { id: "browser-2", sourceType: "FOCUSED_BROWSER_VERIFICATION_COMPLETED", occurredAt: new Date().toISOString(), status: "succeeded", data: { passed: true } },
+              { id: "design-2", sourceType: "DESIGN_REVIEW_COMPLETED", occurredAt: new Date().toISOString(), status: "succeeded", data: { review: { status: "pass" } } },
+              { id: "routes-2", sourceType: "VERIFICATION_COMPLETED", occurredAt: new Date().toISOString(), status: "succeeded", data: { verification: {
+                results: [{ label: "npm run lint", exitCode: 0 }, { label: "npm run check", exitCode: 0 }, { label: "npm run test", exitCode: 0 }, { label: "npm run build", exitCode: 0 }],
+                browserEvidence: { routeChecks: [{ route: "/work", name: "Work", linked: true, reached: true, renderedDistinctContent: true, finalUrl: "http://127.0.0.1:5173/work", responsiveViewports: 3, accessibilityPassed: true, consistencyPassed: true, interactionPassed: true, issue: null }] },
+              } } },
+            ],
             contextPacks: [{ id: "pack-2", sliceId: "work", characters: 11000, budgetCharacters: 24000 }],
             git: { worktreePath: "/tmp/slice-2", worktreeExists: true, baseCommit: "base", headCommit: "head" },
             checkpoints: [{ id: "cp-2", kind: "pre_delivery", taskState: "DELIVERY_READY", workflowVersion: 5, verification: { status: "passed" } }],
@@ -312,6 +323,41 @@ test("runner refuses an implementation approval gate it does not own", async () 
   } finally {
     await new Promise<void>((resolveClose) => gateway.close(() => resolveClose()));
   }
+});
+
+test("runner lets an authorized Agent session resolve its own execution approval", async () => {
+  let polls = 0;
+  const gateway = createServer((request, response) => {
+    const url = request.url ?? "/";
+    if (request.method === "GET" && url === "/health") return json(response, 200, { core: { runtimeConnected: true, modelAvailable: true } });
+    if (request.method === "POST" && url === "/api/websites") return json(response, 201, { session: { id: "session-agent", activeMode: "agent", workflowRole: "primary" } });
+    if (request.method === "POST" && url === "/api/chat") return ndjson(response, [{ type: "task.created", task: { id: "task-agent" } }, { type: "stream.completed", taskId: "task-agent" }]);
+    if (request.method === "GET" && url === "/api/sessions/session-agent") {
+      polls += 1;
+      return json(response, 200, polls === 1 ? {
+        session: { id: "session-agent", activeMode: "agent", workflowRole: "primary" }, latestTaskId: "task-agent",
+        task: { id: "task-agent", state: "AWAITING_APPROVAL" }, approval: { status: "REQUESTED" },
+        projectPlanApproval: false, projectPlanRevisionApproval: false, runtimeAvailable: true, runtimeActive: false,
+      } : {
+        session: { id: "session-agent", activeMode: "agent", workflowRole: "primary" }, latestTaskId: "task-agent",
+        task: { id: "task-agent", state: "COMPLETE" }, approval: { status: "APPROVED" }, runtimeAvailable: true, runtimeActive: false,
+      });
+    }
+    if (request.method === "GET" && url === "/api/tasks/task-agent/workflow-status") return json(response, 200, {
+      taskId: "task-agent", taskState: polls === 1 ? "AWAITING_APPROVAL" : "COMPLETE", phase: "frontend", status: polls === 1 ? "working" : "frontend_complete",
+      sliceIndex: 0, sliceTotal: 1, sliceTitle: "Home", verificationPassed: polls === 1 ? null : true, repairAttempt: 0,
+      nextAction: polls === 1 ? "approve" : "request_feedback", run: { stage: polls === 1 ? "awaiting_approval" : "ready", headline: "Home", nextAction: polls === 1 ? "approve" : "request_feedback", blocker: null, verification: { status: polls === 1 ? "pending" : "passed" } },
+    });
+    if (request.method === "GET" && url === "/api/control/tasks/task-agent/snapshot") return json(response, 200, { snapshot: { version: 1, generatedAt: new Date().toISOString(), readOnly: true, task: { id: "task-agent", state: "COMPLETE" }, workflow: null, approval: null, events: [], contextPacks: [], git: { worktreePath: null, worktreeExists: null }, checkpoints: [], continuations: [], roleAssignments: [], handoffs: [], reviewRuns: [], reviewFindings: [], diagnostics: [], redaction: {} } });
+    return json(response, 404, {});
+  });
+  try {
+    const port = await listen(gateway);
+    const outcome = await runFrontendBenchmark({ client: new BorgBenchmarkClient(`http://127.0.0.1:${port}`), benchmark, prompt: "Build Northline.", timeoutMs: 500, pollIntervalMs: 0, sleep: async () => {} });
+    assert.notEqual(outcome.result.status, "BLOCKED");
+    assert.ok(polls > 1);
+    assert.equal(outcome.result.failures.some((item) => item.code === "UNSUPPORTED_OPERATOR_GATE"), false);
+  } finally { await new Promise<void>((resolveClose) => gateway.close(() => resolveClose())); }
 });
 
 

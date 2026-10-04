@@ -88,6 +88,25 @@ test("successful repair evidence fixes an absent finding and recurrence reopens 
   assert.equal(blockingReviewFindings(reopened.records).length, 1);
 });
 
+test("successful continuation evidence fixes an absent finding after the attempt counter resets", () => {
+  let sequence = 0;
+  const ids = () => `continuation-${++sequence}`;
+  const first = reconcileReviewRun({ run: run("run-before-recovery", 3), incoming: [finding()], existing: [], idFactory: ids });
+  const continuationRun = createReviewRun({
+    id: "run-after-recovery", taskId: "task-1", checkpointId: null, continuationId: "continuation-1",
+    attempt: 0, status: "completed", verdict: "pass", summary: "Fresh review passed.", completed: true,
+  });
+  const fixed = reconcileReviewRun({
+    run: continuationRun,
+    incoming: [],
+    existing: first.records,
+    resolutionEvidence: ["Deterministic verification passed for this execution.", "Fresh review did not reproduce it."],
+    idFactory: ids,
+  });
+  assert.equal(fixed.records[0].state, "fixed");
+  assert.equal(fixed.decisions[0].continuationId, "continuation-1");
+});
+
 test("scoped repair evidence only fixes findings owned by that verification phase", () => {
   let sequence = 0;
   const ids = () => `scoped-${++sequence}`;

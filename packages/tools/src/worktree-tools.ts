@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { BrowserVerification, type BrowserEvidenceReport } from "../../browser-verification/src/index.ts";
 import { VisualRegressionService } from "../../visual-regression/src/index.ts";
 import { ProcessRuntime, type ProcessKind } from "../../process-runtime/src/index.ts";
@@ -22,6 +22,7 @@ export interface TaskToolContext {
 export interface WorktreeToolOptions {
   worktreeRoot: string;
   findApproval(taskId: string): RecordedApproval | null;
+  findObservation?(taskId: string, observationId: string): { tool: string; output: unknown; sha256: string } | null;
   browser?: BrowserVerification;
   visualRegression?: VisualRegressionService;
   processRuntime?: ProcessRuntime;
@@ -41,6 +42,7 @@ interface CommandResult {
 interface VerificationCommand { command: string; args: string[]; label: string; }
 
 const MAX_FILE_BYTES = 500_000;
+const MAX_ASSET_BYTES = 8_000_000;
 const MAX_OUTPUT_BYTES = 120_000;
 const MAX_COMMAND_SECONDS = 900;
 const allowedCommands = new Set(["node", "npm", "python", "python3", "dotnet", "cargo", "go"]);
@@ -67,6 +69,22 @@ function verifiedPageRoutes(root: string): Array<{ route: string; name: string }
   } catch {
     return [];
   }
+}
+
+function detectedBrowserServer(root: string): { command: string; args: string[]; url: string } | null {
+  const packagePath = join(root, "package.json");
+  if (!existsSync(packagePath) || !lstatSync(packagePath).isFile()) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(packagePath, "utf8")) as { scripts?: Record<string, unknown> };
+    for (const script of ["dev", "start", "serve", "preview"]) {
+      if (typeof parsed.scripts?.[script] === "string" && parsed.scripts[script].trim()) {
+        return { command: "npm", args: ["run", script], url: "http://127.0.0.1:5173" };
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function routeMatches(pathname: string, planned: string) {
@@ -122,6 +140,22 @@ export function validateBrowserEvidence(evidence: BrowserEvidenceReport | null, 
 }
 
 export const worktreeToolDefinitions = {
+  worktree_observation_read: {
+    type: "function",
+    function: {
+      name: "worktree_observation_read",
+      description: "Retrieve historical tool evidence by observation ID from this task's durable history. Returns a page of the original serialized JSON, not current source. Use worktree_read before patching current files.",
+      parameters: { type: "object", required: ["observation_id"], properties: { observation_id: { type: "string" }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 4000 } } },
+    },
+  },
+  worktree_stat: {
+    type: "function",
+    function: {
+      name: "worktree_stat",
+      description: "Check whether an optional worktree-relative path exists and report its type without failing when it is absent. Use this before reading optional configuration files.",
+      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
+    },
+  },
   worktree_list: {
     type: "function",
     function: {
@@ -141,8 +175,16 @@ export const worktreeToolDefinitions = {
     type: "function",
     function: {
       name: "worktree_read",
-      description: "Read a text file from the approved task's isolated Git worktree.",
-      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
+      description: "Read exact source from the approved worktree. For large files, specify a 1-based inclusive start_line/end_line range. Hash covers the entire file.",
+      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, known_sha256: { type: "string", description: "Optional previously read whole-file hash. Returns notModified only when current bytes match; omit to retrieve source again." }, start_line: { type: "integer", minimum: 1 }, end_line: { type: "integer", minimum: 1 } } },
+    },
+  },
+  worktree_read_many: {
+    type: "function",
+    function: {
+      name: "worktree_read_many",
+      description: "Read up to 6 related text files together, with content hashes, from the approved worktree. Prefer this for related imports and components. Maximum combined result is 24000 characters; request fewer files if exceeded.",
+      parameters: { type: "object", required: ["paths"], properties: { paths: { type: "array", minItems: 1, maxItems: 6, items: { type: "string" } } } },
     },
   },
   worktree_write: {
@@ -336,6 +378,138 @@ function renderIntegrityViolations(root: string, paths: readonly string[]): Styl
   return violations;
 }
 
+function websiteBrief(root: string): string {
+  const manifestPath = join(root, ".borg-website.json");
+  if (!existsSync(manifestPath) || !lstatSync(manifestPath).isFile()) return "";
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { originalBrief?: unknown };
+    return typeof manifest.originalBrief === "string" ? manifest.originalBrief : "";
+  } catch {
+    return "";
+  }
+}
+
+function reachableText(root: string): string {
+  return [...reachableSourceFiles(root)].map((path) => {
+    const absolute = join(root, path);
+    return existsSync(absolute) && lstatSync(absolute).isFile() && statSync(absolute).size <= MAX_FILE_BYTES
+      ? readFileSync(absolute, "utf8")
+      : "";
+  }).join("\n");
+}
+
+/** Catch explicit brief violations before browser review spends a repair attempt. */
+export function briefContractViolations(root: string): StyleContractViolation[] {
+  const brief = websiteBrief(root);
+  if (!brief) return [];
+  const source = reachableText(root);
+  const violations: StyleContractViolation[] = [];
+
+  const brand = brief.match(/\bfor\s+([A-Z][A-Za-z0-9&'’.-]*(?:\s+[A-Z][A-Za-z0-9&'’.-]*){0,3})\s*,/)?.[1];
+  if (brand && !source.toLowerCase().includes(brand.toLowerCase())) violations.push({
+    path: "src",
+    line: 1,
+    message: `Brief identity drift: the approved brand \"${brand}\" is absent from entrypoint-reachable source. Preserve the approved product and audience instead of substituting a generic business.`,
+  });
+  const domainPhrase = brief.match(/\bfor\s+[A-Z][^,\n]{0,80},\s*(?:an?|the)\s+([^\n.]{4,120})[.!]/i)?.[1] ?? "";
+  const domainStopwords = new Set(["independent", "professional", "complete", "responsive", "digital", "design", "designer", "studio", "company", "business", "service", "services", "website", "frontend"]);
+  const domainAnchors = [...new Set(domainPhrase.toLowerCase().match(/[a-z][a-z-]{5,}/g) ?? [])]
+    .filter((word) => !domainStopwords.has(word));
+  if (domainAnchors.length && !domainAnchors.some((word) => source.toLowerCase().includes(word))) violations.push({
+    path: "src",
+    line: 1,
+    message: `Brief domain drift: none of the approved domain anchors (${domainAnchors.slice(0, 6).join(", ")}) appear in entrypoint-reachable source. Restore brand-specific content before verification.`,
+  });
+
+  if (/\b(?:do not|don['’]t|must not|never)\s+(?:download|use)\b[^.\n]{0,80}\b(?:imagery|images?|external assets?)\b/i.test(brief)) {
+    const assetsRoot = join(root, "src", "assets");
+    const attribution = existsSync(assetsRoot)
+      ? readdirSync(assetsRoot, { recursive: true }).map(String).find((path) => path.endsWith(".license.json"))
+      : undefined;
+    if (attribution) violations.push({
+      path: `src/assets/${attribution.replaceAll("\\", "/")}`,
+      line: 1,
+      message: "The approved brief prohibits downloaded imagery, but downloaded-asset attribution metadata is present. Remove the download and use an approved local asset or authored CSS/SVG composition.",
+    });
+  }
+
+  for (const match of brief.matchAll(/\b(?:display|show|say|include(?:\s+the\s+(?:text|message))?)\s*:\s*["“]([^"”]{4,240})["”]/gi)) {
+    const required = match[1].trim();
+    if (required && !source.includes(required)) violations.push({
+      path: "src",
+      line: 1,
+      message: `The approved brief requires the exact visible text \"${required}\", but it is absent from entrypoint-reachable source.`,
+    });
+  }
+  return violations.slice(0, 20);
+}
+
+/** Reject visibly unfinished source before launching the browser and visual gates. */
+export function constructionReadinessViolations(root: string): StyleContractViolation[] {
+  if (!websiteBrief(root)) return [];
+  const reachable = [...reachableSourceFiles(root)];
+  const placeholder = /\b(?:will be added here|component(?:s)? will be|project title|description of the project|header component|hero component|footer content)\b/i;
+  const violations: StyleContractViolation[] = [];
+  for (const path of reachable) {
+    if (!/\.(?:tsx?|jsx?|html)$/i.test(path)) continue;
+    const content = readFileSync(join(root, path), "utf8");
+    const lines = content.split(/\r?\n/);
+    const lineIndex = lines.findIndex((line) => placeholder.test(line));
+    if (lineIndex >= 0) violations.push({
+      path,
+      line: lineIndex + 1,
+      message: "Entrypoint-reachable placeholder or generic mock content remains. Complete the approved section and its interaction before browser verification.",
+    });
+  }
+
+  const combined = reachable.map((path) => /\.(?:tsx?|jsx?)$/i.test(path) ? readFileSync(join(root, path), "utf8") : "").join("\n");
+  const semanticClasses = [...new Set(
+    [...combined.matchAll(/className\s*=\s*["'`]([^"'`]+)["'`]/g)]
+      .flatMap((match) => match[1].split(/\s+/))
+      .filter((name) => /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/i.test(name))
+      .filter((name) => !/^(?:flex|grid|block|hidden|relative|absolute|fixed|sticky|items|justify|content|self|gap|space|p[trblxy]?|m[trblxy]?|w|min-w|max-w|h|min-h|max-h|text|font|leading|tracking|bg|border|rounded|shadow|overflow|object|z|top|right|bottom|left|inset|opacity|transition|duration|ease|scale|translate|rotate|cursor|select|sr)-/.test(name)),
+  )];
+  const css = reachable.filter((path) => /\.(?:css|scss)$/i.test(path)).map((path) => readFileSync(join(root, path), "utf8")).join("\n");
+  const missing = semanticClasses.filter((name) => !new RegExp(`\\.${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9_-])`, "i").test(css));
+  if (semanticClasses.length >= 3 && missing.length / semanticClasses.length >= 0.6) violations.push({
+    path: reachable.find((path) => /\.(?:css|scss)$/i.test(path)) ?? "src",
+    line: 1,
+    message: `Visual readiness failed: ${missing.length} of ${semanticClasses.length} semantic component classes have no reachable stylesheet rule (${missing.slice(0, 8).join(", ")}). Connect the approved layout and responsive styling before browser review.`,
+  });
+  return violations.slice(0, 20);
+}
+
+function dependencyLockViolations(root: string): StyleContractViolation[] {
+  if (!existsSync(join(root, ".borg-website.json"))) return [];
+  const manifestPath = join(root, "package.json");
+  const lockPath = join(root, "package-lock.json");
+  if (!existsSync(manifestPath) || !existsSync(lockPath)) return [];
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const lock = JSON.parse(readFileSync(lockPath, "utf8")) as {
+      packages?: Record<string, { version?: string }>;
+    };
+    const declared = { ...manifest.dependencies, ...manifest.devDependencies };
+    return Object.keys(declared).flatMap((name) => {
+      const locked = lock.packages?.[`node_modules/${name}`];
+      return locked?.version ? [] : [{
+        path: "package.json",
+        line: 1,
+        message: `Declared dependency ${name} is absent from package-lock.json. Remove the undeclared package usage or update dependencies with npm install before verification.`,
+      }];
+    }).slice(0, 20);
+  } catch {
+    return [{
+      path: "package-lock.json",
+      line: 1,
+      message: "Dependency metadata could not be parsed; package.json and package-lock.json must remain valid and synchronized.",
+    }];
+  }
+}
+
 function styleContractViolations(root: string, paths: readonly string[]): StyleContractViolation[] {
   const stylesPath = join(root, ".localcode", "build", "styles.md");
   if (!existsSync(stylesPath) || !lstatSync(stylesPath).isFile()) return [];
@@ -455,7 +629,16 @@ export class WorktreeTools {
     this.visualRegression = options.visualRegression ?? new VisualRegressionService();
   }
 
-  definitions() { return [...Object.values(worktreeToolDefinitions), ...this.browser.definitions()]; }
+  definitions() { return [...Object.values(worktreeToolDefinitions).filter((tool) => tool.function.name !== "worktree_observation_read" || this.options.findObservation), ...this.browser.definitions()]; }
+
+  externalImagePolicy(context: TaskToolContext | undefined): { allowed: boolean; reason: string | null } {
+    const root = this.approvedRoot(context);
+    const brief = websiteBrief(root);
+    const prohibited = /\b(?:do not|don['’]t|must not|never)\s+(?:download|use)\b[^.\n]{0,80}\b(?:imagery|images?|external assets?)\b/i.test(brief);
+    return prohibited
+      ? { allowed: false, reason: "The approved website brief prohibits downloaded or external imagery. Use local assets or authored CSS/SVG composition." }
+      : { allowed: true, reason: null };
+  }
 
   private approvedRoot(context: TaskToolContext | undefined): string {
     if (!context?.taskId) throw new Error("An approved task context is required for worktree tools.");
@@ -508,11 +691,57 @@ export class WorktreeTools {
 
   async execute(name: string, input: Record<string, unknown>, context?: TaskToolContext): Promise<unknown> {
     const root = this.approvedRoot(context);
+    if (name === "worktree_observation_read") {
+      const id = input.observation_id;
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? 4000;
+      if (typeof id !== "string" || !id || !Number.isSafeInteger(offset) || Number(offset) < 0 || !Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 4000) throw new Error("Invalid observation ID or page range.");
+      const observation = this.options.findObservation?.(context!.taskId, id);
+      if (!observation) throw new Error("Observation not found in this approved task.");
+      const serialized = JSON.stringify(observation.output);
+      if (createHash("sha256").update(serialized).digest("hex") !== observation.sha256) throw new Error("Observation integrity check failed.");
+      const end = Math.min(serialized.length, Number(offset) + Number(limit));
+      return { observationId: id, tool: observation.tool, historical: true, sha256: observation.sha256, totalCharacters: serialized.length, offset, nextOffset: end < serialized.length ? end : null, content: serialized.slice(Number(offset), end) };
+    }
+    if (name === "worktree_stat") {
+      const requested = safeRelativePath(input.path);
+      const path = resolve(root, requested);
+      if (!isInside(root, path)) throw new Error("Worktree path escapes the approved root.");
+      if (!existsSync(path)) return { path: requested.replaceAll("\\", "/"), exists: false, type: null, bytes: null };
+      const realPath = realpathSync(path);
+      if (!isInside(root, realPath)) throw new Error("Worktree path escapes through a link.");
+      const value = lstatSync(realPath);
+      return {
+        path: relative(root, realPath).replaceAll("\\", "/"),
+        exists: true,
+        type: value.isFile() ? "file" : value.isDirectory() ? "directory" : "other",
+        bytes: value.isFile() ? value.size : null,
+      };
+    }
     if (name === "worktree_list") return this.list(root, input);
+    if (name === "worktree_read_many") {
+      if (!Array.isArray(input.paths) || input.paths.length < 1 || input.paths.length > 6 || input.paths.some((path) => typeof path !== "string")) throw new Error("worktree_read_many requires 1 to 6 string paths.");
+      const files = [];
+      for (const path of [...new Set(input.paths)]) {
+        files.push(await this.execute("worktree_read", { path }, context));
+        if (JSON.stringify({ files }).length > 24_000) throw new Error("Batch read exceeds 24000 characters. Request fewer files or use worktree_read for an individual file.");
+      }
+      return { files };
+    }
     if (name === "worktree_read") {
       const path = this.resolveExisting(root, input.path);
       if (!lstatSync(path).isFile() || statSync(path).size > MAX_FILE_BYTES) throw new Error("Worktree file is not a bounded regular file.");
-      return { path: relative(root, path), content: readFileSync(path, "utf8") };
+      const content = readFileSync(path, "utf8");
+      const sha256 = createHash("sha256").update(content).digest("hex");
+      if (input.start_line === undefined && input.end_line === undefined && input.known_sha256 === sha256) return { path: relative(root, path), sha256, notModified: true };
+      if (input.start_line !== undefined || input.end_line !== undefined) {
+        const lines = content.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+        const start = input.start_line ?? 1;
+        const end = input.end_line ?? lines.length;
+        if (!Number.isInteger(start) || !Number.isInteger(end) || Number(start) < 1 || Number(end) < Number(start)) throw new Error("Invalid source line range.");
+        return { path: relative(root, path), content: lines.slice(Number(start) - 1, Number(end)).join(""), sha256, startLine: start, endLine: Math.min(Number(end), lines.length), totalLines: lines.length };
+      }
+      return { path: relative(root, path), content, sha256 };
     }
     if (name === "worktree_write") return this.write(root, input);
     if (name === "worktree_patch") return this.patch(root, input);
@@ -528,6 +757,17 @@ export class WorktreeTools {
     if (name.startsWith("browser_")) return this.browser.execute(name, input, { taskId: context!.taskId, worktreePath: root });
     if (name === "verification_run") return this.verify(root, String(input.profile ?? "quick"), context!);
     throw new Error(`Unknown worktree tool: ${name}`);
+  }
+
+  writeImageAsset(context: TaskToolContext | undefined, relativePath: unknown, bytes: Uint8Array) {
+    const root = this.approvedRoot(context);
+    const path = this.resolveWritable(root, relativePath);
+    if (!/\.(?:avif|gif|jpe?g|png|webp)$/i.test(path)) throw new Error("Downloaded images require an AVIF, GIF, JPEG, PNG, or WebP destination.");
+    if (!bytes.byteLength || bytes.byteLength > MAX_ASSET_BYTES) throw new Error("Downloaded image exceeds the 8 MB asset limit.");
+    if (existsSync(path)) throw new Error("Asset destination already exists. Choose a new filename.");
+    this.ensureWritableParent(root, path);
+    writeFileSync(path, bytes);
+    return { path: relative(root, path).replaceAll("\\", "/"), bytes: bytes.byteLength };
   }
 
   private list(root: string, input: Record<string, unknown>) {
@@ -695,6 +935,12 @@ export class WorktreeTools {
         const changedPaths = changedSourcePathsFromStatus(status.stdout);
         const staticChecks = [
           {
+            label: "BORG dependency integrity",
+            arg: "dependency-integrity",
+            code: "BORG_DEPENDENCY",
+            violations: dependencyLockViolations(root),
+          },
+          {
             label: "BORG style contract",
             arg: "style-contract",
             code: "BORG_STYLE",
@@ -705,6 +951,18 @@ export class WorktreeTools {
             arg: "render-integrity",
             code: "BORG_RENDER",
             violations: renderIntegrityViolations(root, changedPaths),
+          },
+          {
+            label: "BORG brief contract",
+            arg: "brief-contract",
+            code: "BORG_BRIEF",
+            violations: briefContractViolations(root),
+          },
+          {
+            label: "BORG construction readiness",
+            arg: "construction-readiness",
+            code: "BORG_READINESS",
+            violations: constructionReadinessViolations(root),
           },
         ];
         for (const check of staticChecks) {
@@ -726,10 +984,14 @@ export class WorktreeTools {
         }
       }
     } finally {
-      if (commandPassed) await this.browser.ensureEvidenceForVerification(
-        { taskId: context.taskId, worktreePath: root },
-        verifiedPageRoutes(root),
-      ).catch(() => null);
+      if (commandPassed) {
+        const browserContext = { taskId: context.taskId, worktreePath: root };
+        if (!this.processRuntime.findRunning(context.taskId, "dev_server")) {
+          const server = detectedBrowserServer(root);
+          if (server) await this.browser.execute("browser_server_start", server, browserContext);
+        }
+        await this.browser.ensureEvidenceForVerification(browserContext, verifiedPageRoutes(root));
+      }
       browserEvidence = await this.browser.closeForVerification(context.taskId);
     }
     browserEvidence = validateBrowserEvidence(browserEvidence, commandPassed, plannedRoutes(root));

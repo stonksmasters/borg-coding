@@ -10,7 +10,17 @@ export const webInterfaceExecutionOrder = [
   "Add extracted components, data, styling, and interactions after that runnable shell exists.",
   "Do not spend the attempt building detached components that the entrypoint does not render.",
   "Treat the visible page body, heading hierarchy, accessible names, and every enabled control as part of the slice's completion contract.",
+  "Resolve the visual asset strategy before polishing: use credible supplied imagery, generated or authored artwork, or an intentional type-led composition that does not pretend a blank box is media.",
+  "Treat the approved brief's asset policy as binding. If it prohibits downloaded or external imagery, do not call image_search or image_download; use existing local assets or authored SVG/CSS composition instead.",
+  "When the approved brief permits external imagery and image_search/image_download are available, use them to retrieve openly licensed imagery into the worktree and preserve the generated attribution metadata; choose images for subject, crop, palette, and compositional role rather than decoration.",
+  "An image path exists only after image_download returns success for that exact path. After any failed download, do not import or reference the proposed path; choose a confirmed asset or a local composition and check it with worktree_stat.",
+  "Never ship gray image boxes, labels such as Hero Image or Project Image, lorem ipsum, placeholder copy, or generic mock content presented as real client work.",
+  "When external imagery is unavailable, create authored SVG or CSS artwork with deliberate composition and accessible semantics; substantial CSS artwork must use role=img with a concrete aria-label so browser evidence can distinguish it from a blank placeholder.",
+  "Use cards only for real grouped objects. Create section-to-section rhythm by changing scale, alignment, density, background, or media treatment instead of repeating equal grids.",
+  "Write concrete brand-specific copy. Mark invented portfolio examples as concept studies and never fabricate clients, testimonials, metrics, awards, addresses, or contact details.",
   "Before returning control, inspect the final diff and render the actual entry route; a successful build alone does not complete a user-facing slice.",
+  "Keep the approved product, audience, and domain nouns visible while writing copy. Before returning control, compare the rendered headings and content with the original brief so a landscape studio cannot drift into a generic technology or agency site.",
+  "Run a detected build or check after connecting the page shell and again after adding a batch of components. Fix missing imports and type errors before spending effort on browser or visual review.",
 ].join(" ");
 
 export class ImplementationBudgetContinuations {

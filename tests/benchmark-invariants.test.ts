@@ -74,7 +74,27 @@ function snapshot(
       worktreePath: `/tmp/${taskId}`,
       baseCommit: "base",
     },
-    events: [],
+    events: [{
+      id: `browser-${taskId}`,
+      sourceType: "FOCUSED_BROWSER_VERIFICATION_COMPLETED",
+      occurredAt: new Date().toISOString(),
+      workflowVersion: sliceIndex + 3,
+      status: "succeeded",
+      data: { passed: true },
+    }, {
+      id: `routes-${taskId}`,
+      sourceType: "VERIFICATION_COMPLETED",
+      occurredAt: new Date().toISOString(),
+      workflowVersion: sliceIndex + 3,
+      status: "succeeded",
+      data: { verification: {
+        results: [
+          { label: "npm run lint", exitCode: 0 }, { label: "npm run check", exitCode: 0 },
+          { label: "npm run test", exitCode: 0 }, { label: "npm run build", exitCode: 0 },
+        ],
+        browserEvidence: { routeChecks: [{ route: "/work", name: "Work", linked: true, reached: true, renderedDistinctContent: true, finalUrl: "http://127.0.0.1:5173/work", responsiveViewports: 3, accessibilityPassed: true, consistencyPassed: true, interactionPassed: true, issue: null }] },
+      } },
+    }],
     contextPacks: [{
       id: `pack-${taskId}`,
       sliceId: sliceIndex === 0 ? "home" : "work",
@@ -241,6 +261,35 @@ test("completion validates verification, minimum page count, required routes, an
   assert.equal(codes.has("FRONTEND_COMPLETION_BEFORE_MINIMUM_PAGES"), true);
   assert.equal(codes.has("REQUIRED_ROUTE_MISSING"), true);
   assert.equal(codes.has("BACKEND_REQUIRED_IN_FRONTEND_ONLY_BENCHMARK"), true);
+});
+
+test("completion requires passed browser, responsive, and accessibility evidence for every slice", () => {
+  const home = snapshot("home-task", 0, { events: [] });
+  const failures = evaluate({ snapshots: [home, snapshot("work-task", 1)] });
+  const codes = new Set(failures.filter((item) => item.taskId === "home-task").map((item) => item.code));
+  assert.equal(codes.has("BROWSER_VERIFICATION_EVIDENCE_MISSING"), true);
+  assert.equal(codes.has("RESPONSIVE_VERIFICATION_EVIDENCE_MISSING"), true);
+  assert.equal(codes.has("ACCESSIBILITY_VERIFICATION_EVIDENCE_MISSING"), true);
+});
+
+test("completion requires linked navigation and distinct rendered content for every non-root route", () => {
+  const final = snapshot("work-task", 1, {
+    events: [{ id: "browser", sourceType: "FOCUSED_BROWSER_VERIFICATION_COMPLETED", occurredAt: new Date().toISOString(), data: { passed: true } }],
+  });
+  const failures = evaluate({ snapshots: [snapshot("home-task", 0), final] });
+  const routeFailure = failures.find((item) => item.code === "REQUIRED_ROUTE_NOT_VERIFIED");
+  assert.equal(routeFailure?.sliceId, "/work");
+  assert.match(routeFailure?.message ?? "", /linked-navigation and distinct-render evidence/i);
+});
+
+test("completion requires successful lint, typecheck, test, and production build evidence", () => {
+  const final = snapshot("work-task", 1);
+  final.events = final.events.map((event) => event.sourceType === "VERIFICATION_COMPLETED"
+    ? { ...event, data: { verification: { results: [{ label: "npm run check", exitCode: 0 }], browserEvidence: (event.data?.verification as { browserEvidence?: unknown })?.browserEvidence } } }
+    : event);
+  const failures = evaluate({ snapshots: [snapshot("home-task", 0), final] });
+  const engineering = failures.find((item) => item.code === "ENGINEERING_VERIFICATION_EVIDENCE_MISSING");
+  assert.match(engineering?.message ?? "", /lint, test, build/i);
 });
 
 test("non-SQLite workflow projection cannot satisfy benchmark authority", () => {

@@ -69,6 +69,7 @@ import {
 import { structuredJsonSyntaxRepairPrompt } from "../../../packages/web-builder/src/structured-json.ts";
 import {
   DesignDirectorService,
+  PersonalStyleProfileSchema,
   designBriefPrompt,
   requiresDesignDirection,
   type DesignBrief,
@@ -328,7 +329,7 @@ export class PlanningOrchestrator {
       const enriched = { ...event, taskId: task.id };
       transportEmit(enriched);
       const eventType = String(event.type ?? "");
-      if (eventType.startsWith("tool.") || eventType.startsWith("runtime.turn.")) {
+      if (eventType.startsWith("tool.") || eventType.startsWith("runtime.turn.") || eventType === "runtime.context.accounted" || eventType === "runtime.inference.measured") {
         appendTaskEvent(task.id, eventType.toUpperCase().replaceAll(".", "_"), enriched);
       }
       if (eventType === "activity.updated") appendTaskEvent(task.id, "AGENT_ACTIVITY", { activity: event.activity });
@@ -405,6 +406,7 @@ export class PlanningOrchestrator {
     } else if (quickEdit && websiteProject && projectPlan) {
       compiledArchitectContext = compileQuickEditContext({
         root: websiteProject.path,
+        budgetCharacters: websiteProject.contextBudgetCharacters,
         request: requestText,
         productContract: websiteContext,
         projectBrief: websiteProject.originalBrief ?? undefined,
@@ -425,6 +427,7 @@ export class PlanningOrchestrator {
       const scopeName = scopedRegistry?.name ?? focusId;
       compiledArchitectContext = compileFocusedFrontendContext({
         root: websiteProject.path,
+        budgetCharacters: websiteProject.contextBudgetCharacters,
         scope: { type: focusType, id: focusId },
         productContract: websiteContext,
         projectBrief: websiteProject.originalBrief ?? undefined,
@@ -440,6 +443,7 @@ export class PlanningOrchestrator {
     } else if (styleFocus && websiteProject && projectPlan) {
       compiledArchitectContext = compileStyleFrontendContext({
         root: websiteProject.path,
+        budgetCharacters: websiteProject.contextBudgetCharacters,
         productContract: websiteContext,
         projectBrief: websiteProject.originalBrief ?? undefined,
         sourceHints: this.deps.contextSourceHints(
@@ -465,6 +469,7 @@ export class PlanningOrchestrator {
       sliceDirective = slicePlanningPrompt(projectPlan, plannedSlice);
       compiledArchitectContext = compileFrontendContext({
         root: websiteProject.path,
+        budgetCharacters: websiteProject.contextBudgetCharacters,
         phase: "frontend",
         sliceIndex: selectedIndex,
         authority: { plan: projectPlan, state: plannedSlice, workflowVersion: startedWorkflow.version },
@@ -759,12 +764,14 @@ export class PlanningOrchestrator {
         isGreenfield: isGreenfieldDesign,
       });
       try {
+        const personalStyleProfile = PersonalStyleProfileSchema.safeParse(this.deps.tasks.activePersonalStyleProfile());
         designBrief = await designDirector.createBrief({
           taskId: task.id,
           request: requestText,
           model: architectModel,
           repositoryContext,
           isGreenfield: isGreenfieldDesign,
+          personalStyleProfile: personalStyleProfile.success ? personalStyleProfile.data : null,
           signal,
           onRequestBody: websiteProject
             ? (body) => this.deps.recordModelInput(task.id, "design_director", architectModel, null, [], body)
@@ -820,6 +827,7 @@ export class PlanningOrchestrator {
           tools,
           mode,
           role: "architect" as const,
+          phase: "plan" as const,
           disciplines: ["frontend"] as EngineeringDiscipline[],
           streamText: false,
           allowTools: false,
@@ -970,6 +978,7 @@ export class PlanningOrchestrator {
           tools,
           mode,
           role: "architect" as const,
+          phase: "plan" as const,
           disciplines: route.disciplines,
           streamText: false,
           emit,
@@ -993,9 +1002,49 @@ export class PlanningOrchestrator {
         } satisfies Parameters<typeof runOllamaAgent>[0];
 
     try {
-      let { answer, usedTools } = deterministicQuickEditPlan
-        ? { answer: deterministicQuickEditPlan, usedTools: false }
-        : await this.deps.runAgent(architectRequest);
+      let architectResult: { answer: string; usedTools: boolean };
+      if (deterministicQuickEditPlan) {
+        architectResult = { answer: deterministicQuickEditPlan, usedTools: false };
+      } else if (blueprintCompletionPlanning && blueprintFallback && stagedProductMap && stagedStyleSystem && /^devstral-small-2(?::|$)/i.test(architectModel)) {
+        const compiledPlan = applyBlueprintFoundation(blueprintFallback, stagedProductMap, stagedStyleSystem);
+        architectResult = {
+          answer: `<borg-project-plan>${JSON.stringify(compiledPlan)}</borg-project-plan>`,
+          usedTools: false,
+        };
+        appendTaskEvent(task.id, "BLUEPRINT_COMPLETION_COMPILED", {
+          reason: "bounded_local_blueprint",
+          method: "deterministic_from_frozen_model_artifacts",
+        });
+        emit({
+          type: "stage.updated",
+          stage: "Component Architecture",
+          status: "active",
+          message: "Compiling the typed project plan from Devstral's frozen product and design artifacts.",
+        });
+      } else {
+        try {
+          architectResult = await this.deps.runAgent(architectRequest);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!blueprintCompletionPlanning || !blueprintFallback || !stagedProductMap || !stagedStyleSystem || !/terminated|fetch failed/i.test(message)) throw error;
+          const compiledPlan = applyBlueprintFoundation(blueprintFallback, stagedProductMap, stagedStyleSystem);
+          architectResult = {
+            answer: `<borg-project-plan>${JSON.stringify(compiledPlan)}</borg-project-plan>`,
+            usedTools: false,
+          };
+          appendTaskEvent(task.id, "BLUEPRINT_COMPLETION_COMPILED", {
+            reason: message,
+            method: "deterministic_from_frozen_model_artifacts",
+          });
+          emit({
+            type: "stage.updated",
+            stage: "Component Architecture",
+            status: "active",
+            message: "The local planner transport ended at its response bound. Compiling the typed project plan from the frozen Devstral product and design artifacts.",
+          });
+        }
+      }
+      let { answer, usedTools } = architectResult;
       if (deterministicQuickEditPlan) {
         appendTaskEvent(task.id, "QUICK_EDIT_PLAN_DETERMINED", {
           sourceFiles: compiledArchitectContext?.manifest.filter((item) => item.kind === "source").map((item) => item.path) ?? [],

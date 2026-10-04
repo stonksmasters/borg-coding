@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import {
   createChatMessage,
   createChatSession,
@@ -16,6 +16,7 @@ import { AccessController } from "../../../packages/repository/src/access-contro
 import { DesktopCredentialStore } from "../../../packages/tools/src/credential-store.ts";
 import { InternetConfigurationStore } from "../../../packages/tools/src/internet-configuration.ts";
 import { createWebsiteProject, inferWebsiteTemplate, websiteInfo, websiteTemplates, WebsitePreviewManager, type WebsiteTemplate } from "../../../packages/web-builder/src/project-bootstrap.ts";
+import { splitNdjsonBuffer } from "./ndjson-stream.ts";
 import { readProjectModel } from "../../../packages/web-builder/src/project-model.ts";
 import type { ProjectPlan } from "../../../packages/core/src/project-domain.ts";
 
@@ -53,6 +54,7 @@ function headers(contentType = "application/json") {
     "access-control-allow-origin": "http://localhost:5173",
     "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
     "access-control-allow-headers": "content-type",
+    "access-control-allow-private-network": "true",
   };
 }
 
@@ -356,8 +358,9 @@ async function pipeExecution(taskId: string, session: ChatSession, emitToClient:
   while (true) {
     const { value, done } = await reader.read();
     buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
+    const split = splitNdjsonBuffer(buffer, done);
+    const lines = split.lines;
+    buffer = split.remainder;
     for (const line of lines) {
       if (!line.trim()) continue;
       const event = JSON.parse(line) as Record<string, unknown>;
@@ -567,8 +570,9 @@ async function streamChat(session: ChatSession, prompt: string, emitToClient: Ev
     while (true) {
       const { value, done } = await reader.read();
       buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+      const split = splitNdjsonBuffer(buffer, done);
+      const lines = split.lines;
+      buffer = split.remainder;
       for (const line of lines) {
         if (!line.trim()) continue;
         const event = JSON.parse(line) as Record<string, unknown>;
@@ -703,7 +707,17 @@ const server = createServer(async (request, response) => {
           ? requestedTemplate as WebsiteTemplate
           : inferWebsiteTemplate(brief);
       if (!name) return send(response, 400, { error: "Website name is required." });
-      const project = await createWebsiteProject(name, undefined, undefined, { template, originalBrief: brief, frontendCapabilityVersion: input.frontendCapabilityVersion === 1 ? 1 : undefined });
+      const contextBudgetCharacters = input.contextBudgetCharacters;
+      if (contextBudgetCharacters !== undefined && (!Number.isInteger(contextBudgetCharacters) || Number(contextBudgetCharacters) < 8_000 || Number(contextBudgetCharacters) > 24_000)) return send(response, 400, { error: "Context pack budget must be an integer between 8000 and 24000." });
+      const sharedNodeModules = process.env.BORG_SHARED_NODE_MODULES?.trim();
+      const install = sharedNodeModules
+        ? async (projectPath: string) => {
+            const source = resolve(sharedNodeModules);
+            if (!existsSync(source)) throw new Error(`Shared benchmark dependencies were not found at ${source}.`);
+            symlinkSync(source, join(projectPath, "node_modules"), "junction");
+          }
+        : undefined;
+      const project = await createWebsiteProject(name, undefined, install, { template, originalBrief: brief, contextBudgetCharacters: contextBudgetCharacters === undefined ? undefined : Number(contextBudgetCharacters), frontendCapabilityVersion: input.frontendCapabilityVersion === 1 ? 1 : undefined });
       const savedAccess = access.save({ repositoryPath: project.path, documents: [] });
       const session = createChatSession({ id: randomUUID(), title: project.name, activeMode: input.activeMode === "agent" ? "agent" : "plan", repositoryPath: savedAccess.repositoryPath, workspaceId: project.slug, provider: "ollama", model: process.env.BORG_MODEL ?? "qwen3-coder:30b", parentSessionId: null, workflowRole: "primary" });
       chats.saveSession(session);

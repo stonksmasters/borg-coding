@@ -7,7 +7,7 @@ export interface AccessPolicy {
   updatedAt: string;
 }
 
-const ignoredDirectories = new Set([".git", ".agents", ".codex", "node_modules", "dist", "build", ".next", ".vinext", ".wrangler", "coverage", ".borg"]);
+const ignoredDirectories = new Set([".git", ".agents", ".codex", "node_modules", "dist", "build", ".next", ".vinext", ".vite-cache", ".wrangler", "coverage", ".borg"]);
 const importantNames = new Set(["agents.md", "readme.md", "readme.txt", "package.json", "tsconfig.json", "cargo.toml", "go.mod", "pyproject.toml", "requirements.txt", "dockerfile", "docker-compose.yml", "docker-compose.yaml"]);
 const textExtensions = new Set([".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".cs", ".sql", ".html", ".css", ".scss", ".xml", ".csv"]);
 const sensitiveName = /(^\.env($|\.)|secret|credential|id_rsa|id_ed25519|\.pem$|\.key$|\.pfx$)/i;

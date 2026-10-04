@@ -34,6 +34,8 @@ test("role capabilities isolate mutation and independent review", () => {
   assert.equal(roleAllowsTool("architect", "worktree_patch"), false);
   assert.equal(roleAllowsTool("implementer", "worktree_patch"), true);
   assert.equal(roleAllowsTool("implementer", "worktree_write"), true);
+  assert.equal(roleAllowsTool("implementer", "worktree_list"), true);
+  assert.equal(roleAllowsTool("implementer", "worktree_stat"), true);
   assert.equal(roleAllowsTool("verifier", "verification_run"), true);
   assert.equal(roleAllowsTool("verifier", "worktree_command"), false);
   assert.deepEqual(roleCapabilities("reviewer"), []);

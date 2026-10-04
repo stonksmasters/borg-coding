@@ -12,6 +12,9 @@ test("web implementation order requires a runnable entrypoint-connected slice be
   assert.match(webInterfaceExecutionOrder, /replaces any starter placeholder/i);
   assert.match(webInterfaceExecutionOrder, /do not spend the attempt building detached components/i);
   assert.match(webInterfaceExecutionOrder, /render the actual entry route/i);
+  assert.match(webInterfaceExecutionOrder, /never ship gray image boxes/i);
+  assert.match(webInterfaceExecutionOrder, /authored SVG or CSS artwork/i);
+  assert.match(webInterfaceExecutionOrder, /mark invented portfolio examples as concept studies/i);
 });
 
 test("tool-budget continuation is bounded once per implementation or repair attempt", () => {

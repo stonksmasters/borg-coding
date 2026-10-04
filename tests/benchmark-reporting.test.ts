@@ -211,10 +211,24 @@ function outcome(): FrontendBenchmarkRunnerOutcome {
   };
 }
 
+test("verification artifacts retain the failed command and full compiler diagnostics", () => {
+  const run = outcome();
+  const snapshot = run.snapshots[0];
+  snapshot.events.push({ id: "compiler", sourceType: "VERIFICATION_COMPLETED", occurredAt: "2026-09-22T14:02:00.000Z", data: { verification: { results: [{ command: "npm", args: ["run", "build"], exitCode: 2, stdout: "TS2307: Cannot find module './Hero'", stderr: "", timedOut: false }] } } });
+  const artifacts = collectBenchmarkTelemetry(benchmark, run);
+  const command = artifacts.verification.find((item) => item.taskId === snapshot.task.id)!.commandEvidence[0];
+  assert.equal(command.command, "npm");
+  assert.equal(command.exitCode, 2);
+  assert.match(command.stdout, /TS2307/);
+});
+
 test("telemetry collector compacts observations and summarizes context, repair, verification, and invariants", () => {
   const artifacts = collectBenchmarkTelemetry(benchmark, outcome());
 
   assert.equal(artifacts.summary.status, "FAIL");
+  assert.equal(artifacts.summary.quality.maximum, 100);
+  assert.equal(artifacts.summary.quality.threshold, 95);
+  assert.equal(artifacts.summary.quality.exceptional, false);
   assert.equal(artifacts.summary.durationMs, 150_000);
   assert.equal(artifacts.summary.taskCount, 3);
   assert.equal(artifacts.summary.observedSliceCount, 2);
@@ -241,6 +255,9 @@ test("telemetry collector compacts observations and summarizes context, repair, 
 test("formatted report surfaces result, slices, bounded context, repairs, and invariant failures", () => {
   const report = formatBenchmarkReport(collectBenchmarkTelemetry(benchmark, outcome()));
   assert.match(report, /Result: FAIL/);
+  assert.match(report, /Quality score: \d+\/100 · qualifying run: no/);
+  assert.match(report, /Exceptional streak: 0\/3 · exceptional: no/);
+  assert.match(report, /visual: \d+\/20/);
   assert.match(report, /1\. Home · passed · repair 1/);
   assert.match(report, /2\. Work · passed/);
   assert.match(report, /Project replans during slices: 0/);
@@ -275,6 +292,24 @@ test("artifact writer persists exactly the six benchmark report files under .bor
     assert.equal(summary.status, "FAIL");
     assert.equal(contexts.packs?.length, 2);
     assert.equal(contexts.modelContexts?.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exceptional status requires three consecutive persisted qualifying runs", async () => {
+  const root = mkdtempSync(join(tmpdir(), "borg-benchmark-streak-"));
+  try {
+    for (let index = 1; index <= 3; index += 1) {
+      const artifacts = collectBenchmarkTelemetry(benchmark, outcome());
+      artifacts.summary.runId = `telemetry-test-streak-${index}`;
+      artifacts.summary.completedAt = `2026-09-22T14:0${index}:00.000Z`;
+      artifacts.summary.quality.runExceptional = true;
+      const written = await writeBenchmarkArtifacts(artifacts, root);
+      const persisted = JSON.parse(readFileSync(written.files.summary, "utf8")) as { quality: { exceptional: boolean; repeatability: { consecutiveExceptionalRuns: number } } };
+      assert.equal(persisted.quality.repeatability.consecutiveExceptionalRuns, index);
+      assert.equal(persisted.quality.exceptional, index === 3);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

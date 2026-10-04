@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createApproval,
   type Approval,
@@ -15,6 +15,7 @@ import { WorkflowEngine } from "../../../packages/core/src/workflow-engine.ts";
 import {
   buildRepairContext,
   formatRepairContext,
+  partitionRepairContext,
   type RepairContext,
 } from "../../../packages/core/src/execution-state.ts";
 import { blockingReviewFindings } from "../../../packages/core/src/review-history.ts";
@@ -59,9 +60,10 @@ import {
   type DesignBrief,
 } from "../../../packages/design-intelligence/src/index.ts";
 import { runOllamaAgent } from "./ollama-agent.ts";
+import { repairProgress, type RepairProgressState } from "./repair-progress.ts";
 import { evaluateQuickEditScope, resolveExecutionScopeMarkers, resolveExecutionTaskScope } from "./task-scope-resolver.ts";
 import { classifyImplementationFailure, classifyObservedToolFailures, compactRecoveryEvidence } from "./recovery-policy.ts";
-import { findingsFromVerification, VerificationService } from "./verification-service.ts";
+import { findingsFromVerification, isConstructionVerificationFailure, VerificationService } from "./verification-service.ts";
 import { QualityGateService } from "./quality-gate-service.ts";
 import { ProjectPlanRevisionService } from "./project-plan-revision-service.ts";
 import { browserRepairSourceHints, compactBrowserRepairEvidence, ImplementationBudgetContinuations, isTransientModelRuntimeFailure, repairGroundingSnapshot, shouldVerifyPersistedRetryFirst, sourceMutationSnapshot, webInterfaceExecutionOrder } from "./execution-grounding.ts";
@@ -160,7 +162,7 @@ export class ExecutionOrchestrator {
       const enriched = { ...event, taskId };
       transportEmit(enriched);
       const eventType = String(event.type ?? "");
-      if (eventType.startsWith("tool.") || eventType.startsWith("runtime.turn.")) appendTaskEvent(taskId, eventType.toUpperCase().replaceAll(".", "_"), enriched);
+      if (eventType.startsWith("tool.") || eventType.startsWith("runtime.turn.") || eventType.startsWith("runtime.context.") || eventType === "runtime.inference.measured") appendTaskEvent(taskId, eventType.toUpperCase().replaceAll(".", "_"), enriched);
       if (eventType === "activity.updated") appendTaskEvent(taskId, "AGENT_ACTIVITY", { activity: event.activity });
     };
     const performPreflight = (reason: string) => {
@@ -258,7 +260,9 @@ export class ExecutionOrchestrator {
       reviewer: specialistSystemInstructions(packs, "reviewer"),
     };
     const availableImplementationTools = tools.toolDefinitions("agent", taskContext, "implementer", activeDisciplines).map((tool) => tool.function.name);
-    const verificationProfile = verificationProfileFor(packs);
+    const verificationProfile = sliceState && projectPlan?.slices[sliceState.current]?.id === "frontend-review"
+      ? "full" as const
+      : verificationProfileFor(packs);
     let activeRoleAssignment: RoleAssignment | null = null;
 
     try {
@@ -285,6 +289,8 @@ export class ExecutionOrchestrator {
         ? `OPERATOR BLOCKED-TASK RETRY. Continue in the existing worktree. Repair only the latest failure; do not restart implementation or rediscover the repository.\n\nLatest failure evidence:\n${JSON.stringify(blockedFailure?.payload ?? {}).slice(0, 8_000)}`
         : "";
       let activeRepairContext: RepairContext | null = null;
+      let pendingRepairUnits: RepairContext[] = [];
+      let previousRepairProgress = (taskEvents.findLast((event) => event.type === "REPAIR_PROGRESS_OBSERVED")?.payload.progress ?? null) as RepairProgressState | null;
       refreshTaskContext();
       const budgetContinuations = new ImplementationBudgetContinuations();
       let implementationBudgetContinuations = 0;
@@ -298,81 +304,85 @@ export class ExecutionOrchestrator {
             ? projectPlan.sitemap.find((item) => item.id === focusedExecutionScope.id)
             : projectPlan.components.find((item) => item.id === focusedExecutionScope.id))
         : null;
-      const compiledSlice = sliceState && projectPlan && selectedSlice ? compileFrontendContext({
-        root: approvedWorktreePath,
-        phase: "frontend",
-        sliceIndex: sliceState.current,
-        authority: { plan: projectPlan, state: sliceState, workflowVersion: contextWorkflowVersion },
-        productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief ?? undefined,
-        sourceHints: contextSourceHints(contextHintRoot, [task.request, selectedSlice.title, selectedSlice.outcome, ...selectedSlice.scope].join(" ")),
-        stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
-      }) : null;
-      const compiledFocus = focusedExecutionScope && projectPlan ? compileFocusedFrontendContext({
-        root: approvedWorktreePath,
-        scope: focusedExecutionScope,
-        productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief ?? undefined,
-        sourceHints: contextSourceHints(contextHintRoot, [task.request, focusedEntity?.name ?? "", focusedEntity?.purpose ?? ""].join(" ")),
-        stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
-        authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
-      }) : null;
-      const compiledStyle = styleWorkspace && projectPlan ? compileStyleFrontendContext({
-        root: approvedWorktreePath,
-        productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief ?? undefined,
-        sourceHints: contextSourceHints(contextHintRoot, `global styles theme typography spacing color layout responsive motion ${task.request}`),
-        stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
-        authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
-      }) : null;
-      const compiledQuickEdit = quickEdit && projectPlan ? compileQuickEditContext({
-        root: approvedWorktreePath,
-        request: task.request,
-        productContract: websiteContext,
-        projectBrief: websiteProject?.originalBrief ?? undefined,
-        sourceHints: contextSourceHints(contextHintRoot, task.request),
-        stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
-        authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
-      }) : null;
-      const compiledExecutionContext = compiledFocus ?? compiledStyle ?? compiledQuickEdit ?? compiledSlice;
-      if (compiledExecutionContext) recordContextPack(taskId, authorityProjectId, compiledExecutionContext);
-      const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
-      const focusedExecutionPrompt = compiledFocus
-        ? `FOCUSED ${focusedExecutionScope!.type.toUpperCase()} WORKSPACE [${focusedExecutionScope!.id}]. Modify only the selected ${focusedExecutionScope!.type} and direct dependencies represented in the focused context. Preserve unrelated pages/components and the approved global style system. Do not perform repository-wide redesign or planning.\n\n${compiledFocus.text}`
-        : "";
-      const styleExecutionPrompt = compiledStyle
-        ? `${styleExecutionContext}\n\n${compiledStyle.text}`
-        : styleExecutionContext;
-      const quickEditExecutionPrompt = compiledQuickEdit
-        ? `QUICK EDIT WORKSPACE. Make the smallest change that satisfies the request. You may modify only source files present in this ContextPack. Preserve the approved plan, current slice index, global styles, and unrelated behavior. If another file or broader authority is required, stop and report SCOPE_EXCEEDED instead of editing it.\n\n${compiledQuickEdit.text}`
-        : "";
-      const repairAuthorityContext = projectPlan
-        ? JSON.stringify({
-            slice: selectedSlice ? {
-              id: selectedSlice.id,
-              title: selectedSlice.title,
-              outcome: selectedSlice.outcome,
-              scope: selectedSlice.scope,
-              acceptanceCriteria: selectedSlice.acceptanceCriteria,
-            } : null,
-            page: selectedSlice
-              ? projectPlan.sitemap.find((page) => page.id === selectedSlice.id) ?? null
-              : focusedExecutionScope?.type === "page"
-                ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id) ?? null
-                : null,
-            globalStyle: {
-              direction: projectPlan.styles.direction,
-              colors: projectPlan.styles.colors,
-              typography: projectPlan.styles.typography,
-              responsive: projectPlan.styles.responsive,
-              accessibility: projectPlan.styles.accessibility,
-              avoid: projectPlan.styles.avoid,
-            },
-          }, null, 2).slice(0, 10_000)
-        : "";
       while (task) {
         if (task.attempts > 0) performPreflight("retry_start");
         refreshTaskContext();
+        const compiledSlice = sliceState && projectPlan && selectedSlice ? compileFrontendContext({
+          root: approvedWorktreePath,
+          budgetCharacters: websiteProject?.contextBudgetCharacters,
+          phase: "frontend",
+          sliceIndex: sliceState.current,
+          authority: { plan: projectPlan, state: sliceState, workflowVersion: contextWorkflowVersion },
+          productContract: websiteContext,
+          projectBrief: websiteProject?.originalBrief ?? undefined,
+          sourceHints: contextSourceHints(contextHintRoot, [task.request, selectedSlice.title, selectedSlice.outcome, ...selectedSlice.scope].join(" ")),
+          stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
+        }) : null;
+        const compiledFocus = focusedExecutionScope && projectPlan ? compileFocusedFrontendContext({
+          root: approvedWorktreePath,
+          budgetCharacters: websiteProject?.contextBudgetCharacters,
+          scope: focusedExecutionScope,
+          productContract: websiteContext,
+          projectBrief: websiteProject?.originalBrief ?? undefined,
+          sourceHints: contextSourceHints(contextHintRoot, [task.request, focusedEntity?.name ?? "", focusedEntity?.purpose ?? ""].join(" ")),
+          stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
+          authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
+        }) : null;
+        const compiledStyle = styleWorkspace && projectPlan ? compileStyleFrontendContext({
+          root: approvedWorktreePath,
+          budgetCharacters: websiteProject?.contextBudgetCharacters,
+          productContract: websiteContext,
+          projectBrief: websiteProject?.originalBrief ?? undefined,
+          sourceHints: contextSourceHints(contextHintRoot, `global styles theme typography spacing color layout responsive motion ${task.request}`),
+          stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
+          authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
+        }) : null;
+        const compiledQuickEdit = quickEdit && projectPlan ? compileQuickEditContext({
+          root: approvedWorktreePath,
+          budgetCharacters: websiteProject?.contextBudgetCharacters,
+          request: task.request,
+          productContract: websiteContext,
+          projectBrief: websiteProject?.originalBrief ?? undefined,
+          sourceHints: contextSourceHints(contextHintRoot, task.request),
+          stage: taskContext.attemptPhase === "implementation" ? "execution" : "repair",
+          authority: { plan: projectPlan, workflowVersion: contextWorkflowVersion },
+        }) : null;
+        const compiledExecutionContext = compiledFocus ?? compiledStyle ?? compiledQuickEdit ?? compiledSlice;
+        if (compiledExecutionContext) recordContextPack(taskId, authorityProjectId, compiledExecutionContext);
+        const activeSlicePrompt = sliceState && projectPlan ? `${slicePrompt(projectPlan, sliceState, availableImplementationTools)}\n\n${compiledSlice?.text ?? ""}` : "";
+        const focusedExecutionPrompt = compiledFocus
+          ? `FOCUSED ${focusedExecutionScope!.type.toUpperCase()} WORKSPACE [${focusedExecutionScope!.id}]. Modify only the selected ${focusedExecutionScope!.type} and direct dependencies represented in the focused context. Preserve unrelated pages/components and the approved global style system. Do not perform repository-wide redesign or planning.\n\n${compiledFocus.text}`
+          : "";
+        const styleExecutionPrompt = compiledStyle
+          ? `${styleExecutionContext}\n\n${compiledStyle.text}`
+          : styleExecutionContext;
+        const quickEditExecutionPrompt = compiledQuickEdit
+          ? `QUICK EDIT WORKSPACE. Make the smallest change that satisfies the request. You may modify only source files present in this ContextPack. Preserve the approved plan, current slice index, global styles, and unrelated behavior. If another file or broader authority is required, stop and report SCOPE_EXCEEDED instead of editing it.\n\n${compiledQuickEdit.text}`
+          : "";
+        const repairAuthorityContext = projectPlan
+          ? JSON.stringify({
+              slice: selectedSlice ? {
+                id: selectedSlice.id,
+                title: selectedSlice.title,
+                outcome: selectedSlice.outcome,
+                scope: selectedSlice.scope,
+                acceptanceCriteria: selectedSlice.acceptanceCriteria,
+              } : null,
+              page: selectedSlice
+                ? projectPlan.sitemap.find((page) => page.id === selectedSlice.id) ?? null
+                : focusedExecutionScope?.type === "page"
+                  ? projectPlan.sitemap.find((page) => page.id === focusedExecutionScope.id) ?? null
+                  : null,
+              globalStyle: {
+                direction: projectPlan.styles.direction,
+                colors: projectPlan.styles.colors,
+                typography: projectPlan.styles.typography,
+                responsive: projectPlan.styles.responsive,
+                accessibility: projectPlan.styles.accessibility,
+                avoid: projectPlan.styles.avoid,
+              },
+            }, null, 2)
+          : "";
         const attemptStartedInRepair = taskContext.attemptPhase !== "implementation";
         const preAttemptSnapshot = sourceMutationSnapshot(approvedWorktreePath);
         const implementerModel = teamPolicies.modelFor(teamPolicy, "implementer", model, primaryDiscipline);
@@ -410,6 +420,13 @@ export class ExecutionOrchestrator {
             });
           } else implementationResult = await runOllamaAgent({
           ollamaUrl, model: implementerModel, tools, mode: "agent", taskContext, role: "implementer", disciplines: activeDisciplines, phase: "implementation", emit,
+          recordObservation: (tool, output) => {
+            const serialized = JSON.stringify(output);
+            const receipt = { id: randomUUID(), tool, characters: serialized.length, sha256: createHash("sha256").update(serialized).digest("hex") };
+            tasks.saveToolObservation(taskId, { ...receipt, output });
+            appendTaskEvent(taskId, "TOOL_OBSERVATION_RECORDED", { ...receipt });
+            return receipt;
+          },
           limits: sliceState || focusedExecutionScope || styleWorkspace || quickEdit
             ? attemptStartedInRepair
               ? { toolRounds: 12, toolCalls: 28 }
@@ -573,7 +590,17 @@ export class ExecutionOrchestrator {
             continue;
           }
         }
-        if ((sliceState || focusedExecutionScope || styleWorkspace || quickEdit) && budgetExhausted && budgetContinuations.claim(task.attempts, taskContext.attemptPhase)) {
+        const attemptSourceChanged = preAttemptSnapshot.fingerprint !== sourceMutationSnapshot(approvedWorktreePath).fingerprint;
+        if (attemptStartedInRepair && attemptSourceChanged && pendingRepairUnits.length) {
+          activeRepairContext = pendingRepairUnits.shift()!;
+          repairEvidence = formatRepairContext(activeRepairContext);
+          appendTaskEvent(taskId, "REPAIR_WORK_UNIT_ADVANCED", { remainingUnits: pendingRepairUnits.length, context: activeRepairContext });
+          if (activeRoleAssignment) finishRole(activeRoleAssignment, "completed", emit);
+          activeRoleAssignment = null;
+          continue;
+        }
+        if (attemptStartedInRepair && !attemptSourceChanged) pendingRepairUnits = [];
+        if ((sliceState || focusedExecutionScope || styleWorkspace || quickEdit) && budgetExhausted && attemptSourceChanged && budgetContinuations.claim(task.attempts, taskContext.attemptPhase)) {
           implementationBudgetContinuations += 1;
           appendTaskEvent(taskId, "IMPLEMENTATION_BUDGET_CONTINUATION", {
             continuation: implementationBudgetContinuations,
@@ -714,8 +741,16 @@ export class ExecutionOrchestrator {
           emit({ type: "visual.regression.completed", visualRegression: verification.visualRegression });
         }
         const verificationAttempt = task.attempts;
+        const progress = repairProgress(previousRepairProgress, sourceMutationSnapshot(approvedWorktreePath).fingerprint, verification);
+        previousRepairProgress = progress;
+        appendTaskEvent(taskId, "REPAIR_PROGRESS_OBSERVED", { progress });
+        if (progress.stalled) appendTaskEvent(taskId, "REPAIR_STAGNATION_DETECTED", { progress, reason: "Source and verification failures are unchanged. Another identical repair would repeat the same evidence." });
+        const constructionFailure = isConstructionVerificationFailure(verification);
+        const previousConstructionRepairs = tasks.listEvents(taskId).filter((event) => event.type === "CONSTRUCTION_REPAIR_SCHEDULED").length;
+        const constructionAllowance = Math.min(2, previousConstructionRepairs + (constructionFailure ? 1 : 0));
+        const effectiveRepairMaximum = maxRepairAttempts + constructionAllowance;
         const verificationOutcome = workflow.applyVerificationOutcome(task, {
-          maximumRepairAttempts: maxRepairAttempts,
+          maximumRepairAttempts: progress.stalled ? task.attempts : effectiveRepairMaximum,
           reason: verificationFailure,
         });
 
@@ -744,6 +779,15 @@ export class ExecutionOrchestrator {
           createCheckpointSnapshot(task, "pre_repair");
           adoptCoreMutation(verificationOutcome);
 
+          if (constructionFailure && verificationOutcome.action === "repair") {
+            appendTaskEvent(taskId, "CONSTRUCTION_REPAIR_SCHEDULED", {
+              attempt: task.attempts,
+              allowanceUsed: constructionAllowance,
+              maximumConstructionAllowance: 2,
+              effectiveRepairMaximum,
+            });
+          }
+
           if (verificationOutcome.action === "block") {
             appendTaskEvent(taskId, "REPAIR_LIMIT_REACHED", {
               attempts: verificationAttempt,
@@ -751,7 +795,7 @@ export class ExecutionOrchestrator {
             });
             emit({
               type: "stream.blocked",
-              message: `Verification still failed after ${maxRepairAttempts} repair attempts. Changes remain isolated for inspection.`,
+              message: progress.stalled ? "Repair stopped because source and verified failures remained unchanged. The failed command output is saved for inspection." : `Verification still failed after ${effectiveRepairMaximum} repair attempts, including ${constructionAllowance} construction correction${constructionAllowance === 1 ? "" : "s"}. Changes remain isolated for inspection.`,
             });
             return;
           }
@@ -770,8 +814,11 @@ export class ExecutionOrchestrator {
             results: deterministicVerification.results,
             recentChanges,
           });
-          activeRepairContext = context;
-          repairEvidence = `${formatRepairContext(context)}\n\nBrowser and specialist evidence:\n${compactBrowserRepairEvidence(
+          const units = partitionRepairContext(context);
+          activeRepairContext = units[0];
+          pendingRepairUnits = units.slice(1);
+          appendTaskEvent(taskId, "REPAIR_WORK_UNITS_CREATED", { units });
+          repairEvidence = `${formatRepairContext(activeRepairContext)}\n\nBrowser and specialist evidence:\n${compactBrowserRepairEvidence(
             verification.browserEvidence,
             verification.specialistEvidence,
           )}\n\n${browserRepairSourceHints(approvedWorktreePath, verification.browserEvidence)}`;
@@ -806,7 +853,7 @@ export class ExecutionOrchestrator {
           activeRoleAssignment = null;
           createCheckpointSnapshot(task, "pre_repair");
 
-          const requestedQualityAction = visualDecision.source === "visual_director"
+          const requestedQualityAction = visualDecision.source === "visual_director" || visualDecision.source === "style_contract"
             ? "design_refinement" as const
             : "technical_repair" as const;
           const qualityOutcome = workflow.applyQualityOutcome(task, {
@@ -1080,9 +1127,12 @@ export class ExecutionOrchestrator {
           [...(visionReview?.findings ?? []), ...review.findings],
           review.verdict,
           review.summary,
-          task.attempts > 0
-            ? [`Deterministic verification passed on repair attempt ${task.attempts}.`, "Fresh review run did not reproduce the prior finding."]
-            : [],
+          [
+            task.attempts > 0
+              ? `Deterministic verification passed on repair attempt ${task.attempts}.`
+              : "Deterministic verification passed for this execution.",
+            "Fresh review run did not reproduce the prior finding.",
+          ],
         );
         emit({ type: "review.history.updated" });
         const reviewedRepository = taskProjectRepository(taskId);

@@ -11,7 +11,9 @@
     "requireBrowserVerification": true,
     "requireResponsiveVerification": true,
     "requireAccessibilityVerification": true,
-    "requireFrontendComplete": true
+    "requireFrontendComplete": true,
+    "requirePersonalStyleProfile": true,
+    "maximumSlices": 1
   },
   "limits": {
     "maxProjectPlanRevisions": 1,

@@ -27,6 +27,8 @@ export const FrontendBenchmarkExpectationsSchema = z.object({
   requireResponsiveVerification: z.boolean(),
   requireAccessibilityVerification: z.boolean(),
   requireFrontendComplete: z.boolean(),
+  requirePersonalStyleProfile: z.boolean().default(false),
+  maximumSlices: z.number().int().positive().max(50).optional(),
 }).strict().superRefine((value, context) => {
   const uniqueRoutes = new Set(value.requiredRoutes);
   if (uniqueRoutes.size !== value.requiredRoutes.length) {
@@ -42,6 +44,9 @@ export const FrontendBenchmarkExpectationsSchema = z.object({
       path: ["minimumPages"],
       message: "minimumPages cannot exceed the number of required routes.",
     });
+  }
+  if (value.maximumSlices !== undefined && value.maximumSlices < value.minimumPages) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["maximumSlices"], message: "maximumSlices cannot be smaller than minimumPages." });
   }
 });
 

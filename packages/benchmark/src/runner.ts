@@ -16,6 +16,7 @@ import {
   type BenchmarkObservation,
 } from "./observer.ts";
 import { evaluateBenchmarkInvariants } from "./invariants.ts";
+import { benchmarkQualityScore } from "./quality-score.ts";
 
 export interface FrontendBenchmarkRunnerOptions {
   client: BorgBenchmarkClient;
@@ -91,7 +92,7 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
   } = options;
   const now = options.now ?? (() => new Date());
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const timeoutMs = options.timeoutMs ?? 30 * 60_000;
+  const timeoutMs = options.timeoutMs ?? 45 * 60_000;
   const pollIntervalMs = options.pollIntervalMs ?? 500;
   const started = now();
   const startedAt = started.toISOString();
@@ -102,6 +103,7 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
   const approvals = { projectPlan: 0, projectPlanRevision: 0 };
   const snapshotByTask = new Map<string, BenchmarkDebugSnapshot>();
   let sessionId: string | null = null;
+  let interruptedPlanningStream: BenchmarkChatStreamError | null = null;
 
   const finish = (
     status: BenchmarkRunResult["status"],
@@ -116,14 +118,48 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
       completionClaimed: status === "PASS",
     });
     const combined = [...failures, ...invariantFailures];
-    const finalStatus = status === "PASS" && invariantFailures.length ? "FAIL" : status;
-    return {
-      result: result(benchmark.id, finalStatus, startedAt, now().toISOString(), combined),
+    const technicalStatus = status === "PASS" && invariantFailures.length ? "FAIL" : status;
+    const completedAt = now().toISOString();
+    const technicalOutcome: FrontendBenchmarkRunnerOutcome = {
+      result: result(benchmark.id, technicalStatus, startedAt, completedAt, combined),
       sessionId,
       taskIds,
       observations,
       snapshots,
       approvals,
+    };
+    if (technicalStatus !== "PASS") return technicalOutcome;
+
+    const quality = benchmarkQualityScore(benchmark, technicalOutcome);
+    const qualityFailures: BenchmarkFailure[] = [];
+    if (quality.earned < quality.threshold) {
+      qualityFailures.push(failure(
+        "QUALITY_SCORE_BELOW_THRESHOLD",
+        "design",
+        `Evidence-backed quality score was ${quality.earned}/${quality.maximum}; exceptional benchmark runs require at least ${quality.threshold}/${quality.maximum}.`,
+      ));
+    }
+    const categoryFailureCategory: Record<keyof typeof quality.categories, BenchmarkFailure["category"]> = {
+      completion: "completion",
+      functional: "verification",
+      responsive: "verification",
+      accessibility: "verification",
+      visual: "design",
+      engineering: "verification",
+      reliability: "recovery",
+    };
+    for (const [name, category] of Object.entries(quality.categories) as Array<[keyof typeof quality.categories, (typeof quality.categories)[keyof typeof quality.categories]]>) {
+      if (category.ratio >= quality.categoryFloor) continue;
+      qualityFailures.push(failure(
+        "QUALITY_CATEGORY_BELOW_FLOOR",
+        categoryFailureCategory[name],
+        `Quality category ${name} earned ${category.earned}/${category.maximum} (${Math.round(category.ratio * 100)}%); exceptional runs require at least ${Math.round(quality.categoryFloor * 100)}% in every category.`,
+      ));
+    }
+    if (!qualityFailures.length) return technicalOutcome;
+    return {
+      ...technicalOutcome,
+      result: result(benchmark.id, "FAIL", startedAt, completedAt, [...combined, ...qualityFailures]),
     };
   };
 
@@ -139,33 +175,41 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
       name: options.websiteName ?? benchmarkWebsiteName(benchmark.id, started),
       brief: prompt,
       template: "auto",
+      contextBudgetCharacters: benchmark.limits.maxContextCharacters,
     });
     sessionId = website.session.id;
 
     let planningTaskId: string | null = null;
     let planningState: string | null = "PLANNING";
-    const planning = await client.submitPrompt(sessionId, prompt, (event) => {
-      if (event.type === "task.created") {
-        const task = event.task as { id?: string; state?: string } | undefined;
-        planningTaskId = task?.id ?? planningTaskId;
-        planningState = task?.state ?? planningState;
-        if (planningTaskId && !taskIds.includes(planningTaskId)) taskIds.push(planningTaskId);
-      }
-      if (event.type === "task.state" && typeof event.state === "string") planningState = event.state;
-      if (!["task.created", "task.state", "stage.updated"].includes(String(event.type))) return;
-      const observation: BenchmarkObservation = {
-        at: now().toISOString(), taskId: planningTaskId, taskState: planningState,
-        runtimeActive: true, approvalGate: null, workflowSource: null,
-        stage: typeof event.stage === "string" ? event.stage : "planning",
-        nextAction: "plan", sliceIndex: null, sliceTotal: null, sliceTitle: null,
-      };
-      observations.push(observation);
-      onObservation?.(observation);
-    });
-    if (planning.taskId && !taskIds.includes(planning.taskId)) taskIds.push(planning.taskId);
-    if (planning.taskId) {
-      const snapshot = await client.debugSnapshot(planning.taskId).catch(() => null);
-      if (snapshot) snapshotByTask.set(planning.taskId, snapshot);
+    try {
+      const planning = await client.submitPrompt(sessionId, prompt, (event) => {
+        if (event.type === "task.created") {
+          const task = event.task as { id?: string; state?: string } | undefined;
+          planningTaskId = task?.id ?? planningTaskId;
+          planningState = task?.state ?? planningState;
+          if (planningTaskId && !taskIds.includes(planningTaskId)) taskIds.push(planningTaskId);
+        }
+        if (event.type === "task.state" && typeof event.state === "string") planningState = event.state;
+        if (!["task.created", "task.state", "stage.updated"].includes(String(event.type))) return;
+        const observation: BenchmarkObservation = {
+          at: now().toISOString(), taskId: planningTaskId, taskState: planningState,
+          runtimeActive: true, approvalGate: null, workflowSource: null,
+          stage: typeof event.stage === "string" ? event.stage : "planning",
+          nextAction: "plan", sliceIndex: null, sliceTotal: null, sliceTitle: null,
+        };
+        observations.push(observation);
+        onObservation?.(observation);
+      });
+      planningTaskId = planning.taskId ?? planningTaskId;
+    } catch (error) {
+      if (!(error instanceof BenchmarkChatStreamError) || !error.taskId) throw error;
+      interruptedPlanningStream = error;
+      planningTaskId = error.taskId;
+    }
+    if (planningTaskId && !taskIds.includes(planningTaskId)) taskIds.push(planningTaskId);
+    if (planningTaskId) {
+      const snapshot = await client.debugSnapshot(planningTaskId).catch(() => null);
+      if (snapshot) snapshotByTask.set(planningTaskId, snapshot);
     }
 
     while (Date.now() < deadline) {
@@ -231,6 +275,10 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
       }
 
       if (gate === "unknown") {
+        if (runtime.session.activeMode === "agent" || runtime.session.activeMode === "edit") {
+          await sleep(pollIntervalMs);
+          continue;
+        }
         return finish("BLOCKED", [
           failure(
             "UNSUPPORTED_OPERATOR_GATE",
@@ -267,17 +315,18 @@ export async function runFrontendBenchmark(options: FrontendBenchmarkRunnerOptio
       ),
     ]);
   } catch (error) {
-    if (error instanceof BenchmarkChatStreamError && error.taskId) {
-      if (!taskIds.includes(error.taskId)) taskIds.push(error.taskId);
-      const snapshot = await client.debugSnapshot(error.taskId).catch(() => null);
-      if (snapshot) snapshotByTask.set(error.taskId, snapshot);
+    const reportedError = error instanceof BenchmarkChatStreamError ? error : interruptedPlanningStream ?? error;
+    if (reportedError instanceof BenchmarkChatStreamError && reportedError.taskId) {
+      if (!taskIds.includes(reportedError.taskId)) taskIds.push(reportedError.taskId);
+      const snapshot = await client.debugSnapshot(reportedError.taskId).catch(() => null);
+      if (snapshot) snapshotByTask.set(reportedError.taskId, snapshot);
     }
     return finish("INVALID_RUN", [
       failure(
         Date.now() >= deadline ? "BENCHMARK_TIMEOUT" : "BENCHMARK_RUNNER_ERROR",
         "workflow",
-        error instanceof Error ? error.message : String(error),
-        error instanceof BenchmarkChatStreamError ? error.taskId : taskIds.at(-1) ?? null,
+        reportedError instanceof Error ? reportedError.message : String(reportedError),
+        reportedError instanceof BenchmarkChatStreamError ? reportedError.taskId : taskIds.at(-1) ?? null,
       ),
     ]);
   }

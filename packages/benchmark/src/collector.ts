@@ -2,6 +2,7 @@ import type { FrontendAutonomyBenchmark } from "./contracts.ts";
 import type { FrontendBenchmarkRunnerOutcome } from "./runner.ts";
 import { benchmarkViolationCodes } from "./violations.ts";
 import { benchmarkPerformance } from "./performance.ts";
+import { benchmarkQualityScore, type BenchmarkQualityScore } from "./quality-score.ts";
 
 export interface BenchmarkTimelineEntry {
   at: string;
@@ -57,11 +58,24 @@ export interface BenchmarkRepairTelemetry {
 }
 
 export interface BenchmarkVerificationTelemetry {
+  commandEvidence: Array<{ eventId: string; command: string; args: string[]; exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }>;
   taskId: string;
   sliceTitle: string | null;
   persistedStatus: string | null;
   persistedAttempt: number | null;
   preDeliveryCheckpoint: boolean;
+  routes: Array<{
+    route: string;
+    name: string;
+    linked: boolean;
+    reached: boolean;
+    renderedDistinctContent: boolean;
+    responsiveViewports: number;
+    accessibilityPassed: boolean;
+    consistencyPassed: boolean;
+    interactionPassed: boolean;
+    issue: string | null;
+  }>;
   events: Array<{
     id: string;
     sourceType: string;
@@ -73,6 +87,7 @@ export interface BenchmarkVerificationTelemetry {
 
 export interface BenchmarkTelemetrySummary {
   performance: ReturnType<typeof benchmarkPerformance>;
+  quality: BenchmarkQualityScore;
   version: 1;
   benchmarkId: string;
   benchmarkName: string;
@@ -82,6 +97,13 @@ export interface BenchmarkTelemetrySummary {
   completedAt: string | null;
   durationMs: number | null;
   sessionId: string | null;
+  style: {
+    profileId: string;
+    profileVersion: number;
+    fingerprint: string;
+    selectedArchetype: string;
+    referenceIds: string[];
+  } | null;
   taskCount: number;
   observedSliceCount: number;
   observedSlices: Array<{
@@ -291,7 +313,37 @@ export function collectBenchmarkTelemetry(
     });
 
     const verificationEvents = distinctEvents(snapshot.events.filter((event) => verificationEvent(event.sourceType)));
+    const routeMap = new Map<string, BenchmarkVerificationTelemetry["routes"][number]>();
+    for (const event of snapshot.events.filter((item) => item.sourceType === "VERIFICATION_COMPLETED")) {
+      const verificationValue = event.data?.verification;
+      if (!verificationValue || typeof verificationValue !== "object") continue;
+      const browserEvidence = (verificationValue as Record<string, unknown>).browserEvidence;
+      if (!browserEvidence || typeof browserEvidence !== "object") continue;
+      const routeChecks = (browserEvidence as Record<string, unknown>).routeChecks;
+      if (!Array.isArray(routeChecks)) continue;
+      for (const raw of routeChecks) {
+        if (!raw || typeof raw !== "object") continue;
+        const value = raw as Record<string, unknown>;
+        if (typeof value.route !== "string") continue;
+        routeMap.set(value.route, {
+          route: value.route,
+          name: String(value.name ?? value.route),
+          linked: value.linked === true,
+          reached: value.reached === true,
+          renderedDistinctContent: value.renderedDistinctContent === true,
+          responsiveViewports: Number(value.responsiveViewports ?? 0),
+          accessibilityPassed: value.accessibilityPassed === true,
+          consistencyPassed: value.consistencyPassed === true,
+          interactionPassed: value.interactionPassed === true,
+          issue: typeof value.issue === "string" ? value.issue : null,
+        });
+      }
+    }
     verification.push({
+      commandEvidence: verificationEvents.flatMap((event) => {
+        const value = event.data?.verification as { results?: Array<Record<string, unknown>> } | undefined;
+        return (Array.isArray(value?.results) ? value.results : []).map((result) => ({ eventId: event.id, command: String(result.command ?? result.label ?? ""), args: Array.isArray(result.args) ? result.args.map(String) : [], exitCode: typeof result.exitCode === "number" ? result.exitCode : null, stdout: String(result.stdout ?? ""), stderr: String(result.stderr ?? ""), timedOut: result.timedOut === true }));
+      }),
       taskId: snapshot.task.id,
       sliceTitle,
       persistedStatus: snapshot.workflow?.verification?.status ?? null,
@@ -300,6 +352,7 @@ export function collectBenchmarkTelemetry(
         : null,
       preDeliveryCheckpoint: snapshot.checkpoints.some((checkpoint) =>
         checkpoint.kind === "pre_delivery" && checkpoint.verification?.status === "passed"),
+      routes: [...routeMap.values()].sort((a, b) => a.route.localeCompare(b.route)),
       events: verificationEvents.map((event) => ({
         id: event.id,
         sourceType: event.sourceType,
@@ -376,10 +429,29 @@ export function collectBenchmarkTelemetry(
   const durationMs = Number.isFinite(startedMs) && Number.isFinite(completedMs)
     ? Math.max(0, completedMs - startedMs)
     : null;
+  const styleBrief = outcome.snapshots
+    .flatMap((snapshot) => snapshot.events)
+    .filter((event) => event.sourceType === "DESIGN_BRIEF_CREATED")
+    .map((event) => event.data?.brief)
+    .findLast((brief) => brief && typeof brief === "object") as Record<string, unknown> | undefined;
+  const style = styleBrief
+    && typeof styleBrief.styleProfileId === "string"
+    && typeof styleBrief.styleProfileVersion === "number"
+    && typeof styleBrief.styleFingerprint === "string"
+    && typeof styleBrief.selectedArchetype === "string"
+    ? {
+        profileId: styleBrief.styleProfileId,
+        profileVersion: styleBrief.styleProfileVersion,
+        fingerprint: styleBrief.styleFingerprint,
+        selectedArchetype: styleBrief.selectedArchetype,
+        referenceIds: Array.isArray(styleBrief.referenceIds) ? styleBrief.referenceIds.filter((item): item is string => typeof item === "string") : [],
+      }
+    : null;
 
   return {
     summary: {
       performance: benchmarkPerformance(outcome),
+      quality: benchmarkQualityScore(benchmark, outcome),
       version: 1,
       benchmarkId: benchmark.id,
       benchmarkName: benchmark.name,
@@ -389,6 +461,7 @@ export function collectBenchmarkTelemetry(
       completedAt: outcome.result.completedAt,
       durationMs,
       sessionId: outcome.sessionId,
+      style,
       taskCount: outcome.taskIds.length,
       observedSliceCount: observedSlices.length,
       observedSlices,

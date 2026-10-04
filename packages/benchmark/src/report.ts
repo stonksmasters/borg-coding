@@ -32,6 +32,11 @@ export function formatBenchmarkReport(artifacts: BenchmarkTelemetryArtifacts) {
   lines.push(`Recorded model requests: ${summary.performance.recordedModelRequests ?? "unknown"}`);
   lines.push(`Recorded tool calls: ${summary.performance.recordedToolCalls ?? "unknown"}`);
   lines.push(`Terminal stage: ${summary.performance.terminalStage ?? "unknown"}`);
+  lines.push(summary.style
+    ? `Style profile: ${summary.style.profileId}@${summary.style.profileVersion} · ${summary.style.selectedArchetype} · ${summary.style.fingerprint}`
+    : "Style profile: missing");
+  lines.push(`Quality score: ${summary.quality.earned}/${summary.quality.maximum} · qualifying run: ${summary.quality.runExceptional ? "yes" : "no"}`);
+  lines.push(`Exceptional streak: ${summary.quality.repeatability.consecutiveExceptionalRuns}/${summary.quality.repeatability.required} · exceptional: ${summary.quality.exceptional ? "yes" : "no"}`);
   for (const [stage, elapsed] of Object.entries(summary.performance.stageMs)) {
     lines.push(`  ${stage}: ${duration(elapsed)} (sampled)`);
   }
@@ -70,6 +75,21 @@ export function formatBenchmarkReport(artifacts: BenchmarkTelemetryArtifacts) {
   lines.push("");
 
   lines.push("Quality");
+  for (const [name, score] of Object.entries(summary.quality.categories)) {
+    lines.push(`  ${name}: ${score.earned}/${score.maximum}`);
+  }
+  const deductions = Object.entries(summary.quality.categories).filter(([, score]) => score.earned < score.maximum);
+  if (deductions.length) {
+    lines.push("  Deductions:");
+    for (const [name, score] of deductions) lines.push(`    ${name}: -${score.maximum - score.earned} (${Math.round(score.ratio * 100)}% evidence coverage)`);
+  }
+  const routeRows = artifacts.verification.flatMap((item) => item.routes.map((route) => ({ slice: item.sliceTitle, ...route })));
+  if (routeRows.length) {
+    lines.push("  Route matrix:");
+    for (const route of routeRows) {
+      lines.push(`    ${route.route}: nav=${route.linked && route.reached ? "pass" : "fail"} · distinct=${route.renderedDistinctContent ? "pass" : "fail"} · viewports=${route.responsiveViewports}/3 · a11y=${route.accessibilityPassed ? "pass" : "fail"} · consistency=${route.consistencyPassed ? "pass" : "fail"} · interactions=${route.interactionPassed ? "pass" : "fail"}${route.issue ? ` · ${route.issue}` : ""}`);
+    }
+  }
   lines.push(`  Verification passed: ${summary.verification.passedTaskCount}/${summary.verification.taskCount}`);
   lines.push(`  Pre-delivery checkpoints: ${summary.verification.preDeliveryCheckpointCount}`);
   lines.push(`  Tasks requiring repair: ${summary.repair.tasksWithRepair}`);
